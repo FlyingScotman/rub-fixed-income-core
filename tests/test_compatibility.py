@@ -5,7 +5,12 @@ from math import exp
 
 import pytest
 
-from rub_fixed_income import DiscountCurve, solve_continuous_z_spread
+from rub_fixed_income import (
+    DiscountCurve,
+    price_cashflows,
+    solve_continuous_z_spread,
+    solve_z_spread,
+)
 from rub_fixed_income.dates import year_fraction
 
 
@@ -28,6 +33,31 @@ def test_continuous_z_spread_reprices_cashflows_against_discount_factors() -> No
         dirty_price,
         curve,
         settlement_date=settlement,
+    )
+
+    assert solved == pytest.approx(expected_spread, abs=1e-12)
+
+
+@pytest.mark.parametrize("frequency", [1, 12])
+def test_nominal_z_spread_preserves_annual_and_monthly_compounding(frequency: int) -> None:
+    settlement = date(2026, 8, 28)
+    one_year = date(2027, 8, 28)
+    two_year = date(2028, 8, 28)
+    curve = DiscountCurve(settlement, ((one_year, 0.98), (two_year, 0.90)))
+    cashflows = ((one_year, 10.0), (two_year, 110.0))
+    expected_spread = 0.0125
+    dirty_price = price_cashflows(
+        cashflows,
+        curve,
+        spread=expected_spread,
+        compounding_frequency=frequency,
+    )
+
+    solved = solve_z_spread(
+        cashflows,
+        dirty_price,
+        curve,
+        compounding_frequency=frequency,
     )
 
     assert solved == pytest.approx(expected_spread, abs=1e-12)
