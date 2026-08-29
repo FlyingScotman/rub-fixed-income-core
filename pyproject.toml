@@ -1,0 +1,47 @@
+[project]
+name = "rub-fixed-income-core"
+version = "0.2.1"
+description = "Deterministic RUB fixed-income dates, cash-flow, financing, yield, discount-curve, and KRS projection math"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.0,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.11",
+    "pytest>=8.0",
+    "ruff>=0.8",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["rub_fixed_income"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/README.md",
+    "/pyproject.toml",
+    "/uv.lock",
+    "/rub_fixed_income",
+    "/tests",
+]
+exclude = ["**/__pycache__", "**/*.pyc", "/dist"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.mypy]
+files = ["rub_fixed_income", "tests"]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+strict = true
