@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import json
 import math
+import os
 import zipfile
 from pathlib import Path
 
@@ -18,9 +19,17 @@ probe = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(probe)
 
 
+def test_probe_disables_unrelated_otel_exporters_before_runtime_imports() -> None:
+    assert os.environ["OTEL_SDK_DISABLED"] == "true"
+    assert os.environ["OTEL_TRACES_EXPORTER"] == "none"
+    assert os.environ["OTEL_METRICS_EXPORTER"] == "none"
+    assert os.environ["OTEL_LOGS_EXPORTER"] == "none"
+
+
 def test_exact_dataset() -> None:
     assert len(probe.INPUT_ROWS) == 30
     assert len({row[1] for row in probe.INPUT_ROWS}) == 30
+    assert all(probe.is_valid_isin_checksum(row[1]) for row in probe.INPUT_ROWS)
     assert probe.INPUT_ROWS[0] == ("Атомэнпр07", "RU000A10C6L5", 97.46, 16.04, 124)
     assert probe.INPUT_ROWS[2] == ("МТС 2P-11", "RU000A10BP79", 100.75, 13.75, -106)
     assert probe.INPUT_ROWS[14] == ("Систем1P29", "RU000A108GL1", 89.29, None, 1180)
@@ -50,6 +59,7 @@ def test_date_and_filter_validation() -> None:
         probe.parse_date("03.09.2026")
     with pytest.raises(argparse.ArgumentTypeError):
         probe.parse_isin_filters(["RU000A000000"])
+    assert not probe.is_valid_isin_checksum("RU000A10C6L6")
 
 
 def test_json_safe_no_object_repr_and_nonfinite() -> None:

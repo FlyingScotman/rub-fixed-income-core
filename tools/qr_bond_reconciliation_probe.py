@@ -23,6 +23,15 @@ from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
+# Some desk packages initialize an OTLP exporter during import.  The collector is
+# not required for this local diagnostic and an unavailable endpoint otherwise
+# floods cmd.exe with unrelated connection tracebacks.  These settings affect
+# only this Python process and are applied before proprietary modules are loaded.
+os.environ["OTEL_SDK_DISABLED"] = "true"
+os.environ["OTEL_TRACES_EXPORTER"] = "none"
+os.environ["OTEL_METRICS_EXPORTER"] = "none"
+os.environ["OTEL_LOGS_EXPORTER"] = "none"
+
 INPUT_ROWS: tuple[tuple[str, str, float, float | None, float | None], ...] = (
     ("Атомэнпр07", "RU000A10C6L5", 97.46, 16.04, 124),
     ("Атомэнпр12", "RU000A10F7L0", 96.73, 15.95, 142),
@@ -95,6 +104,19 @@ def parse_date(value: str) -> dt.date:
         raise argparse.ArgumentTypeError(f"invalid ISO date: {value}") from exc
 
 
+def is_valid_isin_checksum(value: str) -> bool:
+    """Validate the ISO 6166 check digit using the Luhn algorithm."""
+    isin = value.strip().upper()
+    if not ISIN_RE.fullmatch(isin):
+        return False
+    expanded = "".join(str(ord(char) - 55) if char.isalpha() else char for char in isin)
+    total = 0
+    for position, char in enumerate(reversed(expanded)):
+        number = int(char) * (2 if position % 2 else 1)
+        total += number // 10 + number % 10
+    return total % 10 == 0
+
+
 def parse_isin_filters(values: Sequence[str] | None) -> tuple[str, ...]:
     if not values:
         return ()
@@ -102,7 +124,7 @@ def parse_isin_filters(values: Sequence[str] | None) -> tuple[str, ...]:
     for value in values:
         for item in value.split(","):
             isin = item.strip().upper()
-            if not ISIN_RE.fullmatch(isin):
+            if not is_valid_isin_checksum(isin):
                 raise argparse.ArgumentTypeError(f"invalid ISIN filter: {item!r}")
             if isin not in result:
                 result.append(isin)
@@ -846,7 +868,30 @@ def main(argv: Sequence[str] | None = None) -> int:
             runtime["stages"]["archive"] = error_record(exc)
             write_json(out / "runtime_diagnostic.json", runtime)
             write_json(out / "manifest.json", build_manifest(out, counts, "partial"))
+            print(
+                json.dumps(
+                    {
+                        "status": "archive_error",
+                        "output_dir": str(out),
+                        "error": error_record(exc),
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
             return 2
+    print(
+        json.dumps(
+            {
+                "status": status,
+                "output_dir": str(out),
+                "archive": str(archive),
+                "counts": counts,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
     return 0 if status == "complete" else 1
 
 
