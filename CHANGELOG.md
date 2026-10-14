@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.3.1 — 2026-10-14
+
+Validation release. Numbers for valid input are unchanged from 0.3.0; every change below
+turns a NaN/inf result or a silently wrong value into `ValueError`. Contract summary:
+`docs/money-validation.md`.
+
+### Fixed (behaviour changes)
+
+- `clean_price_pct_to_dirty_rub` / `clean_price_pct_to_dirty_amount` now reject a clean price
+  `<= 0` (was accepted: `clean=-5` → dirty `-40.0`), any NaN/inf/`bool` input, and a result
+  that overflows.
+- `dirty_rub_to_clean_price_pct` now rejects a dirty price `<= 0`, a dirty price at or below
+  accrued interest (implied clean `<= 0`; was returned as `0.0` or negative), any NaN/inf/`bool`
+  input, and an overflowing result. NaN input used to return `nan`.
+- `analytics.accrued_interest_rub` now runs the full `BondTermsV1.validate()` first, so it
+  also raises for a horizon inconsistent with maturity (`"maturity horizon date must equal
+  maturity date"`, `"confirmed put horizon must precede maturity"`) and for invalid nominal
+  or coupon, including on the coupon payment date. It used to return accrued interest for such
+  terms. `analyze_bond` / `analyze_bond_v2` already validated terms, so they are unaffected.
+- `project_financed_bond` validates every cash-event amount (NaN/inf/`bool` → `"cash-event
+  amount must be finite"`; was propagated into a `nan` horizon value), rejects `bool`
+  initial dirty cash and accumulation factors, and raises `"financing balance result must be
+  finite"` instead of returning `inf`. Signed finite cash events stay valid: an expense of
+  `-50` increases the funding balance.
+- `price_cashflows` raises `"cashflow price result must be finite"` instead of returning
+  `inf`; `bond_duration` raises instead of returning `nan` durations with `inf` PV. Net
+  zero PV from signed flows still returns `0.0`.
+- `bool` prices and cash flows are rejected by `solve_nominal_annual_yield`, `solve_z_spread`,
+  `solve_continuous_z_spread`, `solve_effective_annual_yield`, `price_cashflows`,
+  `bond_duration`, and `BondTermsV1` / `MarketObservationV1.validate()` (so `analyze_bond`
+  returns `INVALID_UNITS`).
+
+### Changed
+
+- `rub_fixed_income.__version__`, `pyproject.toml` and `uv.lock` all report 0.3.1. A
+  contract test now keeps `__version__` equal to the project version. The lock had still
+  said 0.2.1 at 0.3.0.
+
 ## 0.3.0 — 2026-10-14
 
 Additive release. Defaults reproduce 0.2.1 numbers bit for bit for valid input; behaviour

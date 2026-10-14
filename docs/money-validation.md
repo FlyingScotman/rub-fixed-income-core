@@ -1,30 +1,47 @@
-# Money validation in 0.3.1
+# Money validation contract (since 0.3.1)
 
-Clean/dirty conversion requires positive finite unit prices and current nominal,
-and finite nonnegative accrued interest. NaN, infinities, booleans, negative unit
-prices and zero nominal raise ValueError. Inverse conversion also rejects a dirty
-amount at or below accrued interest, since that would imply a nonpositive clean
-price. Finite inputs that overflow the result are rejected.
+Every rule below raises `ValueError`. "Invalid" means NaN, ±infinity, or a Python `bool`
+(`True`/`False` are `int` subclasses and would otherwise pass as 1/0).
 
-Financing validates every cash-event amount before processing periods, rejects
-boolean accumulation factors and checks each closing balance for overflow.
-Signed finite cash events remain valid: an expense of -50 increases the funding
-balance by 50. Price/NKI/nominal describe one bond; a short position's sign belongs
-in its external position quantity, rather than a negative unit price.
+## Clean/dirty conversion
 
-The standalone accrued-interest helper validates its bond terms even on a coupon
-payment date. Public PV and duration calculations reject non-finite cashflows and
-overflowing results. Signed net cashflows, including zero net PV, remain supported
-by the generic PV function. Existing convention, golden-value and reproducibility
-tests remain unchanged.
+`clean_price_pct_to_dirty_rub`, `clean_price_pct_to_dirty_amount`, `dirty_rub_to_clean_price_pct`:
 
-Validation: full suite 255 passed, including regressions for each conversion
-input, invalid cash events, valid signed expenses, finite-input overflow, accrued
-interest and PV/duration overflow. Core financing regressions fail against the
-unchanged GitHub main, confirming the original defect. Changed source files pass
-Ruff and mypy with the local Python 3.13 target; lock consistency passes offline.
-The configured Python 3.11 type-check target is incompatible with the locally
-installed NumPy stubs, so it was not used for this check.
+- Clean price (%) and dirty price (RUB per bond) must be finite and strictly positive.
+- Current nominal must be finite and strictly positive.
+- Accrued interest must be finite and non-negative.
+- The inverse conversion rejects dirty ≤ accrued interest, because that implies a clean
+  price ≤ 0.
+- A result that overflows to infinity is rejected, even when every input is finite.
 
-The companion market-data-store change consumes this patch as core 0.3.1 and
-guards its own valuation inputs and observation storage boundaries.
+Prices, accrued interest and nominal describe one bond. The sign of a short position belongs
+in the caller's position quantity, never in a negative unit price.
+
+## Financing
+
+`project_financed_bond`:
+
+- Every cash-event amount is validated before any period is processed. Signed finite amounts
+  are valid: an expense of −50 increases the funding balance by 50.
+- Initial dirty cash must be finite and positive. Accumulation factors must be finite,
+  positive and not `bool`.
+- Each closing balance must be finite; overflow raises `"financing balance result must be
+  finite"`.
+
+## Accrued interest
+
+`analytics.accrued_interest_rub` validates the full `BondTermsV1` (nominal, coupon, accrual
+period, horizon versus maturity) before computing, including on the coupon payment date
+where it returns 0.
+
+## PV, duration and solvers
+
+- `price_cashflows` and `bond_duration` reject invalid cash flows and overflowing PV or
+  duration. Signed net cash flows remain supported, including a net PV of exactly 0.
+- `solve_nominal_annual_yield`, `solve_z_spread`, `solve_continuous_z_spread` and
+  `solve_effective_annual_yield` reject invalid prices and cash flows.
+- `BondTermsV1.validate()` and `MarketObservationV1.validate()` reject `bool` nominal, coupon
+  and clean price; `analyze_bond` / `analyze_bond_v2` report these as `INVALID_UNITS`.
+
+Valid input produces the same numbers as 0.3.0. Regression coverage lives in
+`tests/test_money_validation.py`.

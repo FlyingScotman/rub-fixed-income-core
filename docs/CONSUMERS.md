@@ -34,6 +34,26 @@ consumer re-pins and refreshes its lock — see BACKLOG.
   the coupon payment date (now 0).
 - `BondAnalyticsResultV1` field set and hash projection are unchanged.
 
+## Impact of 0.3.1 on consumers
+
+0.3.1 keeps every 0.3.0 number for valid input. It only raises `ValueError` where 0.3.0
+returned NaN, infinity or an economically invalid value (full list in `CHANGELOG.md`). Editable
+consumers pick it up on merge. Check these call sites before merging:
+
+| Project | Affected imports | New failure that callers must handle |
+| --- | --- | --- |
+| market-data-store | `clean_price_pct_to_dirty_amount`, `price_cashflows`, `solve_z_spread` | clean price ≤ 0 or non-finite (was a dirty price ≤ AI or `nan`); `price_cashflows` overflow (was `inf`) |
+| moex-market-data-mcp | `clean_price_pct_to_dirty_amount`, `solve_nominal_annual_yield`, `bond_duration` | clean price ≤ 0 or non-finite; `bond_duration` overflow (was `nan` durations) |
+| currency-bond-monitor | `solve_z_spread`, `solve_effective_annual_yield` | `bool` price or cash flow only |
+| ofz-swaps-v2 | `project_financed_bond` | non-finite cash event or overflowing balance (was a `nan`/`inf` horizon value) |
+| corporate-bond-monitor | `analyze_bond` | none until it upgrades from 0.1.0. `bool` units then give `INVALID_UNITS` |
+| rgbi-futures-arbitrage-monitor | – | none: vendored 0.1.0 wheel |
+
+`dirty_rub_to_clean_price_pct` and `analytics.accrued_interest_rub` (now stricter) are not
+imported by any consumer listed above. The companion market-data-store branch
+`codex/quote-freshness-money-guards-20261014` needs core 0.3.1 or later, so do not install it
+against an older core.
+
 ## Verification performed before release
 
 Release gate (per owner instruction, lightweight only): core suite, the OFZ 26238 numeric
