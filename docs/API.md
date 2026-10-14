@@ -89,3 +89,7 @@ All convention objects are frozen and hashable.
 ## Key-rate swaps (`key_rate`)
 
 `KeyRateSwapQuote`, `KeyRateForwardCurve`, `KeyRateForwardSegment`, `KeyRateSwapPricingRequest`, `price_key_rate_swap`, `KeyRateCurveBuildRequest`, `build_key_rate_forward_curve`, result/diagnostic DTOs. Unchanged numerics in 0.3.0 (ACT/ACT ISDA now delegated to `DayCount.ACT_ACT_ISDA`).
+
+## Fixed-cashflow risk and scenarios (0.4.0)
+
+`BondRiskRequest`, `BondRiskEngine`, and `BondScenario` provide signed RUB DV01/KRD, CS01/OFZ spread risk, and exact same-date repricing. Curve basis and spread convention are explicit; a calibrated base spread stays frozen under curve shocks. See [risk contract and example](risk.md) for inputs, methods, identities and supported scope.
