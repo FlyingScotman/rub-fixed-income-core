@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import math
-from calendar import isleap
 from dataclasses import dataclass
 from datetime import date, timedelta
 from itertools import pairwise
@@ -9,6 +8,7 @@ from typing import Literal
 
 import numpy as np
 
+from .conventions import DayCount
 from .dates import BusinessCalendar, add_months
 from .discount import DiscountCurve
 
@@ -193,14 +193,7 @@ class KeyRateCurveBuildResult:
 def _year_fraction_act_act_isda(start: date, end: date) -> float:
     if end <= start:
         raise ValueError("accrual period must have positive length")
-    result = 0.0
-    cursor = start
-    while cursor < end:
-        year_end = date(cursor.year + 1, 1, 1)
-        boundary = min(end, year_end)
-        result += (boundary - cursor).days / (366.0 if isleap(cursor.year) else 365.0)
-        cursor = boundary
-    return result
+    return DayCount.ACT_ACT_ISDA.year_fraction(start, end)
 
 
 def _add_tenor(value: date, tenor: str) -> date:
