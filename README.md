@@ -17,12 +17,25 @@ context takes an authoritative exact fallback with a stable reason code. Accepte
 lookups use only the build-time held-out/adaptively validated PCHIP grid and its independent
 linear guardrail; they do not call the exact solver.
 
+## Documentation
+
+- [Architecture](docs/ARCHITECTURE.md) — module map, data flow, invariants, error model
+- [Conventions](docs/CONVENTIONS.md) — day counts, compounding, calendars, schedules, curve, yield, Z-spread, AI equations
+- [API](docs/API.md) — public functions, units, errors
+- [Consumers](docs/CONSUMERS.md) — who uses the core and how it is pinned
+- [Backlog](docs/BACKLOG.md) — remaining fixes and downstream migrations
+- [Changelog](CHANGELOG.md)
+
+Conventions are explicit inputs (`rub_fixed_income.conventions`); defaults reproduce 0.2.1
+numbers. Z-spread desk default is annual (`m=1`); monthly (`m=12`) and continuous are available
+via `ZSpreadConvention`. `solve_z_spread(..., settlement_date=...)` values at settlement.
+
 ## Development
 
 ```bash
 uv sync --extra dev
 uv run pytest -q
-uv run ruff check rub_fixed_income tests
+uv run ruff check .
 uv run mypy rub_fixed_income
 uv build
 ```

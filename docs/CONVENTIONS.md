@@ -1,0 +1,168 @@
+# Conventions
+
+All conventions are **inputs**. Defaults reproduce rub-fixed-income-core 0.2.1 exactly.
+Units: rates and spreads are **decimals** in function APIs (`0.0125` = 125 bp) unless the
+name says `_bp` or `_pct`; cash amounts are **RUB per bond**; clean prices are **% of current
+nominal**; times are year fractions.
+
+## Day counts (`DayCount`)
+
+| Member | Year fraction |
+| --- | --- |
+| `ACT_365_FIXED` (`"ACT/365F"`, default everywhere) | `days / 365` |
+| `ACT_360` | `days / 360` |
+| `ACT_ACT_ISDA` | Σ over calendar years of `days_in_year_segment / (366 if leap else 365)` (used by the KRS module) |
+
+`ACT/ACT-ICMA` is **not implemented** (needs a reference coupon period; see BACKLOG).
+`dates.year_fraction` remains ACT/365F and is kept for compatibility.
+
+## Compounding (`Compounding`)
+
+`Compounding(m)` with `m >= 1` periods per year, or `m = 0` = continuous. Constants:
+`ANNUAL` (1), `SEMI_ANNUAL` (2), `QUARTERLY` (4), `MONTHLY` (12), `CONTINUOUS` (0).
+
+- periodic: `DF = (1 + r/m)^(-m·t)`, `r = m·(DF^(-1/(m·t)) − 1)`
+- continuous: `DF = e^(−r·t)`, `r = −ln(DF)/t`
+
+## Business days
+
+`BusinessCalendar(holidays, working_days, version)` – weekends are non-business unless listed
+in `working_days`; `holidays` are non-business. **The library ships no holiday list.** The
+default calendar is weekends-only (`version="weekends-only"`). Production callers must build
+the calendar from an official versioned MOEX/CBR source (see BACKLOG).
+
+`BusinessDayConvention`: `UNADJUSTED`, `FOLLOWING`, `MODIFIED_FOLLOWING`, `PRECEDING`;
+`adjust_date(d, bdc, calendar)` applies one.
+
+`SettlementConvention(lag_business_days=1, calendar=...)` →
+`settlement_date(trade_date) = calendar.add_business_days(trade_date, lag)`. T+1 must not be
+computed as `trade_date + 1 calendar day` or weekday-only.
+
+Identifiers include `calendar.version` **and** `calendar_fingerprint(calendar)` (hash of the
+holiday/working-day sets), so two calendars with the same label but different content are
+distinguishable in provenance.
+
+## Schedules
+
+- Legacy `dates.annual_schedule(start, end)`: forward annual roll from `start`, unadjusted,
+  final period ends at `end`. If `end` was business-day adjusted past an anniversary it
+  creates a short stub: `annual_schedule(2026-10-15, 2028-10-16)` →
+  `(2027-10-15, 2028-10-15, 2028-10-16)`. Kept unchanged for compatibility.
+- `generate_schedule(start, end, ScheduleConvention(...))`: unadjusted roll dates
+  (`roll="forward"` from `start`, or `"backward"` from `end`), adjusted with the BDC on the
+  calendar, any roll on/after `end` merged into the final period. Default
+  `ScheduleConvention()` = 12M forward, MODIFIED_FOLLOWING, weekends-only →
+  `(2027-10-15, 2028-10-16)` for the example above. `UNADJUSTED` forward reproduces
+  `annual_schedule`.
+
+## Discount curve (`CurveConvention`, `DiscountCurve`)
+
+- Nodes `(date_i, DF_i)`, `DF(curve_date) = 1`.
+- **Interpolation**: log-linear in DF by calendar days:
+  `ln DF(t) = ln DF_L + (t − t_L)/(t_R − t_L) · (ln DF_R − ln DF_L)`.
+- **Extrapolation** beyond the last node: flat forward from the last two nodes (or from the
+  curve date for one node): `f = −(ln DF_n − ln DF_{n−1}) / τ(n−1, n)`,
+  `DF(t) = DF_n · e^(−f · τ(n, t))`.
+- `τ` = `CurveConvention.time_day_count` (default ACT/365F); also used by zero/forward rates
+  and flat curves. Interpolation weights are calendar days regardless of day count.
+- `zero_rate(t, m)` from curve date; `m` an int ≥ 1 or a `Compounding` (incl. `CONTINUOUS`).
+- `forward_rate(s, e) = (DF(s)/DF(e))^(1/τ) − 1` (annual).
+
+### OIS bootstrap (`bootstrap_discount_curve`)
+
+Par condition for each quote `K` with fixed-leg dates `T_1..T_n`:
+`K · Σ α_i · DF(T_i) = 1 − DF(T_n)`, `α_i` = `CurveConvention.fixed_leg_day_count`
+(default ACT/365F). Fixed-leg dates: `fixed_leg_schedule=None` → legacy `annual_schedule`
+from the curve date (default, unchanged numbers); or a `ScheduleConvention` → adjusted,
+stub-free `generate_schedule`. Sequential: each new node's DF is solved via a constant
+continuous forward from the previous node; result must reprice all quotes within 1e-7 bp.
+
+## Yield
+
+`solve_nominal_annual_yield`: `P_dirty = Σ CF_i / (1 + y/m)^(m·t_i)`, `t_i` from settlement.
+Default `m = 1`, `t = days/365` (`day_count_basis=365.0`). Alternatives: keyword
+`compounding_frequency`, `day_count_basis` (legacy) **or** `convention=YieldConvention(...)`
+(not both). Root must satisfy `y > −0.99·m`, otherwise "not bracketed".
+
+`solve_effective_annual_yield` (forward horizon): `P = Σ CF_i/(1+y)^{t_i}`, ACT/365F.
+
+`bond_duration`: Macaulay `D = Σ t_i·PV_i / Σ PV_i`; modified `D / (1 + y/m)`.
+
+## Z-spread
+
+Desk standard: **annual (m = 1) spread compounding, ACT/365F**; monthly (m = 12) supported.
+
+Periodic (`solve_z_spread`, `price_cashflows`):
+
+```
+DF_s(t) = DF(t) / DF(s)                       # settlement-forward discount factor
+z_s(t)  = m · (DF_s(t)^(−1/(m·τ)) − 1)         # τ = day_count(s, t)
+P       = Σ CF_i · (1 + (z_s(t_i) + Z)/m)^(−m·τ_i)
+```
+
+Continuous (`solve_continuous_z_spread`, or `ZSpreadConvention(compounding=CONTINUOUS)`):
+
+```
+P = Σ CF_i · DF(t_i)/DF(s) · e^(−Z·τ_i)
+```
+
+Settlement handling:
+
+- `settlement_date=None` (default): `s = curve_date`; flows on the curve date count at face,
+  earlier flows ignored (legacy behaviour).
+- `settlement_date=s` (`s >= curve_date`): flows on/before `s` are dropped; result is identical
+  (to 1e-12) to rebasing the curve to `s` manually, and identical bit for bit to the legacy path
+  when `s == curve_date`.
+
+The continuous and annual spreads differ materially (OFZ 26238 probe: annual 139.1 bp, monthly
+124.2 bp, continuous 122.9 bp). Always record the convention identifier
+(`ZSpreadConvention.identifier`, e.g. `zspread:annual:ACT/365F`) next to stored spreads.
+
+## Accrued interest
+
+`accrued_interest_rub(terms, s) = coupon · (s − start)/(end − start)` for
+`start <= s < end`; **0 at `s == end`** (coupon date: the buyer does not receive that
+coupon; MOEX convention). `analyze_bond` rounds AI half-up to `CalculationPolicy.money_quantum`
+(default 0.01 RUB).
+
+## `analyze_bond` conventions
+
+- `analyze_bond` (V1, frozen): yield = effective annual ACT/365F; Z = **continuous** ACT/365F
+  over settlement-forward DFs (`V1_YIELD_CONVENTION`, `V1_Z_SPREAD_CONVENTION`). Kept to
+  preserve V1 result hashes.
+- `analyze_bond_v2(..., yield_convention=None, z_spread_convention=None)`: default yield
+  annual ACT/365F, default Z **annual** ACT/365F; the result carries `yield_convention` and
+  `z_spread_convention` identifiers and its own hash. Reproduce V1 spreads with
+  `z_spread_convention=ZSpreadConvention(compounding=CONTINUOUS)`.
+
+## Financed-bond accumulation
+
+`constant_daily_accumulation_periods(start, horizon, boundaries, r)`: factor per period
+`(1 + r/365)^(days)`. `project_financed_bond`: `B_{k+1} = B_k · factor_k − cash_event_k`,
+starting from the initial dirty cash; cash events must terminate accumulation periods.
+
+## KRS (MOEX IRS KEYRATE)
+
+TOM effective date (`calendar.add_business_days(trade, 1)`), MODFOL adjustment, ACT/ACT ISDA,
+annual fixed (single payment up to 1Y) vs quarterly key-rate-average floating. Convention id
+`moex-irs-keyrate-tom-modfol-actactisda-v1` (unchanged; now uses `DayCount.ACT_ACT_ISDA`).
+
+## Examples
+
+```python
+from rub_fixed_income import (
+    MONTHLY, CONTINUOUS, Compounding, BusinessCalendar, SettlementConvention, ZSpreadConvention,
+    YieldConvention, DayCount, solve_z_spread, solve_nominal_annual_yield,
+)
+
+cal = BusinessCalendar(holidays=frozenset(official_holidays), version="moex-2026-v3")
+settle = SettlementConvention(lag_business_days=1, calendar=cal).settlement_date(trade_date)
+
+z_annual = solve_z_spread(flows, dirty, curve, settlement_date=settle)            # desk default
+z_monthly = solve_z_spread(flows, dirty, curve, settlement_date=settle,
+                           convention=ZSpreadConvention(compounding=MONTHLY))
+z_cont = solve_z_spread(flows, dirty, curve, settlement_date=settle,
+                        convention=ZSpreadConvention(compounding=CONTINUOUS))
+ytm_sa = solve_nominal_annual_yield(dirty_price=dirty, settlement_date=settle, cashflows=flows,
+                                    convention=YieldConvention(compounding=Compounding(2)))
+```
