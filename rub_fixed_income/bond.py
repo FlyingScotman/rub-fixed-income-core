@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date
 from itertools import pairwise
 from math import isfinite
 
+from ._solver import bisect
 from .accumulation import AccumulationPeriod
 from .cashflows import BondCashflow, CashEvent, EventKey
 from .dates import year_fraction
@@ -51,32 +51,13 @@ class YieldResult:
     repricing_error_rub_per_bond: float
 
 
-def _bisect_root(
-    function: Callable[[float], float], lower: float, upper: float, tolerance: float
-) -> float:
-    """Solve a continuous bracketed scalar function without runtime dependencies."""
-    low_value = function(lower)
-    high_value = function(upper)
-    if low_value * high_value > 0.0:
-        raise ValueError("root is not bracketed")
-    for _ in range(240):
-        middle = (lower + upper) / 2.0
-        middle_value = function(middle)
-        if abs(middle_value) <= tolerance or upper - lower <= tolerance:
-            return middle
-        if low_value * middle_value <= 0.0:
-            upper = middle
-        else:
-            lower = middle
-            low_value = middle_value
-    raise RuntimeError("root solver did not converge")
-
-
 def solve_effective_annual_yield(request: YieldRequest) -> YieldResult:
     if not request.cashflows:
         raise ValueError("remaining cashflows are required after horizon")
-    if request.dirty_price_rub_per_bond <= 0.0:
-        raise ValueError("forward dirty price must be positive")
+    if not isfinite(request.dirty_price_rub_per_bond) or request.dirty_price_rub_per_bond <= 0.0:
+        raise ValueError("forward dirty price must be positive and finite")
+    if any(not isfinite(cashflow.amount) for cashflow in request.cashflows):
+        raise ValueError("cashflow amounts must be finite")
     if any(cashflow.payment_date <= request.horizon_date for cashflow in request.cashflows):
         raise ValueError("yield cashflows must be strictly after horizon")
 
@@ -90,10 +71,9 @@ def solve_effective_annual_yield(request: YieldRequest) -> YieldResult:
             - request.dirty_price_rub_per_bond
         )
 
-    try:
-        solved = _bisect_root(error, -0.99, 5.0, 1e-13)
-    except ValueError as exc:
-        raise ValueError("forward yield root is not bracketed") from exc
+    solved = bisect(
+        error, -0.99, 5.0, tolerance=1e-13, x_tolerance=1e-13, label="forward yield"
+    ).root
     return YieldResult(solved, error(solved))
 
 

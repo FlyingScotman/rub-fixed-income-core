@@ -1,13 +1,19 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+import math
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import date
 from math import exp, isfinite
 
+from ._solver import bisect
 from .cashflows import BondCashflow, clean_price_pct_to_dirty_rub
-from .dates import year_fraction
+from .conventions import CONTINUOUS, Compounding, YieldConvention, ZSpreadConvention
 from .discount import DiscountCurve
+
+# A nominal-yield root below -0.99 * m (per-period discount base below 0.01) is treated as
+# outside the supported domain and reported as "not bracketed" instead of returned.
+_NOMINAL_YIELD_FLOOR = 0.99
 
 
 @dataclass(frozen=True)
@@ -18,11 +24,33 @@ class DurationResult:
 
 
 def _materialize(cashflows: Iterable[tuple[date, float]]) -> tuple[BondCashflow, ...]:
-    return tuple(BondCashflow(payment_date, float(amount)) for payment_date, amount in cashflows)
+    flows = tuple(BondCashflow(payment_date, float(amount)) for payment_date, amount in cashflows)
+    if any(not isfinite(item.amount) for item in flows):
+        raise ValueError("cashflow amounts must be finite")
+    return flows
 
 
-def _time(start: date, end: date, day_count_basis: float) -> float:
-    return (end - start).days / day_count_basis
+def _resolve_yield_convention(
+    compounding_frequency: int, day_count_basis: float, convention: YieldConvention | None
+) -> tuple[int, Callable[[date, date], float]]:
+    if convention is not None:
+        if compounding_frequency != 1 or day_count_basis != 365.0:
+            raise ValueError(
+                "pass either compounding_frequency/day_count_basis or convention, not both"
+            )
+        return convention.compounding.periods_per_year, convention.day_count.year_fraction
+    if (
+        isinstance(compounding_frequency, bool)
+        or compounding_frequency < 1
+        or not isfinite(day_count_basis)
+        or day_count_basis <= 0.0
+    ):
+        raise ValueError("compounding frequency and day-count basis must be positive")
+
+    def time(start: date, end: date) -> float:
+        return (end - start).days / day_count_basis
+
+    return compounding_frequency, time
 
 
 def _price_at_nominal_yield(
@@ -30,16 +58,14 @@ def _price_at_nominal_yield(
     settlement_date: date,
     annual_yield: float,
     compounding_frequency: int,
-    day_count_basis: float,
+    time: Callable[[date, date], float],
 ) -> float:
     base = 1.0 + annual_yield / compounding_frequency
     if base <= 0.0:
         raise ValueError("annual yield is outside the compounding domain")
     return float(
         sum(
-            item.amount
-            / base
-            ** (compounding_frequency * _time(settlement_date, item.payment_date, day_count_basis))
+            item.amount / base ** (compounding_frequency * time(settlement_date, item.payment_date))
             for item in cashflows
             if item.payment_date > settlement_date
         )
@@ -53,35 +79,52 @@ def solve_nominal_annual_yield(
     cashflows: Iterable[tuple[date, float]],
     compounding_frequency: int = 1,
     day_count_basis: float = 365.0,
+    convention: YieldConvention | None = None,
 ) -> float:
-    if dirty_price <= 0.0 or compounding_frequency < 1 or day_count_basis <= 0.0:
-        raise ValueError("dirty price, compounding frequency, and day-count basis must be positive")
+    """Solve ``P = sum CF / (1 + y/m)^(m t)`` for the nominal annual yield ``y`` (decimal).
+
+    Defaults: m=1, t=days/365. ``convention`` replaces ``compounding_frequency`` and
+    ``day_count_basis`` (passing both raises). Raises ``ValueError`` for a non-finite or
+    non-positive price, non-finite cash flows, no future positive cash flow, or a root
+    outside ``y > -0.99 m`` (message contains "not bracketed").
+    """
+    if not isfinite(dirty_price) or dirty_price <= 0.0:
+        raise ValueError("dirty price must be positive and finite")
+    frequency, time = _resolve_yield_convention(compounding_frequency, day_count_basis, convention)
     flows = _materialize(cashflows)
     if not any(item.payment_date > settlement_date and item.amount > 0.0 for item in flows):
         raise ValueError("future positive cashflows are required")
-    lower = -float(compounding_frequency) + 1e-12
-    upper = 1.0
-    while (
-        _price_at_nominal_yield(
-            flows, settlement_date, upper, compounding_frequency, day_count_basis
+
+    def price(rate: float) -> float:
+        return _price_at_nominal_yield(flows, settlement_date, rate, frequency, time)
+
+    floor = -_NOMINAL_YIELD_FLOOR * frequency
+    try:
+        floor_price = price(floor)
+    except OverflowError:
+        floor_price = math.inf
+    if floor_price < dirty_price:
+        raise ValueError(
+            "nominal yield root is not bracketed: dirty price exceeds the price at the "
+            f"yield-domain floor {floor:g}"
         )
-        > dirty_price
-    ):
+    upper = 1.0
+    upper_price = price(upper)
+    while upper_price > dirty_price:
         upper *= 2.0
         if upper > 1_000_000.0:
-            raise ValueError("unable to bracket yield")
-    for _ in range(256):
-        middle = (lower + upper) / 2.0
-        value = _price_at_nominal_yield(
-            flows, settlement_date, middle, compounding_frequency, day_count_basis
-        )
-        if abs(value - dirty_price) <= 1e-12:
-            return middle
-        if value > dirty_price:
-            lower = middle
-        else:
-            upper = middle
-    return (lower + upper) / 2.0
+            raise ValueError("nominal yield root is not bracketed: unable to bracket yield")
+        upper_price = price(upper)
+    return bisect(
+        lambda rate: price(rate) - dirty_price,
+        -float(frequency) + 1e-12,
+        upper,
+        tolerance=1e-12,
+        max_iterations=256,
+        lower_value=math.inf,
+        upper_value=upper_price - dirty_price,
+        label="nominal yield",
+    ).root
 
 
 def bond_duration(
@@ -91,19 +134,19 @@ def bond_duration(
     cashflows: Iterable[tuple[date, float]],
     compounding_frequency: int = 1,
     day_count_basis: float = 365.0,
+    convention: YieldConvention | None = None,
 ) -> DurationResult:
-    if compounding_frequency < 1 or day_count_basis <= 0.0:
-        raise ValueError("compounding frequency and day-count basis must be positive")
+    if not isfinite(annual_yield):
+        raise ValueError("annual yield must be finite")
+    frequency, time = _resolve_yield_convention(compounding_frequency, day_count_basis, convention)
     flows = _materialize(cashflows)
-    base = 1.0 + annual_yield / compounding_frequency
+    base = 1.0 + annual_yield / frequency
     if base <= 0.0:
         raise ValueError("annual yield is outside the compounding domain")
     discounted = tuple(
         (
-            _time(settlement_date, item.payment_date, day_count_basis),
-            item.amount
-            / base
-            ** (compounding_frequency * _time(settlement_date, item.payment_date, day_count_basis)),
+            time(settlement_date, item.payment_date),
+            item.amount / base ** (frequency * time(settlement_date, item.payment_date)),
         )
         for item in flows
         if item.payment_date > settlement_date
@@ -121,32 +164,134 @@ def clean_price_pct_to_dirty_amount(
     return clean_price_pct_to_dirty_rub(clean_price_pct, current_nominal, accrued_interest_amount)
 
 
+def _resolve_spread_convention(
+    compounding_frequency: int, convention: ZSpreadConvention | None
+) -> ZSpreadConvention:
+    if convention is not None:
+        if compounding_frequency != 1:
+            raise ValueError("pass either compounding_frequency or convention, not both")
+        return convention
+    if isinstance(compounding_frequency, bool) or compounding_frequency < 1:
+        raise ValueError("compounding frequency must be positive")
+    return ZSpreadConvention(compounding=Compounding(compounding_frequency))
+
+
+def _settlement(curve: DiscountCurve, settlement_date: date | None) -> date:
+    settlement = curve.curve_date if settlement_date is None else settlement_date
+    if settlement < curve.curve_date:
+        raise ValueError("settlement cannot predate curve valuation")
+    return settlement
+
+
+def _spread_price(
+    flows: tuple[tuple[date, float], ...],
+    curve: DiscountCurve,
+    settlement: date,
+    spread: float,
+    convention: ZSpreadConvention,
+    *,
+    include_settlement_flows: bool,
+) -> float:
+    """PV at ``settlement`` with the settlement-forward zero rate plus ``spread``.
+
+    Forward DF is ``DF(t) / DF(settlement)``; time runs from settlement with
+    ``convention.day_count``. When ``settlement == curve_date`` the forward DF is the curve
+    DF exactly, so the legacy curve-date path is reproduced bit for bit.
+    """
+    settlement_df = curve.discount_factor(settlement)
+    if convention.compounding.is_continuous:
+        return float(
+            sum(
+                amount
+                * curve.discount_factor(payment_date)
+                / settlement_df
+                * exp(-spread * convention.day_count.year_fraction(settlement, payment_date))
+                for payment_date, amount in flows
+                if payment_date > settlement
+            )
+        )
+    frequency = convention.compounding.periods_per_year
+    price = 0.0
+    for payment_date, amount in flows:
+        if payment_date < settlement:
+            continue
+        if payment_date == settlement:
+            if include_settlement_flows:
+                price += amount
+            continue
+        time = convention.day_count.year_fraction(settlement, payment_date)
+        discount_factor = curve.discount_factor(payment_date) / settlement_df
+        zero_rate = frequency * (discount_factor ** (-1.0 / (frequency * time)) - 1.0)
+        base = 1.0 + (zero_rate + spread) / frequency
+        if base <= 0.0:
+            raise ValueError("rate is outside the compounding domain")
+        price += amount * base ** (-frequency * time)
+    return price
+
+
 def price_cashflows(
     cashflows: Iterable[tuple[date, float]],
     curve: DiscountCurve,
     *,
     spread: float = 0.0,
     compounding_frequency: int = 1,
+    settlement_date: date | None = None,
+    convention: ZSpreadConvention | None = None,
 ) -> float:
-    if compounding_frequency < 1:
-        raise ValueError("compounding frequency must be positive")
-    price = 0.0
-    for payment_date, amount in cashflows:
-        if payment_date < curve.curve_date:
-            continue
-        if payment_date == curve.curve_date:
-            price += amount
-            continue
-        time = year_fraction(curve.curve_date, payment_date)
-        discount_factor = curve.discount_factor(payment_date)
-        zero_rate = compounding_frequency * (
-            discount_factor ** (-1.0 / (compounding_frequency * time)) - 1.0
+    """Price cash flows on ``curve`` plus a decimal Z-spread.
+
+    Default (no ``settlement_date``): legacy curve-date valuation; a flow on the curve date
+    counts at face and earlier flows are ignored. With ``settlement_date``: flows on or
+    before settlement are dropped and the value is expressed at settlement.
+    """
+    if not isfinite(spread):
+        raise ValueError("spread must be finite")
+    resolved = _resolve_spread_convention(compounding_frequency, convention)
+    flows = tuple((payment_date, float(amount)) for payment_date, amount in cashflows)
+    if any(not isfinite(amount) for _, amount in flows):
+        raise ValueError("cashflow amounts must be finite")
+    return _spread_price(
+        flows,
+        curve,
+        _settlement(curve, settlement_date),
+        spread,
+        resolved,
+        include_settlement_flows=settlement_date is None,
+    )
+
+
+def _solve_spread(
+    flows: tuple[tuple[date, float], ...],
+    dirty_price: float,
+    curve: DiscountCurve,
+    settlement_date: date | None,
+    convention: ZSpreadConvention,
+) -> float:
+    if not isfinite(dirty_price) or dirty_price <= 0.0:
+        raise ValueError("dirty price must be positive and finite")
+    if any(not isfinite(amount) for _, amount in flows):
+        raise ValueError("cashflow amounts must be finite")
+    settlement = _settlement(curve, settlement_date)
+    include = settlement_date is None
+    if not any(
+        payment_date > settlement or (include and payment_date == settlement)
+        for payment_date, _ in flows
+    ):
+        raise ValueError("at least one cashflow after settlement is required")
+
+    def error(spread: float) -> float:
+        return (
+            _spread_price(
+                flows, curve, settlement, spread, convention, include_settlement_flows=include
+            )
+            - dirty_price
         )
-        base = 1.0 + (zero_rate + spread) / compounding_frequency
-        if base <= 0.0:
-            raise ValueError("rate is outside the compounding domain")
-        price += amount * base ** (-compounding_frequency * time)
-    return price
+
+    if convention.compounding.is_continuous:
+        lower, upper, label = -5.0, 5.0, "continuous Z-spread"
+    else:
+        lower, upper, label = -0.95, 5.0, "Z-spread"
+    return bisect(error, lower, upper, tolerance=1e-13, x_tolerance=1e-13, label=label).root
 
 
 def solve_continuous_z_spread(
@@ -156,9 +301,8 @@ def solve_continuous_z_spread(
     *,
     settlement_date: date | None = None,
 ) -> float:
-    settlement = settlement_date or curve.curve_date
-    if settlement < curve.curve_date:
-        raise ValueError("settlement cannot predate curve valuation")
+    """Continuous Z-spread over settlement-forward DFs: PV = sum CF DF(t)/DF(s) e^(-z tau)."""
+    settlement = _settlement(curve, settlement_date)
     if not isfinite(dirty_price) or dirty_price <= 0.0:
         raise ValueError("dirty price must be positive and finite")
     flows = tuple(
@@ -168,34 +312,9 @@ def solve_continuous_z_spread(
     )
     if not flows or any(not isfinite(amount) or amount <= 0.0 for _, amount in flows):
         raise ValueError("future positive finite cashflows are required")
-    settlement_df = curve.discount_factor(settlement)
-
-    def error(spread: float) -> float:
-        return (
-            sum(
-                amount
-                * curve.discount_factor(payment_date)
-                / settlement_df
-                * exp(-spread * year_fraction(settlement, payment_date))
-                for payment_date, amount in flows
-            )
-            - dirty_price
-        )
-
-    lower, upper = -5.0, 5.0
-    low_value, high_value = error(lower), error(upper)
-    if low_value * high_value > 0.0:
-        raise ValueError("continuous Z-spread root is not bracketed")
-    for _ in range(240):
-        middle = (lower + upper) / 2.0
-        middle_value = error(middle)
-        if abs(middle_value) <= 1e-13 or upper - lower <= 1e-13:
-            return middle
-        if low_value * middle_value <= 0.0:
-            upper = middle
-        else:
-            lower, low_value = middle, middle_value
-    raise RuntimeError("continuous Z-spread solver did not converge")
+    return _solve_spread(
+        flows, dirty_price, curve, settlement, ZSpreadConvention(compounding=CONTINUOUS)
+    )
 
 
 def solve_z_spread(
@@ -204,33 +323,20 @@ def solve_z_spread(
     curve: DiscountCurve,
     *,
     compounding_frequency: int = 1,
+    settlement_date: date | None = None,
+    convention: ZSpreadConvention | None = None,
 ) -> float:
-    flows = tuple(cashflows)
+    """Solve the decimal Z-spread over the curve's m-compounded zero rates.
+
+    Default: annual (m=1), ACT/365F, valued at the curve date (legacy behaviour). Monthly:
+    ``compounding_frequency=12`` or ``convention=ZSpreadConvention(compounding=MONTHLY)``.
+    ``convention`` also allows ``CONTINUOUS`` and other spread day counts; it cannot be
+    combined with a non-default ``compounding_frequency``. ``settlement_date`` values the
+    bond at settlement (DF(t)/DF(settlement), time from settlement, flows on or before
+    settlement dropped); it is equivalent to rebasing the curve to settlement manually.
+    """
+    resolved = _resolve_spread_convention(compounding_frequency, convention)
+    flows = tuple((payment_date, float(amount)) for payment_date, amount in cashflows)
     if not flows:
         raise ValueError("at least one cashflow is required")
-
-    def error(spread: float) -> float:
-        return (
-            price_cashflows(
-                flows,
-                curve,
-                spread=spread,
-                compounding_frequency=compounding_frequency,
-            )
-            - dirty_price
-        )
-
-    lower, upper = -0.95, 5.0
-    low_value, high_value = error(lower), error(upper)
-    if low_value * high_value > 0.0:
-        raise ValueError("root is not bracketed")
-    for _ in range(240):
-        middle = (lower + upper) / 2.0
-        middle_value = error(middle)
-        if abs(middle_value) <= 1e-13 or upper - lower <= 1e-13:
-            return middle
-        if low_value * middle_value <= 0.0:
-            upper = middle
-        else:
-            lower, low_value = middle, middle_value
-    raise RuntimeError("root solver did not converge")
+    return _solve_spread(flows, dirty_price, curve, settlement_date, resolved)
