@@ -39,3 +39,7 @@ uv run ruff check .
 uv run mypy rub_fixed_income
 uv build
 ```
+
+## Fixed-cashflow risk and scenarios (0.4.0)
+
+`BondRiskRequest`, `BondRiskEngine`, and `BondScenario` provide signed RUB DV01/KRD, CS01/OFZ spread risk, and exact same-date repricing. Curve basis and spread convention are explicit; a calibrated base spread stays frozen under curve shocks. See [risk contract and example](docs/risk.md) for inputs, methods, identities and supported scope.

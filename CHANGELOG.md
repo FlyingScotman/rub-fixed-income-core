@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0
+
+- Add explicit fixed-cashflow RUB risk: 11 triangular key-rate buckets, normalized KRD, signed DV01, CS01/OFZ spread sensitivity, and full same-settlement scenarios.
+- Support continuous-zero overlays and original OIS quote bumps with rebootstrap; freeze a supplied or calibrated spread under curve shocks.
+- Record basis, spread convention, finite-difference method and content identities; validate and snapshot inputs. Existing pricing defaults are unchanged.
+- Add independent analytical risk/scenario tests and document scope, units and limitations in `docs/risk.md`.
+
 ## 0.3.1 — 2026-10-14
 
 Validation release. Numbers for valid input are unchanged from 0.3.0; every change below

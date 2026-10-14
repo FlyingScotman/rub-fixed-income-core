@@ -10,7 +10,7 @@ from ._money import finite_money
 from ._solver import bisect
 from .cashflows import BondCashflow, clean_price_pct_to_dirty_rub
 from .conventions import CONTINUOUS, Compounding, YieldConvention, ZSpreadConvention
-from .discount import DiscountCurve
+from .discount import DiscountFactorCurve
 
 # A nominal-yield root below -0.99 * m (per-period discount base below 0.01) is treated as
 # outside the supported domain and reported as "not bracketed" instead of returned.
@@ -186,7 +186,7 @@ def _resolve_spread_convention(
     return ZSpreadConvention(compounding=Compounding(compounding_frequency))
 
 
-def _settlement(curve: DiscountCurve, settlement_date: date | None) -> date:
+def _settlement(curve: DiscountFactorCurve, settlement_date: date | None) -> date:
     settlement = curve.curve_date if settlement_date is None else settlement_date
     if settlement < curve.curve_date:
         raise ValueError("settlement cannot predate curve valuation")
@@ -195,7 +195,7 @@ def _settlement(curve: DiscountCurve, settlement_date: date | None) -> date:
 
 def _spread_price(
     flows: tuple[tuple[date, float], ...],
-    curve: DiscountCurve,
+    curve: DiscountFactorCurve,
     settlement: date,
     spread: float,
     convention: ZSpreadConvention,
@@ -241,7 +241,7 @@ def _spread_price(
 
 def price_cashflows(
     cashflows: Iterable[tuple[date, float]],
-    curve: DiscountCurve,
+    curve: DiscountFactorCurve,
     *,
     spread: float = 0.0,
     compounding_frequency: int = 1,
@@ -280,7 +280,7 @@ def price_cashflows(
 def _solve_spread(
     flows: tuple[tuple[date, float], ...],
     dirty_price: float,
-    curve: DiscountCurve,
+    curve: DiscountFactorCurve,
     settlement_date: date | None,
     convention: ZSpreadConvention,
 ) -> float:
@@ -315,7 +315,7 @@ def _solve_spread(
 def solve_continuous_z_spread(
     cashflows: Iterable[tuple[date, float]],
     dirty_price: float,
-    curve: DiscountCurve,
+    curve: DiscountFactorCurve,
     *,
     settlement_date: date | None = None,
 ) -> float:
@@ -339,7 +339,7 @@ def solve_continuous_z_spread(
 def solve_z_spread(
     cashflows: Iterable[tuple[date, float]],
     dirty_price: float,
-    curve: DiscountCurve,
+    curve: DiscountFactorCurve,
     *,
     compounding_frequency: int = 1,
     settlement_date: date | None = None,

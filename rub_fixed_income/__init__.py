@@ -78,6 +78,18 @@ from .key_rate import (
     build_key_rate_forward_curve,
     price_key_rate_swap,
 )
+from .risk import (
+    RISK_BUCKETS,
+    RISK_MODEL_VERSION,
+    RISK_PILLARS,
+    BondRiskEngine,
+    BondRiskRequest,
+    BondRiskResult,
+    BondScenario,
+    BondScenarioResult,
+    BucketRisk,
+    key_rate_weights,
+)
 from .trade_grid import (
     GridBuildPolicy,
     GridIdentity,
@@ -93,6 +105,9 @@ __all__ = [
     "CONTINUOUS",
     "MONTHLY",
     "QUARTERLY",
+    "RISK_BUCKETS",
+    "RISK_MODEL_VERSION",
+    "RISK_PILLARS",
     "SEMI_ANNUAL",
     "V1_YIELD_CONVENTION",
     "V1_Z_SPREAD_CONVENTION",
@@ -100,7 +115,13 @@ __all__ = [
     "BondAnalyticsResultV1",
     "BondAnalyticsResultV2",
     "BondCashflow",
+    "BondRiskEngine",
+    "BondRiskRequest",
+    "BondRiskResult",
+    "BondScenario",
+    "BondScenarioResult",
     "BondTermsV1",
+    "BucketRisk",
     "BusinessCalendar",
     "BusinessDayConvention",
     "CalculationFailure",
@@ -156,6 +177,7 @@ __all__ = [
     "constant_daily_accumulation_periods",
     "dirty_rub_to_clean_price_pct",
     "generate_schedule",
+    "key_rate_weights",
     "lookup_trade_metric",
     "price_cashflows",
     "price_key_rate_swap",
@@ -168,4 +190,4 @@ __all__ = [
     "verify_result_sha256",
 ]
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"

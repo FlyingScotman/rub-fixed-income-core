@@ -15,6 +15,15 @@ class _CompoundingLike(Protocol):
     periods_per_year: int
 
 
+class DiscountFactorCurve(Protocol):
+    """Minimal curve interface for settlement pricing, including shocked curves."""
+
+    @property
+    def curve_date(self) -> date: ...
+
+    def discount_factor(self, target: date) -> float: ...
+
+
 @dataclass(frozen=True)
 class OisQuote:
     tenor: str
