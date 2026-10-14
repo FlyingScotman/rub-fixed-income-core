@@ -2,7 +2,10 @@
 
 from .accumulation import AccumulationPeriod, constant_daily_accumulation_periods
 from .analytics import (
+    V1_YIELD_CONVENTION,
+    V1_Z_SPREAD_CONVENTION,
     BondAnalyticsResultV1,
+    BondAnalyticsResultV2,
     BondTermsV1,
     CalculationFailure,
     CalculationPolicy,
@@ -10,6 +13,7 @@ from .analytics import (
     MarketObservationV1,
     ValuationContext,
     analyze_bond,
+    analyze_bond_v2,
     canonical_json_bytes,
     canonical_sha256,
     result_hash_projection,
@@ -40,6 +44,24 @@ from .compatibility import (
     solve_nominal_annual_yield,
     solve_z_spread,
 )
+from .conventions import (
+    ANNUAL,
+    CONTINUOUS,
+    MONTHLY,
+    QUARTERLY,
+    SEMI_ANNUAL,
+    BusinessDayConvention,
+    Compounding,
+    CurveConvention,
+    DayCount,
+    ScheduleConvention,
+    SettlementConvention,
+    YieldConvention,
+    ZSpreadConvention,
+    adjust_date,
+    calendar_fingerprint,
+    generate_schedule,
+)
 from .dates import BusinessCalendar
 from .discount import CurveBootstrapRequest, DiscountCurve, OisQuote, bootstrap_discount_curve
 from .key_rate import (
@@ -67,16 +89,28 @@ from .trade_grid import (
 )
 
 __all__ = [
+    "ANNUAL",
+    "CONTINUOUS",
+    "MONTHLY",
+    "QUARTERLY",
+    "SEMI_ANNUAL",
+    "V1_YIELD_CONVENTION",
+    "V1_Z_SPREAD_CONVENTION",
     "AccumulationPeriod",
     "BondAnalyticsResultV1",
+    "BondAnalyticsResultV2",
     "BondCashflow",
     "BondTermsV1",
     "BusinessCalendar",
+    "BusinessDayConvention",
     "CalculationFailure",
     "CalculationPolicy",
     "CashEvent",
+    "Compounding",
     "CurveBootstrapRequest",
+    "CurveConvention",
     "CurveSnapshotV1",
+    "DayCount",
     "DiscountCurve",
     "DurationResult",
     "EventKey",
@@ -97,23 +131,31 @@ __all__ = [
     "KeyRateSwapQuote",
     "MarketObservationV1",
     "OisQuote",
+    "ScheduleConvention",
+    "SettlementConvention",
     "TradeGrid",
     "TradeGridNode",
     "TradeMetricLookup",
     "ValuationContext",
+    "YieldConvention",
     "YieldRequest",
     "YieldResult",
+    "ZSpreadConvention",
+    "adjust_date",
     "analyze_bond",
+    "analyze_bond_v2",
     "bond_duration",
     "bootstrap_discount_curve",
     "build_key_rate_forward_curve",
     "build_trade_grid",
+    "calendar_fingerprint",
     "canonical_json_bytes",
     "canonical_sha256",
     "clean_price_pct_to_dirty_amount",
     "clean_price_pct_to_dirty_rub",
     "constant_daily_accumulation_periods",
     "dirty_rub_to_clean_price_pct",
+    "generate_schedule",
     "lookup_trade_metric",
     "price_cashflows",
     "price_key_rate_swap",
@@ -126,4 +168,4 @@ __all__ = [
     "verify_result_sha256",
 ]
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"
