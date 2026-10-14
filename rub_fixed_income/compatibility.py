@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import date
 from math import exp, isfinite
 
+from ._money import finite_money
 from ._solver import bisect
 from .cashflows import BondCashflow, clean_price_pct_to_dirty_rub
 from .conventions import CONTINUOUS, Compounding, YieldConvention, ZSpreadConvention
@@ -24,7 +25,10 @@ class DurationResult:
 
 
 def _materialize(cashflows: Iterable[tuple[date, float]]) -> tuple[BondCashflow, ...]:
-    flows = tuple(BondCashflow(payment_date, float(amount)) for payment_date, amount in cashflows)
+    flows = tuple(
+        BondCashflow(payment_date, finite_money(amount, "cashflow amounts"))
+        for payment_date, amount in cashflows
+    )
     if any(not isfinite(item.amount) for item in flows):
         raise ValueError("cashflow amounts must be finite")
     return flows
@@ -90,6 +94,7 @@ def solve_nominal_annual_yield(
     """
     if not isfinite(dirty_price) or dirty_price <= 0.0:
         raise ValueError("dirty price must be positive and finite")
+    finite_money(dirty_price, "dirty price")
     frequency, time = _resolve_yield_convention(compounding_frequency, day_count_basis, convention)
     flows = _materialize(cashflows)
     if not any(item.payment_date > settlement_date and item.amount > 0.0 for item in flows):
@@ -152,10 +157,15 @@ def bond_duration(
         if item.payment_date > settlement_date
     )
     present_value = sum(value for _, value in discounted)
+    finite_money(present_value, "duration present value result")
     if present_value <= 0.0:
         raise ValueError("future positive cashflows are required")
     macaulay = sum(years * value for years, value in discounted) / present_value
-    return DurationResult(macaulay, macaulay / base, present_value)
+    return DurationResult(
+        finite_money(macaulay, "Macaulay duration result"),
+        finite_money(macaulay / base, "modified duration result"),
+        present_value,
+    )
 
 
 def clean_price_pct_to_dirty_amount(
@@ -247,17 +257,24 @@ def price_cashflows(
     if not isfinite(spread):
         raise ValueError("spread must be finite")
     resolved = _resolve_spread_convention(compounding_frequency, convention)
-    flows = tuple((payment_date, float(amount)) for payment_date, amount in cashflows)
+    flows = tuple(
+        (payment_date, finite_money(amount, "cashflow amounts"))
+        for payment_date, amount in cashflows
+    )
     if any(not isfinite(amount) for _, amount in flows):
         raise ValueError("cashflow amounts must be finite")
-    return _spread_price(
-        flows,
-        curve,
-        _settlement(curve, settlement_date),
-        spread,
-        resolved,
-        include_settlement_flows=settlement_date is None,
-    )
+    try:
+        price = _spread_price(
+            flows,
+            curve,
+            _settlement(curve, settlement_date),
+            spread,
+            resolved,
+            include_settlement_flows=settlement_date is None,
+        )
+    except OverflowError as exc:
+        raise ValueError("cashflow price result must be finite") from exc
+    return finite_money(price, "cashflow price result")
 
 
 def _solve_spread(
@@ -269,6 +286,7 @@ def _solve_spread(
 ) -> float:
     if not isfinite(dirty_price) or dirty_price <= 0.0:
         raise ValueError("dirty price must be positive and finite")
+    finite_money(dirty_price, "dirty price")
     if any(not isfinite(amount) for _, amount in flows):
         raise ValueError("cashflow amounts must be finite")
     settlement = _settlement(curve, settlement_date)
@@ -305,8 +323,9 @@ def solve_continuous_z_spread(
     settlement = _settlement(curve, settlement_date)
     if not isfinite(dirty_price) or dirty_price <= 0.0:
         raise ValueError("dirty price must be positive and finite")
+    finite_money(dirty_price, "dirty price")
     flows = tuple(
-        (payment_date, float(amount))
+        (payment_date, finite_money(amount, "cashflow amounts"))
         for payment_date, amount in cashflows
         if payment_date > settlement
     )
@@ -336,7 +355,10 @@ def solve_z_spread(
     settlement dropped); it is equivalent to rebasing the curve to settlement manually.
     """
     resolved = _resolve_spread_convention(compounding_frequency, convention)
-    flows = tuple((payment_date, float(amount)) for payment_date, amount in cashflows)
+    flows = tuple(
+        (payment_date, finite_money(amount, "cashflow amounts"))
+        for payment_date, amount in cashflows
+    )
     if not flows:
         raise ValueError("at least one cashflow is required")
     return _solve_spread(flows, dirty_price, curve, settlement_date, resolved)

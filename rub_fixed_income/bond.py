@@ -5,6 +5,7 @@ from datetime import date
 from itertools import pairwise
 from math import isfinite
 
+from ._money import finite_money
 from ._solver import bisect
 from .accumulation import AccumulationPeriod
 from .cashflows import BondCashflow, CashEvent, EventKey
@@ -56,8 +57,11 @@ def solve_effective_annual_yield(request: YieldRequest) -> YieldResult:
         raise ValueError("remaining cashflows are required after horizon")
     if not isfinite(request.dirty_price_rub_per_bond) or request.dirty_price_rub_per_bond <= 0.0:
         raise ValueError("forward dirty price must be positive and finite")
+    finite_money(request.dirty_price_rub_per_bond, "forward dirty price")
     if any(not isfinite(cashflow.amount) for cashflow in request.cashflows):
         raise ValueError("cashflow amounts must be finite")
+    for cashflow in request.cashflows:
+        finite_money(cashflow.amount, "cashflow amount")
     if any(cashflow.payment_date <= request.horizon_date for cashflow in request.cashflows):
         raise ValueError("yield cashflows must be strictly after horizon")
 
@@ -82,6 +86,9 @@ def project_financed_bond(request: FinancedBondRequest) -> FinancedBondProjectio
         request.initial_dirty_rub_per_bond
     ):
         raise ValueError("initial dirty cash must be positive and finite")
+    finite_money(request.initial_dirty_rub_per_bond, "initial dirty cash")
+    for cash_event in request.cash_events:
+        finite_money(cash_event.amount_rub_per_bond, "cash-event amount")
     if any(not request.start < event.key <= request.horizon for event in request.cash_events):
         raise ValueError("cash events must be after start and on or before horizon")
     event_keys = tuple(event.key for event in request.cash_events)
@@ -100,6 +107,7 @@ def project_financed_bond(request: FinancedBondRequest) -> FinancedBondProjectio
     for period in request.accumulation_periods:
         if period.factor <= 0.0 or not isfinite(period.factor):
             raise ValueError("accumulation factors must be positive and finite")
+        finite_money(period.factor, "accumulation factor")
         if period.start != expected_start:
             raise ValueError("accumulation periods must be ordered without gaps or overlaps")
         if period.end <= period.start:
@@ -120,6 +128,7 @@ def project_financed_bond(request: FinancedBondRequest) -> FinancedBondProjectio
         event = events.get(period.end)
         cash_amount = event.amount_rub_per_bond if event is not None else 0.0
         balance = opening * period.factor - cash_amount
+        finite_money(balance, "financing balance result")
         steps.append(
             FinancingStep(
                 period.period_id,

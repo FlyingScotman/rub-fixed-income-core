@@ -10,6 +10,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from itertools import pairwise
 from typing import Any, Literal, cast
 
+from ._money import finite_money
 from ._solver import bisect
 from .bond import YieldRequest, solve_effective_annual_yield
 from .cashflows import BondCashflow, clean_price_pct_to_dirty_rub
@@ -38,7 +39,9 @@ class BondTermsV1:
 
     def validate(self) -> None:
         if (
-            not math.isfinite(self.current_nominal_rub)
+            isinstance(self.current_nominal_rub, bool)
+            or isinstance(self.coupon_amount_rub, bool)
+            or not math.isfinite(self.current_nominal_rub)
             or not math.isfinite(self.coupon_amount_rub)
             or self.current_nominal_rub <= 0.0
             or self.coupon_amount_rub < 0.0
@@ -61,7 +64,7 @@ class MarketObservationV1:
 
     def validate(self) -> None:
         price = self.clean_price_pct_of_current_nominal
-        if not math.isfinite(price) or price <= 0.0:
+        if isinstance(price, bool) or not math.isfinite(price) or price <= 0.0:
             raise ValueError("clean price must be positive and finite")
 
 
@@ -217,13 +220,14 @@ def accrued_interest_rub(terms: BondTermsV1, settlement_date: date) -> float:
     does not receive that coupon (MOEX convention), consistent with future flows being
     strictly after settlement.
     """
+    terms.validate()
     elapsed = (settlement_date - terms.accrual_period_start).days
     period = (terms.accrual_period_end - terms.accrual_period_start).days
     if period <= 0 or not 0 <= elapsed <= period:
         raise ValueError("settlement must lie inside the accrual period")
     if elapsed == period:
         return 0.0
-    return float(terms.coupon_amount_rub * elapsed / period)
+    return finite_money(terms.coupon_amount_rub * elapsed / period, "accrued interest result")
 
 
 def _price_at_yield(cashflows: tuple[BondCashflow, ...], settlement: date, rate: float) -> float:
