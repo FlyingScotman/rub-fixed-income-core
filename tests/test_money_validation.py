@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import date
 
@@ -19,6 +20,8 @@ from rub_fixed_income import (
 )
 from rub_fixed_income.analytics import accrued_interest_rub
 
+Conversion = Callable[[float, float, float], float]
+
 BAD = [float("nan"), float("inf"), float("-inf"), True]
 START = EventKey(date(2026, 1, 1), 0)
 END = EventKey(date(2027, 1, 1), 0)
@@ -31,9 +34,9 @@ END = EventKey(date(2027, 1, 1), 0)
 @pytest.mark.parametrize("index", [0, 1, 2])
 @pytest.mark.parametrize("invalid", BAD)
 def test_clean_dirty_helpers_reject_each_nonfinite_or_boolean_input(
-    convert, index, invalid
+    convert: Conversion, index: int, invalid: float
 ) -> None:
-    args = [100, 1000, 10]
+    args: list[float] = [100, 1000, 10]
     args[index] = invalid
     with pytest.raises(ValueError, match="finite"):
         convert(*args)
@@ -42,21 +45,23 @@ def test_clean_dirty_helpers_reject_each_nonfinite_or_boolean_input(
 @pytest.mark.parametrize("convert", [clean_price_pct_to_dirty_rub, dirty_rub_to_clean_price_pct])
 @pytest.mark.parametrize("index", [0, 1])
 @pytest.mark.parametrize("invalid", [0, -1])
-def test_unit_price_and_nominal_are_strictly_positive(convert, index, invalid) -> None:
-    args = [100, 1000, 10]
+def test_unit_price_and_nominal_are_strictly_positive(
+    convert: Conversion, index: int, invalid: float
+) -> None:
+    args: list[float] = [100, 1000, 10]
     args[index] = invalid
     with pytest.raises(ValueError, match="positive"):
         convert(*args)
 
 
 @pytest.mark.parametrize("convert", [clean_price_pct_to_dirty_rub, dirty_rub_to_clean_price_pct])
-def test_negative_accrued_interest_is_rejected(convert) -> None:
+def test_negative_accrued_interest_is_rejected(convert: Conversion) -> None:
     with pytest.raises(ValueError, match="negative"):
         convert(100, 1000, -1)
 
 
 @pytest.mark.parametrize("dirty", [9, 10])
-def test_dirty_less_than_or_equal_to_accrued_cannot_imply_valid_clean_price(dirty) -> None:
+def test_dirty_less_than_or_equal_to_accrued_cannot_imply_valid_clean_price(dirty: float) -> None:
     with pytest.raises(ValueError, match="positive"):
         dirty_rub_to_clean_price_pct(dirty, 1000, 10)
 
@@ -69,7 +74,7 @@ def test_conversion_rejects_finite_inputs_that_overflow_result() -> None:
 
 
 @pytest.mark.parametrize("amount", BAD)
-def test_financing_rejects_invalid_cash_events(amount) -> None:
+def test_financing_rejects_invalid_cash_events(amount: float) -> None:
     request = FinancedBondRequest(
         START,
         END,
@@ -104,7 +109,7 @@ def test_signed_cash_expense_is_valid_and_increases_funding_balance() -> None:
 
 
 @pytest.mark.parametrize("invalid", BAD)
-def test_public_accrued_helper_validates_coupon_even_on_payment_date(invalid) -> None:
+def test_public_accrued_helper_validates_coupon_even_on_payment_date(invalid: float) -> None:
     terms = BondTermsV1(
         "BOND",
         1000,
@@ -137,6 +142,6 @@ def test_duration_does_not_return_nan_from_overflowing_present_value() -> None:
 
 
 @pytest.mark.parametrize("amount", BAD)
-def test_public_pricer_rejects_invalid_cashflow_money(amount) -> None:
+def test_public_pricer_rejects_invalid_cashflow_money(amount: float) -> None:
     with pytest.raises(ValueError, match="finite"):
         price_cashflows([(END.event_date, amount)], DiscountCurve.flat(START.event_date, 0))
