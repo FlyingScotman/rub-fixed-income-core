@@ -1,9 +1,11 @@
-# API reference (0.3.0)
+# API reference (0.3.1)
 
 Everything below is importable from `rub_fixed_income`. Units: decimal rates/spreads unless
 the name ends in `_bp` (basis points) or `_pct` (percent); amounts in RUB per bond; clean
 prices in % of current nominal; dates are `datetime.date`. "Raises" lists `ValueError`
-unless stated. New in 0.3.0 is marked **(new)**; changed behaviour is marked **(0.3.0)**.
+unless stated. New in 0.3.0 is marked **(new)**; changed behaviour is marked **(0.3.0)** or
+**(0.3.1)**. Monetary inputs reject NaN, infinities and `bool` everywhere since 0.3.1
+(`docs/money-validation.md`).
 
 ## Conventions — `rub_fixed_income.conventions` (new)
 
@@ -34,7 +36,7 @@ All convention objects are frozen and hashable.
 ## Cash flows
 
 - `EventKey(event_date, ordinal)`, `CashEvent(key, amount_rub_per_bond, event_id)`, `BondCashflow(payment_date, amount)`.
-- `clean_price_pct_to_dirty_rub(clean_pct, current_nominal_rub, accrued_interest_rub) -> float`; `dirty_rub_to_clean_price_pct(...)`. Raise for non-positive nominal or negative AI.
+- `clean_price_pct_to_dirty_rub(clean_pct, current_nominal_rub, accrued_interest_rub) -> float`; `dirty_rub_to_clean_price_pct(...)`. Raise for non-positive nominal or negative AI; **(0.3.1)** also for clean/dirty price ≤ 0, dirty ≤ AI (implied clean ≤ 0), non-finite/`bool` input, overflowing result.
 - `clean_price_pct_to_dirty_amount(...)` — alias.
 
 ## Discount curves
@@ -57,9 +59,9 @@ All convention objects are frozen and hashable.
   frequency/basis, both `convention` and legacy keywords, **root below −0.99·m or above 1e6 →
   "not bracketed" (0.3.0)**.
 - `bond_duration(*, annual_yield, settlement_date, cashflows, compounding_frequency=1, day_count_basis=365.0, convention=None) -> DurationResult(macaulay_years, modified_years, present_value)`
-  Raises: non-finite yield **(0.3.0)**, base `1 + y/m <= 0`, no positive PV.
+  Raises: non-finite yield **(0.3.0)**, base `1 + y/m <= 0`, no positive PV, non-finite/`bool` flows and overflowing PV or duration **(0.3.1)**.
 - `price_cashflows(cashflows, curve, *, spread=0.0, compounding_frequency=1, settlement_date=None, convention: ZSpreadConvention | None = None) -> float`
-  Raises: non-finite spread/cash flows **(0.3.0)**, settlement before curve date, rate outside compounding domain.
+  Raises: non-finite spread/cash flows **(0.3.0)**, settlement before curve date, rate outside compounding domain, `bool` flows and overflowing result **(0.3.1)**. Signed flows netting to 0 return `0.0`.
 - `solve_z_spread(cashflows, dirty_price, curve, *, compounding_frequency=1, settlement_date=None, convention=None) -> float`
   Raises: empty flows, non-finite/≤0 price **(0.3.0)**, non-finite flows **(0.3.0)**, no flow after settlement **(0.3.0)**, settlement before curve date, conflicting `compounding_frequency` + `convention`, "Z-spread root is not bracketed" (bracket −95%…500%), non-finite objective mid-solve **(0.3.0)**; `RuntimeError` "did not converge".
 - `solve_continuous_z_spread(cashflows, dirty_price, curve, *, settlement_date=None) -> float` — continuous Z over settlement-forward DFs; bracket ±500%.
@@ -68,7 +70,7 @@ All convention objects are frozen and hashable.
 
 - `YieldRequest(horizon_date, dirty_price_rub_per_bond, cashflows)`; `solve_effective_annual_yield(request) -> YieldResult(effective_annual_yield, repricing_error_rub_per_bond)`. Raises: no flows, non-finite/≤0 price **(0.3.0: non-finite)**, non-finite flows **(0.3.0)**, flows on/before horizon, "forward yield root is not bracketed".
 - `AccumulationPeriod`, `constant_daily_accumulation_periods(start, horizon, boundaries, annual_rate)`.
-- `FinancedBondRequest`, `project_financed_bond(request) -> FinancedBondProjection(horizon_dirty_rub_per_bond, steps)`.
+- `FinancedBondRequest`, `project_financed_bond(request) -> FinancedBondProjection(horizon_dirty_rub_per_bond, steps)`. Raises **(0.3.1)**: non-finite/`bool` cash-event amount, `bool` initial dirty cash or factor, overflowing balance. Signed finite cash events are valid (an expense of −50 adds 50 to the balance).
 
 ## Snapshot analytics (`analytics`)
 
@@ -77,7 +79,7 @@ All convention objects are frozen and hashable.
 - `analyze_bond_v2(..., *, yield_convention=None, z_spread_convention=None) -> BondAnalyticsResultV2 | CalculationFailure` **(new)** — default annual Z; result adds `yield_convention`, `z_spread_convention`.
 - `V1_YIELD_CONVENTION`, `V1_Z_SPREAD_CONVENTION` **(new)** constants.
 - Result units: `accrued_interest_rub`, `dirty_price_rub_per_bond` (RUB per bond), `yield_pct` (%), durations (years), `z_spread_bp` (bp), `repricing_error_rub_per_bond`.
-- `accrued_interest_rub(terms, settlement) -> float` (module-level in `analytics`) **(0.3.0: 0 at period end)**; raises outside `[start, end]`.
+- `accrued_interest_rub(terms, settlement) -> float` (module-level in `analytics`) **(0.3.0: 0 at period end)**; raises outside `[start, end]`. **(0.3.1)**: runs `terms.validate()` first, so it also raises for invalid nominal/coupon and a horizon inconsistent with maturity, even on the coupon date.
 - `canonical_json_bytes(value)`, `canonical_sha256(value)`, `result_hash_projection(result)`, `verify_result_sha256(result)` — accepts V1 or V2 DTOs or their JSON mappings; field set must exactly match V1 or V2.
 
 ## Trade grids (`trade_grid`)
