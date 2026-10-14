@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
+from ._money import non_negative_money, positive_money
+
 
 @dataclass(frozen=True, order=True)
 class EventKey:
@@ -26,18 +28,16 @@ class BondCashflow:
 def clean_price_pct_to_dirty_rub(
     clean_price_pct: float, current_nominal_rub: float, accrued_interest_rub: float
 ) -> float:
-    if current_nominal_rub <= 0.0:
-        raise ValueError("current nominal must be positive")
-    if accrued_interest_rub < 0.0:
-        raise ValueError("accrued interest cannot be negative")
-    return clean_price_pct / 100.0 * current_nominal_rub + accrued_interest_rub
+    clean = positive_money(clean_price_pct, "clean price")
+    nominal = positive_money(current_nominal_rub, "current nominal")
+    accrued = non_negative_money(accrued_interest_rub, "accrued interest")
+    return positive_money(clean / 100.0 * nominal + accrued, "dirty price result")
 
 
 def dirty_rub_to_clean_price_pct(
     dirty_rub_per_bond: float, current_nominal_rub: float, accrued_interest_rub: float
 ) -> float:
-    if current_nominal_rub <= 0.0:
-        raise ValueError("current nominal must be positive")
-    if accrued_interest_rub < 0.0:
-        raise ValueError("accrued interest cannot be negative")
-    return (dirty_rub_per_bond - accrued_interest_rub) / current_nominal_rub * 100.0
+    dirty = positive_money(dirty_rub_per_bond, "dirty price")
+    nominal = positive_money(current_nominal_rub, "current nominal")
+    accrued = non_negative_money(accrued_interest_rub, "accrued interest")
+    return positive_money((dirty - accrued) / nominal * 100.0, "clean price result")
