@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.0 — local portfolio worker
+
+- Join validated public fixed-RUB snapshots to local signed positions, calculate
+  central risk, optional full Hessian, explicit-recovery JTD and exact scenarios.
+- Preserve per-position and per-scenario failures with complete/partial/failed
+  coverage, content-bound job identity and nullable incomplete portfolio totals.
+- Add a strict bridge from market-data-store published fixed schedules; preserve
+  amortization/confirmed puts and reject projected or mismatched inputs.
+- Record floater fixing API, historical known-at selection and RUONIA coverage gaps.
+- Existing pricing defaults and floater service behavior remain unchanged.
+
 ## 0.5.0 — 2026-10-15
 
 - Add the full fixed-RUB rate/spread Hessian and a central Taylor P&L comparison against exact scenarios.
