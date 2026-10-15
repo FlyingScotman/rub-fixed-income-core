@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.7.0 — worker integration readiness
+
+- Share shocked OIS curves across all positions of a job (`ShockedCurveCache`);
+  each engine also reuses its own. Numbers are byte-identical to 0.6.0. On the
+  synthetic 10-position, 11-quote, 3-scenario job in `docs/local-worker.md` OIS
+  risk with Hessian drops from ~27 s to ~2.2 s (Linux container, Python 3.13).
+- `run_local_risk(..., should_cancel=..., time_budget_seconds=...)`: checks
+  before each position and scenario; skipped work stays in coverage as failed
+  rows and `interruption` names the reason. `job_id` is unchanged by either.
+- Versioned result contract `rub-local-portfolio-risk-result.v1`:
+  `schema_version`, `result_sha256`, `verify_local_risk_result`,
+  `local_risk_result_to_json` and strict `local_risk_result_from_json`
+  (unknown schema, missing or extra fields and hash mismatches are rejected).
+  A frozen fixture in `tests/fixtures/` guards the v1 field set.
+- `LocalRiskRunResult` gains `interruption`, `schema_version` and
+  `result_sha256` as trailing defaulted fields; positional construction and
+  every 0.6.0 number are unchanged. `job_id` includes the library version, so it
+  changes with this release as with any other.
+
 ## 0.6.0 — local portfolio worker
 
 - Join validated public fixed-RUB snapshots to local signed positions, calculate

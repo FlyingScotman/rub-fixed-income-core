@@ -56,4 +56,4 @@ The development commands above use `uv`, the Python project/package manager:
 
 The fixed-RUB engine now provides a full 12-factor Hessian, central Taylor P&L with exact comparison, and signed immediate-default P&L with mandatory recovery. A pure local adapter binds validated schedules, market and curve snapshots to explicit zero or OIS quote factors. See [contract and executable example](docs/second-order-local-risk.md).
 
-Portfolio jobs and the public schedule bridge: [local worker](docs/local-worker.md).
+Portfolio jobs and the public schedule bridge: [local worker](docs/local-worker.md). 0.7.0 adds shared OIS curve reuse, cooperative cancellation/time budgets and a versioned, hash-verified JSON result contract for storage.

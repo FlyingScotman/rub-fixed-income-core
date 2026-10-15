@@ -7,6 +7,7 @@ are explicit inputs. No market access, position storage, or implicit FX conversi
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import date
 from itertools import pairwise
@@ -76,6 +77,45 @@ class _ZeroShockCurve:
         except OverflowError as exc:
             raise ValueError("shocked discount factor must be positive and finite") from exc
         return positive_money(result, "shocked discount factor")
+
+
+CurveBuilder = Callable[[], DiscountCurve]
+
+
+class ShockedCurveCache:
+    """Memoize OIS rebootstraps by exact curve content and shift vector.
+
+    Bootstrapping is deterministic, so equal (request, shifts) keys give identical
+    curves. Share one cache across engines on the same curve within a job; risk,
+    gamma and scenarios repeat the same shocked curves for every position. Failed
+    bootstraps are not cached. Once ``max_entries`` is reached new curves are built
+    but not stored, which bounds memory without changing any number.
+    """
+
+    def __init__(self, max_entries: int = 4096) -> None:
+        if isinstance(max_entries, bool) or not isinstance(max_entries, int) or max_entries < 0:
+            raise ValueError("max_entries must be a nonnegative integer")
+        self.max_entries = max_entries
+        self.hits = 0
+        self.misses = 0
+        self._curves: dict[tuple[CurveBootstrapRequest, tuple[float, ...]], DiscountCurve] = {}
+
+    def __len__(self) -> int:
+        return len(self._curves)
+
+    def bootstrap(
+        self, request: CurveBootstrapRequest, shifts: tuple[float, ...], build: CurveBuilder
+    ) -> DiscountCurve:
+        key = (request, shifts)
+        cached = self._curves.get(key)
+        if cached is not None:
+            self.hits += 1
+            return cached
+        self.misses += 1
+        curve = build()
+        if len(self._curves) < self.max_entries:
+            self._curves[key] = curve
+        return curve
 
 
 def _snapshot_convention(convention: CurveConvention) -> CurveConvention:
@@ -272,6 +312,9 @@ class BondRiskEngine:
     """Calibrate once, then hold the base spread fixed across every curve shock."""
 
     request: BondRiskRequest
+    curve_cache: ShockedCurveCache = field(
+        default_factory=ShockedCurveCache, compare=False, repr=False
+    )
     spread_bp: float = field(init=False)
     base_price_rub: float = field(init=False)
     base_id: str = field(init=False)
@@ -279,10 +322,15 @@ class BondRiskEngine:
 
     def __post_init__(self) -> None:
         req = self.request
+        if not isinstance(self.curve_cache, ShockedCurveCache):
+            raise TypeError("curve_cache must be a ShockedCurveCache")
+        source = req.curve
         curve = (
-            bootstrap_discount_curve(req.curve)
-            if isinstance(req.curve, CurveBootstrapRequest)
-            else req.curve
+            self.curve_cache.bootstrap(
+                source, _ZERO_SHOCK, lambda: bootstrap_discount_curve(source)
+            )
+            if isinstance(source, CurveBootstrapRequest)
+            else source
         )
         object.__setattr__(self, "_curve", curve)
         spread = req.spread_bp
@@ -342,24 +390,28 @@ class BondRiskEngine:
             return self._curve
         source = self.request.curve
         if isinstance(source, CurveBootstrapRequest):
-            quotes = tuple(
-                replace(
-                    q,
-                    par_rate=finite_money(
-                        q.par_rate
-                        + _shift_at(
-                            source.convention.time_day_count.year_fraction(
-                                source.curve_date, q.maturity
-                            ),
-                            shifts,
-                        )
-                        * 1e-4,
-                        "shocked OIS quote",
-                    ),
+
+            def build() -> DiscountCurve:
+                quotes = tuple(
+                    replace(
+                        q,
+                        par_rate=finite_money(
+                            q.par_rate
+                            + _shift_at(
+                                source.convention.time_day_count.year_fraction(
+                                    source.curve_date, q.maturity
+                                ),
+                                shifts,
+                            )
+                            * 1e-4,
+                            "shocked OIS quote",
+                        ),
+                    )
+                    for q in source.quotes
                 )
-                for q in source.quotes
-            )
-            return bootstrap_discount_curve(replace(source, quotes=quotes))
+                return bootstrap_discount_curve(replace(source, quotes=quotes))
+
+            return self.curve_cache.bootstrap(source, shifts, build)
         return _ZeroShockCurve(self._curve, shifts)
 
     def _price(self, shifts: tuple[float, ...], spread_shift: float) -> float:

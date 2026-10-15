@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 import math
-from dataclasses import replace
+from collections.abc import Iterator
+from dataclasses import asdict, replace
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -15,15 +18,22 @@ from rub_fixed_income import (
     DiscountCurve,
     OisQuote,
     ZSpreadConvention,
+    local_worker,
 )
-from rub_fixed_income.analytics import canonical_json_bytes
+from rub_fixed_income.analytics import canonical_json_bytes, canonical_sha256
+from rub_fixed_income.local_risk import prepare_local_bond_risk
 from rub_fixed_income.local_worker import (
+    LOCAL_RISK_RESULT_SCHEMA,
     LocalPosition,
     LocalRiskRunResult,
     LocalScenario,
     PublicBondSnapshot,
     SnapshotEvidence,
+    local_risk_result_from_json,
+    local_risk_result_hash_projection,
+    local_risk_result_to_json,
     run_local_risk,
+    verify_local_risk_result,
 )
 
 START = date(2026, 1, 1)
@@ -285,3 +295,176 @@ def test_no_mutation_or_hidden_second_order_work() -> None:
 def test_job_guards(changes: dict[str, object]) -> None:
     with pytest.raises((ValueError, TypeError)):
         run(**changes)  # type: ignore[arg-type]
+
+
+def test_ois_job_shares_shocked_curves_across_positions(monkeypatch: pytest.MonkeyPatch) -> None:
+    record = replace(snapshot(), curve=CurveBootstrapRequest(START, (OisQuote("2Y", END, 0.1),)))
+    caches: list[Any] = []
+
+    def spy(source: Any, **kwargs: Any) -> Any:
+        caches.append(kwargs["curve_cache"])
+        return prepare_local_bond_risk(source, **kwargs)
+
+    monkeypatch.setattr(local_worker, "prepare_local_bond_risk", spy)
+    positions = tuple(LocalPosition(f"p{i}", "SYNTHETIC", i + 1, 0.4) for i in range(3))
+    single = run((record,), positions[:1], (), curve_basis="ois_quote")
+    built_for_one = caches[0].misses
+    caches.clear()
+    triple = run((record,), positions, (), curve_basis="ois_quote")
+    assert triple.status == "complete"
+    assert len(caches) == 3 and all(c is caches[0] for c in caches)
+    # Later positions reuse every shocked curve built for the first one.
+    assert caches[0].misses == built_for_one
+    assert caches[0].hits > 2 * built_for_one
+    assert triple.positions[0].risk == single.positions[0].risk
+    assert triple.positions[0].second_order == single.positions[0].second_order
+
+
+def test_cancellation_between_positions_keeps_skipped_rows_in_coverage() -> None:
+    checks: list[None] = []
+
+    def cancel_after_first_position() -> bool:
+        checks.append(None)
+        return len(checks) > 2  # position 1, its scenario, then stop
+
+    result = run(
+        positions=(
+            LocalPosition("first", "SYNTHETIC", 1, 0.4),
+            LocalPosition("second", "SYNTHETIC", 1, 0.4),
+        ),
+        should_cancel=cancel_after_first_position,
+    )
+    assert result.interruption == "cancelled"
+    assert result.status == "partial"
+    assert result.coverage.failed_position_ids == ("second",)
+    assert result.positions[1].error == "job cancelled before calculation"
+    assert result.positions[1].calculation_id is None
+    assert result.total_pv_rub is None
+    assert result.covered_pv_rub == pytest.approx(790)
+    scenario = result.scenarios[0]
+    assert [p.position_id for p in scenario.positions] == ["first", "second"]
+    assert scenario.positions[1].error == "job cancelled before calculation"
+    assert scenario.total_pnl_rub is None
+    assert len(checks) == 3
+    # Job identity describes inputs, not how far an interrupted run got.
+    assert (
+        result.job_id
+        == run(
+            positions=(
+                LocalPosition("first", "SYNTHETIC", 1, 0.4),
+                LocalPosition("second", "SYNTHETIC", 1, 0.4),
+            )
+        ).job_id
+    )
+
+
+def test_cancellation_before_scenario_preserves_base_risk() -> None:
+    answers = iter([False, False, True])
+    result = run(
+        scenarios=(
+            LocalScenario("a", "continuous_zero", BondScenario.parallel(10)),
+            LocalScenario("b", "continuous_zero", BondScenario.parallel(20)),
+        ),
+        should_cancel=lambda: next(answers),
+    )
+    assert result.coverage.status == "complete"
+    assert result.total_pv_rub == pytest.approx(1580)
+    assert result.status == "partial"
+    assert [s.coverage.status for s in result.scenarios] == ["complete", "failed"]
+    assert result.scenarios[1].positions[0].calculation_id == result.positions[0].calculation_id
+
+
+def test_time_budget_uses_monotonic_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    ticks: Iterator[float] = iter(range(0, 1000, 10))
+    monkeypatch.setattr(local_worker, "_monotonic", lambda: next(ticks))
+    positions = tuple(LocalPosition(f"p{i}", "SYNTHETIC", 1, 0.4) for i in range(3))
+    # Start at 0; checks at 10 (p0), 20 (p0 scenario) pass; 30 >= 25 stops p1 and p2.
+    result = run(positions=positions, time_budget_seconds=25)
+    assert result.interruption == "time_budget_exceeded"
+    assert result.coverage.failed_position_ids == ("p1", "p2")
+    assert result.positions[2].error == "job time budget exceeded before calculation"
+    assert run(time_budget_seconds=0).status == "failed"
+
+
+def test_uninterrupted_job_reports_no_interruption() -> None:
+    result = run(time_budget_seconds=3600, should_cancel=lambda: False)
+    assert result.interruption is None
+    assert result.status == "complete"
+    assert result == run()
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [{"time_budget_seconds": -1}, {"time_budget_seconds": float("nan")}, {"should_cancel": 1}],
+)
+def test_interruption_guards(changes: dict[str, object]) -> None:
+    with pytest.raises((ValueError, TypeError)):
+        run(**changes)  # type: ignore[arg-type]
+
+
+def _contract_example() -> LocalRiskRunResult:
+    return run(
+        positions=(
+            LocalPosition("long", "SYNTHETIC", 2, 0.4),
+            LocalPosition("absent", "MISSING", 1, 0.4),
+        ),
+        scenarios=(
+            LocalScenario("up", "continuous_zero", BondScenario.parallel(100, spread_shift_bp=25)),
+        ),
+    )
+
+
+def test_result_carries_schema_and_verifiable_hash() -> None:
+    result = _contract_example()
+    assert result.schema_version == LOCAL_RISK_RESULT_SCHEMA
+    assert verify_local_risk_result(result)
+    assert result.result_sha256 == canonical_sha256(local_risk_result_hash_projection(result))
+    assert not verify_local_risk_result(replace(result, covered_pv_rub=1.0))
+    assert not verify_local_risk_result(replace(result, schema_version="v0"))
+
+
+def test_result_json_round_trip_is_exact() -> None:
+    for result in (_contract_example(), run(should_cancel=lambda: True), run(positions=())):
+        data = local_risk_result_to_json(result)
+        rebuilt = local_risk_result_from_json(data)
+        assert rebuilt == result
+        assert local_risk_result_to_json(rebuilt) == data
+        assert local_risk_result_from_json(data.decode()) == result
+
+
+def test_result_json_rejects_tampering_unknown_schema_and_fields() -> None:
+    raw = json.loads(local_risk_result_to_json(_contract_example()))
+    tampered = dict(raw, covered_pv_rub=raw["covered_pv_rub"] + 1)
+    with pytest.raises(ValueError, match="does not verify"):
+        local_risk_result_from_json(json.dumps(tampered))
+    with pytest.raises(ValueError, match="schema_version"):
+        local_risk_result_from_json(json.dumps(dict(raw, schema_version="other.v9")))
+    with pytest.raises(ValueError, match="schema_version"):
+        local_risk_result_from_json("[]")
+    with pytest.raises(ValueError, match="not valid JSON"):
+        local_risk_result_from_json(b"{")
+    # A consistent hash does not make an unknown field acceptable.
+    extra = dict(raw, unexpected=1)
+    extra["result_sha256"] = canonical_sha256(local_risk_result_hash_projection(extra))
+    with pytest.raises(ValueError, match="fields do not match"):
+        local_risk_result_from_json(json.dumps(extra))
+    nested = json.loads(json.dumps(raw))
+    del nested["positions"][0]["risk"]["buckets"][0]["krd_years"]
+    nested["result_sha256"] = canonical_sha256(local_risk_result_hash_projection(nested))
+    with pytest.raises(ValueError, match="fields do not match BucketRisk"):
+        local_risk_result_from_json(json.dumps(nested))
+    with pytest.raises(ValueError, match="does not verify"):
+        local_risk_result_to_json(replace(_contract_example(), result_sha256=""))
+
+
+FIXTURE = Path(__file__).parent / "fixtures" / "local_risk_result_v1.json"
+
+
+def test_frozen_v1_fixture_still_parses_and_reserializes_byte_for_byte() -> None:
+    """Changing any persisted result field requires a new schema version."""
+    data = FIXTURE.read_bytes()
+    result = local_risk_result_from_json(data)
+    assert result.schema_version == LOCAL_RISK_RESULT_SCHEMA
+    assert result.status == "partial"
+    assert local_risk_result_to_json(result) == data
+    assert set(asdict(result)) == set(asdict(_contract_example()))

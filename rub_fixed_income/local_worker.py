@@ -6,15 +6,19 @@ is checked, not certified: the data adapter owns calendars and contractual terms
 
 from __future__ import annotations
 
+import json
 import math
+import time
+import types
+from collections.abc import Callable, Mapping
 from copy import deepcopy
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 from datetime import date, datetime
-from typing import Literal, cast
+from typing import Any, Literal, Union, cast, get_args, get_origin, get_type_hints
 
 from ._money import finite_money
 from ._version import __version__
-from .analytics import canonical_sha256
+from .analytics import canonical_json_bytes, canonical_sha256
 from .cashflows import BondCashflow
 from .conventions import ZSpreadConvention
 from .discount import CurveBootstrapRequest, DiscountCurve
@@ -30,10 +34,19 @@ from .risk import (
     BondRiskResult,
     BondScenario,
     BondSecondOrderRisk,
+    ShockedCurveCache,
     _curve_identity,
 )
 
 CoverageStatus = Literal["complete", "partial", "failed"]
+Interruption = Literal["cancelled", "time_budget_exceeded"]
+LOCAL_RISK_RESULT_SCHEMA = "rub-local-portfolio-risk-result.v1"
+_INTERRUPTION_ERRORS: dict[str, str] = {
+    "cancelled": "job cancelled before calculation",
+    "time_budget_exceeded": "job time budget exceeded before calculation",
+}
+# Indirection so tests can drive the budget deterministically.
+_monotonic = time.monotonic
 
 
 def _text(value: str, name: str) -> None:
@@ -220,6 +233,9 @@ class LocalRiskRunResult:
     scenarios: tuple[ScenarioCoverageResult, ...]
     covered_pv_rub: float
     total_pv_rub: float | None
+    interruption: Interruption | None = None
+    schema_version: str = LOCAL_RISK_RESULT_SCHEMA
+    result_sha256: str = ""
 
 
 def run_local_risk(
@@ -232,12 +248,20 @@ def run_local_risk(
     scenarios: tuple[LocalScenario, ...],
     include_second_order: bool = True,
     bump_bp: float = 1.0,
+    time_budget_seconds: float | None = None,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> LocalRiskRunResult:
     """Compute one immutable batch, retaining every expected position and failure.
 
     A malformed job (duplicate IDs, invalid units or timestamps) raises. Expected
     per-instrument data/calibration errors become explicit failed rows. Scenario
     failures do not destroy base risk. No partial subtotal is labelled a total.
+
+    ``should_cancel`` and ``time_budget_seconds`` are checked before each position
+    and each scenario repricing; a running calculation is not interrupted. Work
+    skipped after a stop stays in coverage as failed rows and ``interruption``
+    names the reason. Neither setting enters ``job_id``: an interrupted result is
+    not the job's complete answer and must not be cached as such.
     """
     _text(run_id, "run_id")
     _aware(as_of)
@@ -247,6 +271,22 @@ def run_local_risk(
         raise TypeError("include_second_order must be boolean")
     if finite_money(bump_bp, "bump_bp") <= 0:
         raise ValueError("bump_bp must be positive")
+    if time_budget_seconds is not None and finite_money(time_budget_seconds, "time budget") < 0:
+        raise ValueError("time_budget_seconds must be nonnegative")
+    if should_cancel is not None and not callable(should_cancel):
+        raise TypeError("should_cancel must be callable")
+    started = _monotonic()
+    interruption: Interruption | None = None
+
+    def stopped() -> Interruption | None:
+        nonlocal interruption
+        if interruption is None:
+            if should_cancel is not None and should_cancel():
+                interruption = "cancelled"
+            elif time_budget_seconds is not None and _monotonic() - started >= time_budget_seconds:
+                interruption = "time_budget_exceeded"
+        return interruption
+
     # Copy even nested calendar sets/node lists supplied by callers.
     public_snapshots, positions, scenarios = deepcopy((public_snapshots, positions, scenarios))
     for names, label in (
@@ -276,9 +316,22 @@ def run_local_risk(
     outcomes: list[PositionRiskOutcome] = []
     scenario_rows: list[list[PositionScenarioOutcome]] = [[] for _ in scenarios]
     expected = tuple(p.position_id for p in positions)
+    # Equal curve content gives identical shocked curves for every position.
+    curve_cache = ShockedCurveCache()
     for position in positions:
         content_id = content_ids.get(position.instrument_id)
         calculation_id: str | None = None
+        reason = stopped()
+        if reason is not None:
+            error = _INTERRUPTION_ERRORS[reason]
+            outcomes.append(
+                PositionRiskOutcome(
+                    position.position_id, position.instrument_id, None, content_id, error
+                )
+            )
+            for rows in scenario_rows:
+                rows.append(PositionScenarioOutcome(position.position_id, None, error))
+            continue
         try:
             if position.instrument_id not in records:
                 raise LookupError("public instrument snapshot is missing")
@@ -289,7 +342,8 @@ def run_local_risk(
                     as_of=as_of,
                     basis=curve_basis,
                     quantity=position.quantity,
-                )
+                ),
+                curve_cache=curve_cache,
             )
             calculation_id = canonical_sha256(
                 {
@@ -337,6 +391,14 @@ def run_local_risk(
             )
         )
         for scenario, rows in zip(scenarios, scenario_rows, strict=True):
+            reason = stopped()
+            if reason is not None:
+                rows.append(
+                    PositionScenarioOutcome(
+                        position.position_id, calculation_id, _INTERRUPTION_ERRORS[reason]
+                    )
+                )
+                continue
             try:
                 result = prepared.reprice(scenario.shock, curve_basis=scenario.curve_basis)
                 rows.append(
@@ -371,7 +433,7 @@ def run_local_risk(
         if coverage.completed
         else "failed"
     )
-    return LocalRiskRunResult(
+    run_result = LocalRiskRunResult(
         run_id,
         job_id,
         bundle_id,
@@ -384,4 +446,98 @@ def run_local_risk(
         tuple(scenario_results),
         covered_pv,
         covered_pv if coverage.status == "complete" else None,
+        interruption,
     )
+    projection = local_risk_result_hash_projection(run_result)
+    return replace(run_result, result_sha256=canonical_sha256(projection))
+
+
+def local_risk_result_hash_projection(
+    result: LocalRiskRunResult | Mapping[str, object],
+) -> dict[str, object]:
+    """Every result field with ``result_sha256`` fixed to the empty string."""
+    raw = asdict(result) if isinstance(result, LocalRiskRunResult) else dict(result)
+    if "result_sha256" not in raw:
+        raise ValueError("result_sha256 field is required")
+    raw["result_sha256"] = ""
+    return raw
+
+
+def verify_local_risk_result(result: LocalRiskRunResult | Mapping[str, object]) -> bool:
+    """Check the schema version and the declared hash of a result or its JSON mapping."""
+    raw = asdict(result) if isinstance(result, LocalRiskRunResult) else dict(result)
+    if raw.get("schema_version") != LOCAL_RISK_RESULT_SCHEMA:
+        return False
+    declared = raw.get("result_sha256")
+    try:
+        actual = canonical_sha256(local_risk_result_hash_projection(raw))
+    except (TypeError, ValueError):
+        return False
+    return isinstance(declared, str) and declared == actual
+
+
+def local_risk_result_to_json(result: LocalRiskRunResult) -> bytes:
+    """Canonical UTF-8 JSON (sorted keys, exact float repr) of a verified result."""
+    if not verify_local_risk_result(result):
+        raise ValueError("local risk result hash or schema does not verify")
+    return canonical_json_bytes(result)
+
+
+def local_risk_result_from_json(data: bytes | str) -> LocalRiskRunResult:
+    """Rebuild a result from its JSON, rejecting unknown schemas, fields and hashes.
+
+    The rebuilt object re-serializes to the same bytes, so storage round-trips do
+    not change ``result_sha256``.
+    """
+    try:
+        raw = json.loads(data)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("local risk result is not valid JSON") from exc
+    if not isinstance(raw, dict) or raw.get("schema_version") != LOCAL_RISK_RESULT_SCHEMA:
+        raise ValueError("not a local risk result object with a supported schema_version")
+    if not verify_local_risk_result(raw):
+        raise ValueError("local risk result_sha256 does not verify")
+    return cast(LocalRiskRunResult, _decode(LocalRiskRunResult, raw, "result"))
+
+
+def _decode(kind: Any, value: object, path: str) -> object:
+    origin = get_origin(kind)
+    if origin is Union or origin is types.UnionType:
+        options = get_args(kind)
+        if value is None and type(None) in options:
+            return None
+        (inner,) = (option for option in options if option is not type(None))
+        return _decode(inner, value, path)
+    if origin is Literal:
+        if value not in get_args(kind):
+            raise ValueError(f"{path}: unexpected value {value!r}")
+        return value
+    if origin is tuple:
+        if not isinstance(value, list):
+            raise ValueError(f"{path}: expected a list")
+        item_kind = get_args(kind)[0]
+        return tuple(_decode(item_kind, item, f"{path}[{i}]") for i, item in enumerate(value))
+    if isinstance(kind, type) and is_dataclass(kind):
+        if not isinstance(value, dict):
+            raise ValueError(f"{path}: expected an object")
+        hints = get_type_hints(kind)
+        names = {f.name for f in fields(kind)}
+        if value.keys() != names:
+            raise ValueError(f"{path}: fields do not match {kind.__name__}")
+        decoded = {name: _decode(hints[name], value[name], f"{path}.{name}") for name in names}
+        return kind(**decoded)
+    if kind is datetime:
+        if not isinstance(value, str):
+            raise ValueError(f"{path}: expected an ISO timestamp")
+        parsed = datetime.fromisoformat(value)
+        _aware(parsed)
+        return parsed
+    if kind is float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"{path}: expected a number")
+        return value
+    if kind in (int, str):
+        if isinstance(value, bool) or not isinstance(value, kind):
+            raise ValueError(f"{path}: expected {kind.__name__}")
+        return value
+    raise TypeError(f"{path}: unsupported result field type {kind!r}")
