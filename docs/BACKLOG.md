@@ -108,9 +108,12 @@ other repositories and must be changed there, not in this core.
     business-day observation with lookback, compounded/arithmetic averaging,
     margin, day counts, rounding of fixed coupons only, published-coupon and
     zero-placeholder handling, missing-history failures, and single-curve risk
-    with known fixings frozen. Remaining: migrate both market-data-store callers;
-    separate projection and discount curves with their own factors; floaters in the
-    local worker. Original item: The service
+    with known fixings frozen. market-data-store 0.13.0 migrates both callers (the
+    service floater coupons and `curves.price_floater`/`solve_floater_spread`).
+    Remaining: contractual lag/rounding/floor terms from the bond catalog (callers
+    still label coupons `*_proxy_missing_lag_rounding`); separate projection and
+    discount curves with their own risk factors; floaters in the local worker and
+    the schedule bridge. Original item: The service
     already joins realized RUONIA/key-rate accrual with projection; known full
     coupons are respected. The separate market-data-store `curves.py` API has no
     history input and rejects elapsed periods with current-date curves. Introduce
