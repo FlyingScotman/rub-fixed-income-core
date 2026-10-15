@@ -99,6 +99,7 @@ from .risk import (
     BondScenarioResult,
     BondSecondOrderRisk,
     BucketRisk,
+    ShockedCurveCache,
     key_rate_weights,
 )
 from .trade_grid import (
@@ -172,6 +173,7 @@ __all__ = [
     "RiskRunContext",
     "ScheduleConvention",
     "SettlementConvention",
+    "ShockedCurveCache",
     "TradeGrid",
     "TradeGridNode",
     "TradeMetricLookup",

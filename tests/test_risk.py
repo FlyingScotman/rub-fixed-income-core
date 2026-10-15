@@ -25,6 +25,7 @@ from rub_fixed_income import (
     DiscountCurve,
     OisQuote,
     ScheduleConvention,
+    ShockedCurveCache,
     ZSpreadConvention,
     key_rate_weights,
 )
@@ -397,3 +398,46 @@ def test_positive_and_negative_stresses_have_asymmetric_exact_pnl() -> None:
     up = e.reprice(BondScenario.parallel(500)).total_pnl_rub
     down = e.reprice(BondScenario.parallel(-500)).total_pnl_rub
     assert down > -up > 0
+
+
+def _ois_engine(cache: ShockedCurveCache, quantity: float = 1.0) -> BondRiskEngine:
+    quotes = (OisQuote("1Y", date(2026, 1, 1), 0.10), OisQuote("2Y", date(2027, 1, 1), 0.12))
+    request = replace(
+        engine().request,
+        curve=CurveBootstrapRequest(START, quotes),
+        spread_bp=None,
+        dirty_price_rub=760.0,
+        quantity=quantity,
+    )
+    return BondRiskEngine(request, cache)
+
+
+def test_shared_curve_cache_reuses_rebootstraps_without_changing_numbers() -> None:
+    uncached = _ois_engine(ShockedCurveCache(max_entries=0))
+    shared = ShockedCurveCache()
+    first, second = _ois_engine(shared), _ois_engine(shared, quantity=-3)
+    expected = (uncached.risk(difference="central"), uncached.second_order())
+    assert (first.risk(difference="central"), first.second_order()) == expected
+    built = shared.misses
+    assert built == len(shared) <= 1 + 2 * 11 + 4 * 55 + 2
+    second.second_order()
+    second.risk(difference="central")
+    assert shared.misses == built
+    assert shared.hits > built
+    assert uncached.curve_cache.hits == 0 and len(uncached.curve_cache) == 0
+    assert first == _ois_engine(ShockedCurveCache())
+
+
+def test_curve_cache_bound_and_failed_builds() -> None:
+    cache = ShockedCurveCache(max_entries=1)
+    e = _ois_engine(cache)
+    e.reprice(BondScenario.parallel(10))
+    assert len(cache) == 1
+    with pytest.raises(ValueError):
+        e.reprice(BondScenario.parallel(-1e9))
+    assert len(cache) == 1
+    for bad in (-1, 1.5, True):
+        with pytest.raises(ValueError, match="max_entries"):
+            ShockedCurveCache(bad)  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="curve_cache"):
+        BondRiskEngine(engine().request, {})  # type: ignore[arg-type]

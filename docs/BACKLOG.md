@@ -43,7 +43,9 @@ other repositories and must be changed there, not in this core.
 11. **Decimal cash arithmetic** — cash amounts are floats; AI rounding uses `Decimal(str(x))`.
     Define a decimal contract for money if required by consumers.
 12. **Bootstrap is O(n²)** — each candidate rebuilds a `DiscountCurve` and re-walks nodes.
-    Fine for ≤ 30 pillars; optimise if used intraday at scale.
+    Fine for ≤ 30 pillars; optimise if used intraday at scale. Since 0.7.0 the worker
+    shares shocked curves across positions, so OIS jobs pay ~250 bootstraps per distinct
+    curve (~2.2 s with Hessian on the synthetic job). A faster bootstrap is the next lever.
 13. `price_cashflows` legacy path (no `settlement_date`) counts a flow on the curve date at face
     and ignores earlier flows; settlement-aware callers should always pass `settlement_date`.
     Consider deprecating the implicit curve-date path.
@@ -117,7 +119,9 @@ other repositories and must be changed there, not in this core.
     `_realized_ruonia` silently carries a stale fixing across missing weekdays.
     Validate required observations with an official calendar and explicit
     permitted carry rules; distinguish overnight fixings from key-rate changes.
-32. **Worker integration:** 0.6.0 supplies the pure portfolio worker and strict
+32. **Worker integration:** 0.7.0 adds the core side: shared OIS curves,
+    cooperative cancellation/time budget and the versioned, hash-verified result
+    contract. 0.6.0 supplies the pure portfolio worker and strict
     market-data-store schedule bridge (`docs/local-worker.md`). Remaining: wire
     validated live public bundles and private local positions into the actual
     monitor, persist coverage/basis/content identity, validate Windows and measure

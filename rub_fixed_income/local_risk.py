@@ -16,7 +16,13 @@ from .analytics import canonical_sha256
 from .cashflows import BondCashflow, clean_price_pct_to_dirty_rub
 from .conventions import ZSpreadConvention
 from .discount import CurveBootstrapRequest, DiscountCurve
-from .risk import BondRiskEngine, BondRiskRequest, BondScenario, BondScenarioResult
+from .risk import (
+    BondRiskEngine,
+    BondRiskRequest,
+    BondScenario,
+    BondScenarioResult,
+    ShockedCurveCache,
+)
 
 CurveRiskBasis = Literal["continuous_zero", "ois_quote"]
 
@@ -110,8 +116,13 @@ class PreparedLocalBondRisk:
         )
 
 
-def prepare_local_bond_risk(source: FixedRubBondInput) -> PreparedLocalBondRisk:
-    """Validate the boundary, convert clean % to dirty RUB, calibrate once."""
+def prepare_local_bond_risk(
+    source: FixedRubBondInput, *, curve_cache: ShockedCurveCache | None = None
+) -> PreparedLocalBondRisk:
+    """Validate the boundary, convert clean % to dirty RUB, calibrate once.
+
+    Pass one ``curve_cache`` to every position of a job to reuse shocked OIS curves.
+    """
     if source.cashflow_currency != "RUB" or source.coupon_model != "fixed":
         raise ValueError("only validated fixed RUB cashflows are supported")
     if source.horizon not in ("maturity", "confirmed_investor_put"):
@@ -140,7 +151,8 @@ def prepare_local_bond_risk(source: FixedRubBondInput) -> PreparedLocalBondRisk:
             spread_kind=source.spread_kind,
             dirty_price_rub=clean_price_pct_to_dirty_rub(clean, nominal, accrued),
             quantity=source.quantity,
-        )
+        ),
+        ShockedCurveCache() if curve_cache is None else curve_cache,
     )
     identity = canonical_sha256(
         {
