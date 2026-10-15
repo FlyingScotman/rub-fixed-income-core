@@ -103,7 +103,17 @@ other repositories and must be changed there, not in this core.
 
 ## Floater audit and local worker follow-up — 2026-10-15
 
-29. **P1 — fixing-aware floater core and API consistency (C05).** The service
+29. **P1 — fixing-aware floater core and API consistency (C05).** *Core part done
+    in 0.8.0* (`docs/floating.md`): explicit point-in-time `FixingHistory`,
+    business-day observation with lookback, compounded/arithmetic averaging,
+    margin, day counts, rounding of fixed coupons only, published-coupon and
+    zero-placeholder handling, missing-history failures, and single-curve risk
+    with known fixings frozen. market-data-store 0.13.0 migrates both callers (the
+    service floater coupons and `curves.price_floater`/`solve_floater_spread`).
+    Remaining: contractual lag/rounding/floor terms from the bond catalog (callers
+    still label coupons `*_proxy_missing_lag_rounding`); separate projection and
+    discount curves with their own risk factors; floaters in the local worker and
+    the schedule bridge. Original item: The service
     already joins realized RUONIA/key-rate accrual with projection; known full
     coupons are respected. The separate market-data-store `curves.py` API has no
     history input and rejects elapsed periods with current-date curves. Introduce
@@ -111,11 +121,12 @@ other repositories and must be changed there, not in this core.
     migrate both callers, and freeze known fixings under risk bumps. Cover full
     and partial periods, margin, zero published coupons, lag, day count, rounding
     and missing-history failure. Do not classify projected floaters as fixed risk.
-30. **P0 — point-in-time fixing selection (downstream, C05/HIST-01).**
+30. *Done in market-data-store 0.12.0.* **P0 — point-in-time fixing selection (downstream, C05/HIST-01).**
     `CurveRepository.index_fixings` selects by fixing date only; future-ingested
     observations can enter historical results. Add known-at/revision selection,
     preserve corrected observations and bind fixing snapshots to calculation IDs.
-31. **P0 — RUONIA observation gaps (downstream, C05/DATA-01).**
+31. *Done in market-data-store 0.12.0 (carry limit 2 business days in 0.12.1).*
+    **P0 — RUONIA observation gaps (downstream, C05/DATA-01).**
     `_realized_ruonia` silently carries a stale fixing across missing weekdays.
     Validate required observations with an official calendar and explicit
     permitted carry rules; distinguish overnight fixings from key-rate changes.

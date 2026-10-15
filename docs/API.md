@@ -94,6 +94,13 @@ All convention objects are frozen and hashable.
 
 `BondRiskRequest`, `BondRiskEngine`, and `BondScenario` provide signed RUB DV01/KRD, CS01/OFZ spread risk, and exact same-date repricing. Curve basis and spread convention are explicit; a calibrated base spread stays frozen under curve shocks. See [risk contract and example](risk.md) for inputs, methods, identities and supported scope.
 
+## Floating coupons (0.8.0)
+
+`FixingHistory`, `FloatingCouponRule`, `FloatingCouponPeriod`, `FloatingLeg`,
+`FloatingCouponProjection` and `FLOATING_MODEL_VERSION`. Risk support comes through
+`BondRiskRequest(floating_leg=...)` and `FLOATING_RISK_MODEL_VERSION`. See
+[floating coupons](floating.md).
+
 ## Fixed-RUB risk extensions (0.5.0)
 
 See [second-order and local API](second-order-local-risk.md) for `BondRiskEngine.second_order`, `approximate`, `jump_to_default`, and `prepare_local_bond_risk`.

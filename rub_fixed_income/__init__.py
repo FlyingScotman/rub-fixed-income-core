@@ -65,6 +65,14 @@ from .conventions import (
 )
 from .dates import BusinessCalendar
 from .discount import CurveBootstrapRequest, DiscountCurve, OisQuote, bootstrap_discount_curve
+from .floating import (
+    FLOATING_MODEL_VERSION,
+    FixingHistory,
+    FloatingCouponPeriod,
+    FloatingCouponProjection,
+    FloatingCouponRule,
+    FloatingLeg,
+)
 from .key_rate import (
     KeyRateCurveBuildRequest,
     KeyRateCurveBuildResult,
@@ -87,6 +95,7 @@ from .local_risk import (
     prepare_local_bond_risk,
 )
 from .risk import (
+    FLOATING_RISK_MODEL_VERSION,
     RISK_BUCKETS,
     RISK_MODEL_VERSION,
     RISK_PILLARS,
@@ -115,6 +124,8 @@ from .trade_grid import (
 __all__ = [
     "ANNUAL",
     "CONTINUOUS",
+    "FLOATING_MODEL_VERSION",
+    "FLOATING_RISK_MODEL_VERSION",
     "MONTHLY",
     "QUARTERLY",
     "RISK_BUCKETS",
@@ -154,6 +165,11 @@ __all__ = [
     "FinancedBondRequest",
     "FinancingStep",
     "FixedRubBondInput",
+    "FixingHistory",
+    "FloatingCouponPeriod",
+    "FloatingCouponProjection",
+    "FloatingCouponRule",
+    "FloatingLeg",
     "GridBuildPolicy",
     "GridIdentity",
     "KeyRateCurveBuildRequest",

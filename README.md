@@ -56,4 +56,11 @@ The development commands above use `uv`, the Python project/package manager:
 
 The fixed-RUB engine now provides a full 12-factor Hessian, central Taylor P&L with exact comparison, and signed immediate-default P&L with mandatory recovery. A pure local adapter binds validated schedules, market and curve snapshots to explicit zero or OIS quote factors. See [contract and executable example](docs/second-order-local-risk.md).
 
+## Floating coupons (0.8.0)
+
+`FloatingLeg` prices RUONIA and key-rate floaters. Coupons combine known
+fixings, taken from an explicit point-in-time `FixingHistory` with RUONIA gap
+checks, with curve projection. `BondRiskRequest(floating_leg=...)` freezes the
+known part under every bump. See [floating coupons](docs/floating.md).
+
 Portfolio jobs and the public schedule bridge: [local worker](docs/local-worker.md). 0.7.0 adds shared OIS curve reuse, cooperative cancellation/time budgets and a versioned, hash-verified JSON result contract for storage.

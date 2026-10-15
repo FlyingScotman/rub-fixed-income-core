@@ -25,8 +25,9 @@ non-RUB currency labels are rejected. Monetary results are checked for finitenes
 
 The caller must supply the contractual fixed schedule, already adjusted for
 payment calendars, amortization and a confirmed put redemption horizon. This
-module does not construct put terms or exercise optionality. It does not model
-floating coupons, FX-linked payments, calls, swaps, funding, carry or historical
+module does not construct put terms or exercise optionality. Floating coupons
+enter only through `floating_leg` (see [floating coupons](floating.md)); it does
+not model FX-linked payments, calls, swaps, funding, carry or historical
 market selection. Converting foreign payments to RUB at today's FX does not
 turn them into a supported fixed RUB instrument.
 
