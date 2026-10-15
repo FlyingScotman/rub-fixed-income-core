@@ -1,14 +1,16 @@
-"""RUB fixed-cashflow risk and same-settlement full revaluation.
+"""RUB bond risk and same-settlement full revaluation.
 
 Shocks are absolute basis points. Spread compounding and the curve risk basis
 are explicit inputs. No market access, position storage, or implicit FX conversion.
+Floating coupons are re-projected off every shocked curve; known fixings and
+published coupons stay frozen.
 """
 
 from __future__ import annotations
 
 import math
 from collections.abc import Callable
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date
 from itertools import pairwise
 from typing import Literal
@@ -24,10 +26,16 @@ from .discount import (
     DiscountFactorCurve,
     bootstrap_discount_curve,
 )
+from .floating import FloatingCouponProjection, FloatingLeg
 
 RISK_BUCKETS = ("1M", "3M", "6M", "1Y", "2Y", "3Y", "5Y", "7Y", "10Y", "15Y", "20Y+")
 RISK_PILLARS = (1 / 12, 0.25, 0.5, 1.0, 2.0, 3.0, 5.0, 7.0, 10.0, 15.0, 20.0)
 RISK_MODEL_VERSION = "rub-fixed-cashflow-risk-v1"
+FLOATING_RISK_MODEL_VERSION = "rub-floating-coupon-risk-v1"
+_SECOND_ORDER_MODELS = {
+    RISK_MODEL_VERSION: "rub-fixed-cashflow-second-order-v1",
+    FLOATING_RISK_MODEL_VERSION: "rub-floating-coupon-second-order-v1",
+}
 _ZERO_SHOCK = (0.0,) * len(RISK_BUCKETS)
 
 
@@ -138,6 +146,11 @@ class BondRiskRequest:
     continuous-zero risk; a CurveBootstrapRequest selects par-OIS quote risk.
     Payments on/before settlement are excluded. Put/amortization schedules must
     already contain the contractual redemption and no post-horizon payments.
+
+    ``floating_leg`` adds coupons projected off the risk curve itself (single-curve:
+    the curve projects and discounts, the spread is a discount margin). Its fixing
+    history must be dated at the curve date; ``cashflows`` then carry principal
+    and any fixed amounts only.
     """
 
     cashflows: tuple[BondCashflow, ...]
@@ -149,10 +162,16 @@ class BondRiskRequest:
     dirty_price_rub: float | None = None
     quantity: float = 1.0
     currency: Literal["RUB"] = "RUB"
+    floating_leg: FloatingLeg | None = None
 
     def __post_init__(self) -> None:
         if self.currency != "RUB":
             raise ValueError("fixed-cashflow risk supports RUB only; convert explicitly upstream")
+        if self.floating_leg is not None:
+            if not isinstance(self.floating_leg, FloatingLeg):
+                raise TypeError("floating_leg must be a FloatingLeg")
+            if self.floating_leg.history.valuation_date != self.curve.curve_date:
+                raise ValueError("floating fixing history must be dated at the curve date")
         if self.spread_kind not in ("credit", "ofz"):
             raise ValueError("spread_kind must be credit or ofz")
         if not isinstance(self.curve, (DiscountCurve, CurveBootstrapRequest)):
@@ -318,6 +337,7 @@ class BondRiskEngine:
     spread_bp: float = field(init=False)
     base_price_rub: float = field(init=False)
     base_id: str = field(init=False)
+    projected_coupons: tuple[FloatingCouponProjection, ...] = field(init=False)
     _curve: DiscountCurve = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -333,12 +353,13 @@ class BondRiskEngine:
             else source
         )
         object.__setattr__(self, "_curve", curve)
+        object.__setattr__(self, "projected_coupons", self._project(curve))
         spread = req.spread_bp
         if spread is None:
             assert req.dirty_price_rub is not None
             spread = (
                 solve_z_spread(
-                    self._flows(),
+                    self._flows(curve),
                     req.dirty_price_rub,
                     curve,
                     settlement_date=req.settlement_date,
@@ -353,26 +374,24 @@ class BondRiskEngine:
             price, req.dirty_price_rub, rel_tol=1e-10, abs_tol=1e-8
         ):
             raise ValueError("base spread calibration failed to reprice the dirty price")
-        object.__setattr__(
-            self,
-            "base_id",
-            canonical_sha256(
-                {
-                    "model": RISK_MODEL_VERSION,
-                    "curve_basis": self.curve_basis,
-                    "curve": _curve_identity(req.curve),
-                    "cashflows": self._flows(),
-                    "settlement": req.settlement_date,
-                    "spread_convention": req.spread_convention.identifier,
-                    "spread_kind": req.spread_kind,
-                    "input_spread_bp": req.spread_bp,
-                    "input_dirty_price": req.dirty_price_rub,
-                    "calibrated_spread_bp": spread,
-                    "quantity": req.quantity,
-                    "currency": req.currency,
-                }
-            ),
-        )
+        identity: dict[str, object] = {
+            "model": self.model_version,
+            "curve_basis": self.curve_basis,
+            "curve": _curve_identity(req.curve),
+            "cashflows": self._fixed_flows(),
+            "settlement": req.settlement_date,
+            "spread_convention": req.spread_convention.identifier,
+            "spread_kind": req.spread_kind,
+            "input_spread_bp": req.spread_bp,
+            "input_dirty_price": req.dirty_price_rub,
+            "calibrated_spread_bp": spread,
+            "quantity": req.quantity,
+            "currency": req.currency,
+        }
+        if req.floating_leg is not None:
+            identity["floating_leg"] = req.floating_leg.identity
+            identity["projected_coupons"] = [asdict(c) for c in self.projected_coupons]
+        object.__setattr__(self, "base_id", canonical_sha256(identity))
 
     @property
     def curve_basis(self) -> str:
@@ -382,8 +401,27 @@ class BondRiskEngine:
             else "continuous_zero"
         )
 
-    def _flows(self) -> tuple[tuple[date, float], ...]:
+    @property
+    def model_version(self) -> str:
+        return (
+            RISK_MODEL_VERSION if self.request.floating_leg is None else FLOATING_RISK_MODEL_VERSION
+        )
+
+    def _fixed_flows(self) -> tuple[tuple[date, float], ...]:
         return tuple((f.payment_date, f.amount) for f in self.request.cashflows)
+
+    def _project(self, curve: DiscountFactorCurve) -> tuple[FloatingCouponProjection, ...]:
+        leg = self.request.floating_leg
+        if leg is None:
+            return ()
+        return leg.project(curve, settlement_date=self.request.settlement_date)
+
+    def _flows(self, curve: DiscountFactorCurve) -> tuple[tuple[date, float], ...]:
+        fixed = self._fixed_flows()
+        if self.request.floating_leg is None:
+            return fixed
+        coupons = self.projected_coupons if curve is self._curve else self._project(curve)
+        return tuple(sorted((*fixed, *((c.payment_date, c.amount_rub) for c in coupons))))
 
     def _shocked_curve(self, shifts: tuple[float, ...]) -> DiscountFactorCurve:
         if not any(shifts):
@@ -416,10 +454,11 @@ class BondRiskEngine:
 
     def _price(self, shifts: tuple[float, ...], spread_shift: float) -> float:
         try:
+            curve = self._shocked_curve(shifts)
             return positive_money(
                 price_cashflows(
-                    self._flows(),
-                    self._shocked_curve(shifts),
+                    self._flows(curve),
+                    curve,
                     spread=finite_money(self.spread_bp + spread_shift, "shocked spread") * 1e-4,
                     settlement_date=self.request.settlement_date,
                     convention=self.request.spread_convention,
@@ -478,6 +517,7 @@ class BondRiskEngine:
             parallel_dv01_rub=parallel,
             cs01_rub=spread if self.request.spread_kind == "credit" else 0.0,
             ofz_spr01_rub=spread if self.request.spread_kind == "ofz" else 0.0,
+            model_version=self.model_version,
         )
 
     def reprice(self, scenario: BondScenario) -> BondScenarioResult:
@@ -505,6 +545,7 @@ class BondRiskEngine:
             spread_pnl_rub=credit,
             interaction_pnl_rub=interaction,
             total_pnl_rub=total,
+            model_version=self.model_version,
         )
 
     def second_order(self, *, bump_bp: float = 1.0) -> BondSecondOrderRisk:
@@ -554,6 +595,7 @@ class BondRiskEngine:
             bump_bp=bump,
             gradient_rub_per_bp=tuple(gradient),
             hessian_rub_per_bp2=tuple(tuple(row) for row in hessian),
+            model_version=_SECOND_ORDER_MODELS[self.model_version],
         )
 
     def jump_to_default(

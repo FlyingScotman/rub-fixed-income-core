@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.8.0 — fixing-aware floating coupons
+
+- New `rub_fixed_income.floating`: `FixingHistory`, `FloatingCouponRule`,
+  `FloatingCouponPeriod`, `FloatingLeg` and `FloatingCouponProjection`.
+  - Coupons join realized RUONIA or key-rate fixings with overnight forwards of a
+    projection curve.
+  - Daily rates use business-day carry, with an optional lookback.
+  - Averaging is compounded or arithmetic; margin and both day counts are explicit.
+  - Rounding is half-up and applies only to coupons fully fixed by history.
+  - Published coupons are used as cash, and a zero placeholder is rejected.
+- History is point-in-time. A fixing on or after the valuation date is rejected,
+  and a RUONIA gap before the latest fixing is a `LookupError`. The latest fixing
+  carries over at most `max_unpublished_business_days` trailing unpublished days,
+  and those days are reported.
+- `BondRiskRequest(floating_leg=...)` re-projects coupons off every shocked curve
+  and freezes known fixings and published coupons. The model is single-curve, with
+  the spread as a discount margin. Results carry `rub-floating-coupon-risk-v1`.
+- Fixed-cashflow results, identities and the local worker are unchanged.
+  `BondRiskEngine` gains `projected_coupons`, which is empty for fixed bonds.
+  See `docs/floating.md`.
+
 ## 0.7.0 — worker integration readiness
 
 - Share shocked OIS curves across all positions of a job (`ShockedCurveCache`);
