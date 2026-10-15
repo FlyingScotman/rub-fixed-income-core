@@ -165,3 +165,7 @@ calendar/input snapshots, deterministic identity and invalid-input guards.
 These synthetic checks establish the supported mathematics. They do not
 validate live RUONIA quotes, real issue terms, Windows execution, foreign
 products or an independent desk pricer.
+
+## Extensions in 0.5.0
+
+Full fixed-RUB gamma, exact-versus-Taylor comparison, explicit-recovery JTD and a pure local input adapter are documented in [second-order-local-risk.md](second-order-local-risk.md). The limitations above describe the original 0.4.0 interface.

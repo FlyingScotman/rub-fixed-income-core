@@ -210,6 +210,49 @@ class BondScenarioResult:
     model_version: str = RISK_MODEL_VERSION
 
 
+@dataclass(frozen=True)
+class BondSecondOrderRisk:
+    """Central gradient (RUB/bp) and full symmetric Hessian (RUB/bp squared)."""
+
+    base_id: str
+    curve_basis: str
+    spread_convention: str
+    factors: tuple[str, ...]
+    bump_bp: float
+    gradient_rub_per_bp: tuple[float, ...]
+    hessian_rub_per_bp2: tuple[tuple[float, ...], ...]
+    model_version: str = "rub-fixed-cashflow-second-order-v1"
+
+
+@dataclass(frozen=True)
+class BondScenarioApproximation:
+    base_id: str
+    scenario_id: str
+    curve_basis: str
+    second_order_id: str
+    linear_pnl_rub: float
+    rates_gamma_pnl_rub: float
+    spread_gamma_pnl_rub: float
+    rates_spread_cross_pnl_rub: float
+    approximate_pnl_rub: float
+    exact_pnl_rub: float
+    residual_pnl_rub: float
+
+
+@dataclass(frozen=True)
+class BondDefaultResult:
+    """Immediate recovery of outstanding principal; signed dirty-PV change."""
+
+    base_id: str
+    default_id: str
+    outstanding_nominal_rub_per_bond: float
+    recovery_rate: float
+    base_pv_rub: float
+    recovery_pv_rub: float
+    jtd_pnl_rub: float
+    model_version: str = "bond-immediate-principal-recovery-v1"
+
+
 def _curve_identity(curve: DiscountCurve | CurveBootstrapRequest) -> dict[str, object]:
     payload: dict[str, object] = {
         "curve_date": curve.curve_date,
@@ -410,4 +453,128 @@ class BondRiskEngine:
             spread_pnl_rub=credit,
             interaction_pnl_rub=interaction,
             total_pnl_rub=total,
+        )
+
+    def second_order(self, *, bump_bp: float = 1.0) -> BondSecondOrderRisk:
+        """Compute every rate/rate, rate/spread and spread/spread second derivative.
+
+        Base calibration stays frozen. No sparsity is assumed. These central
+        deltas deliberately differ from the default one-sided risk() result.
+        """
+        bump = positive_money(bump_bp, "second-order bump bp")
+        square = positive_money(bump * bump, "squared second-order bump")
+        positive_money(4 * square, "mixed-difference denominator")
+        size = len(RISK_BUCKETS) + 1
+        quantity = self.request.quantity
+
+        def price(moves: list[float]) -> float:
+            return self._price(tuple(moves[:-1]), moves[-1])
+
+        gradient = []
+        hessian = [[0.0] * size for _ in range(size)]
+        for i in range(size):
+            moves = [0.0] * size
+            moves[i] = bump
+            up = price(moves)
+            moves[i] = -bump
+            down = price(moves)
+            gradient.append(finite_money((up - down) / (2 * bump) * quantity, "gradient"))
+            hessian[i][i] = finite_money(
+                ((up - self.base_price_rub) + (down - self.base_price_rub)) / square * quantity,
+                "diagonal gamma",
+            )
+            for j in range(i):
+                values = []
+                for sign_i, sign_j in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
+                    pair = [0.0] * size
+                    pair[i], pair[j] = sign_i * bump, sign_j * bump
+                    values.append(price(pair))
+                mixed = finite_money(
+                    ((values[0] - values[1]) - (values[2] - values[3])) / (4 * square) * quantity,
+                    "cross gamma",
+                )
+                hessian[i][j] = hessian[j][i] = mixed
+        return BondSecondOrderRisk(
+            base_id=self.base_id,
+            curve_basis=self.curve_basis,
+            spread_convention=self.request.spread_convention.identifier,
+            factors=(*RISK_BUCKETS, self.request.spread_kind + "_spread"),
+            bump_bp=bump,
+            gradient_rub_per_bp=tuple(gradient),
+            hessian_rub_per_bp2=tuple(tuple(row) for row in hessian),
+        )
+
+    def jump_to_default(
+        self, *, outstanding_nominal_rub_per_bond: float, recovery_rate: float
+    ) -> BondDefaultResult:
+        """Signed quantity * (recovery * current principal - dirty unit PV).
+
+        Recovery is an explicit fraction in [0, 1], paid immediately at settlement.
+        No recovery of coupons/accrued, default delay or subordination inference.
+        """
+        nominal = positive_money(outstanding_nominal_rub_per_bond, "outstanding nominal")
+        recovery = non_negative_money(recovery_rate, "recovery fraction")
+        if recovery > 1:
+            raise ValueError("recovery fraction must be between 0 and 1")
+        quantity = self.request.quantity
+        base = finite_money(self.base_price_rub * quantity, "base PV")
+        recovered = finite_money(nominal * recovery * quantity, "recovery PV")
+        return BondDefaultResult(
+            base_id=self.base_id,
+            default_id=canonical_sha256(
+                {
+                    "base_id": self.base_id,
+                    "outstanding_nominal_rub_per_bond": nominal,
+                    "recovery_rate": recovery,
+                    "model": "bond-immediate-principal-recovery-v1",
+                }
+            ),
+            outstanding_nominal_rub_per_bond=nominal,
+            recovery_rate=recovery,
+            base_pv_rub=base,
+            recovery_pv_rub=recovered,
+            jtd_pnl_rub=finite_money(recovered - base, "JTD PnL"),
+        )
+
+    def approximate(
+        self, scenario: BondScenario, *, bump_bp: float = 1.0
+    ) -> BondScenarioApproximation:
+        """Central delta + 1/2 x'Hx, with exact repricing and a signed residual."""
+        risk = self.second_order(bump_bp=bump_bp)
+        moves = (*scenario.curve_shifts_bp, scenario.spread_shift_bp)
+        hessian = risk.hessian_rub_per_bp2
+        try:
+            linear = finite_money(
+                math.fsum(d * x for d, x in zip(risk.gradient_rub_per_bp, moves)), "linear PnL"
+            )
+            rates = finite_money(
+                0.5
+                * math.fsum(
+                    moves[i] * hessian[i][j] * moves[j] for i in range(11) for j in range(11)
+                ),
+                "rates gamma PnL",
+            )
+            spread = finite_money(0.5 * moves[11] ** 2 * hessian[11][11], "spread gamma PnL")
+            cross = finite_money(
+                math.fsum(moves[i] * hessian[i][11] * moves[11] for i in range(11)),
+                "rate/spread cross PnL",
+            )
+            approximate = finite_money(math.fsum((linear, rates, spread, cross)), "approximate PnL")
+        except OverflowError as exc:
+            raise ValueError("approximation is outside the supported numerical domain") from exc
+        exact = self.reprice(scenario)
+        return BondScenarioApproximation(
+            base_id=self.base_id,
+            scenario_id=exact.scenario_id,
+            curve_basis=self.curve_basis,
+            second_order_id=canonical_sha256(risk),
+            linear_pnl_rub=linear,
+            rates_gamma_pnl_rub=rates,
+            spread_gamma_pnl_rub=spread,
+            rates_spread_cross_pnl_rub=cross,
+            approximate_pnl_rub=approximate,
+            exact_pnl_rub=exact.total_pnl_rub,
+            residual_pnl_rub=finite_money(
+                exact.total_pnl_rub - approximate, "approximation residual"
+            ),
         )

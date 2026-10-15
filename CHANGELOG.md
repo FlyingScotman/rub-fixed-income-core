@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0 — 2026-10-15
+
+- Add the full fixed-RUB rate/spread Hessian and a central Taylor P&L comparison against exact scenarios.
+- Add signed immediate-default P&L with mandatory recovery on explicit outstanding principal.
+- Add a pure local fixed-bond adapter with clean/dirty conversion, snapshot/run identities, horizon guards and required matching zero/OIS factor basis.
+- Preserve existing pricing and forward risk defaults. Scope and synthetic numerical references are documented in `docs/second-order-local-risk.md`.
+
 ## 0.4.0
 
 - Add explicit fixed-cashflow RUB risk: 11 triangular key-rate buckets, normalized KRD, signed DV01, CS01/OFZ spread sensitivity, and full same-settlement scenarios.

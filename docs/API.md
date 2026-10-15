@@ -93,3 +93,7 @@ All convention objects are frozen and hashable.
 ## Fixed-cashflow risk and scenarios (0.4.0)
 
 `BondRiskRequest`, `BondRiskEngine`, and `BondScenario` provide signed RUB DV01/KRD, CS01/OFZ spread risk, and exact same-date repricing. Curve basis and spread convention are explicit; a calibrated base spread stays frozen under curve shocks. See [risk contract and example](risk.md) for inputs, methods, identities and supported scope.
+
+## Fixed-RUB risk extensions (0.5.0)
+
+See [second-order and local API](second-order-local-risk.md) for `BondRiskEngine.second_order`, `approximate`, `jump_to_default`, and `prepare_local_bond_risk`.
