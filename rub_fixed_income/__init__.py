@@ -1,5 +1,6 @@
 """Deterministic RUB fixed-income financial mathematics."""
 
+from ._version import __version__
 from .accumulation import AccumulationPeriod, constant_daily_accumulation_periods
 from .analytics import (
     V1_YIELD_CONVENTION,
@@ -78,15 +79,25 @@ from .key_rate import (
     build_key_rate_forward_curve,
     price_key_rate_swap,
 )
+from .local_risk import (
+    FixedRubBondInput,
+    LocalBondScenarioResult,
+    PreparedLocalBondRisk,
+    RiskRunContext,
+    prepare_local_bond_risk,
+)
 from .risk import (
     RISK_BUCKETS,
     RISK_MODEL_VERSION,
     RISK_PILLARS,
+    BondDefaultResult,
     BondRiskEngine,
     BondRiskRequest,
     BondRiskResult,
     BondScenario,
+    BondScenarioApproximation,
     BondScenarioResult,
+    BondSecondOrderRisk,
     BucketRisk,
     key_rate_weights,
 )
@@ -115,11 +126,14 @@ __all__ = [
     "BondAnalyticsResultV1",
     "BondAnalyticsResultV2",
     "BondCashflow",
+    "BondDefaultResult",
     "BondRiskEngine",
     "BondRiskRequest",
     "BondRiskResult",
     "BondScenario",
+    "BondScenarioApproximation",
     "BondScenarioResult",
+    "BondSecondOrderRisk",
     "BondTermsV1",
     "BucketRisk",
     "BusinessCalendar",
@@ -138,6 +152,7 @@ __all__ = [
     "FinancedBondProjection",
     "FinancedBondRequest",
     "FinancingStep",
+    "FixedRubBondInput",
     "GridBuildPolicy",
     "GridIdentity",
     "KeyRateCurveBuildRequest",
@@ -150,8 +165,11 @@ __all__ = [
     "KeyRateSwapPricingRequest",
     "KeyRateSwapPricingResult",
     "KeyRateSwapQuote",
+    "LocalBondScenarioResult",
     "MarketObservationV1",
     "OisQuote",
+    "PreparedLocalBondRisk",
+    "RiskRunContext",
     "ScheduleConvention",
     "SettlementConvention",
     "TradeGrid",
@@ -162,6 +180,7 @@ __all__ = [
     "YieldRequest",
     "YieldResult",
     "ZSpreadConvention",
+    "__version__",
     "adjust_date",
     "analyze_bond",
     "analyze_bond_v2",
@@ -179,6 +198,7 @@ __all__ = [
     "generate_schedule",
     "key_rate_weights",
     "lookup_trade_metric",
+    "prepare_local_bond_risk",
     "price_cashflows",
     "price_key_rate_swap",
     "project_financed_bond",
@@ -189,5 +209,3 @@ __all__ = [
     "solve_z_spread",
     "verify_result_sha256",
 ]
-
-__version__ = "0.4.0"

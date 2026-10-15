@@ -40,6 +40,18 @@ uv run mypy rub_fixed_income
 uv build
 ```
 
+The development commands above use `uv`, the Python project/package manager:
+
+- `sync` synchronizes the project environment; `--extra dev` includes the optional development dependencies.
+- `run` executes a tool in that environment. `pytest` runs tests; `-q` reduces its output.
+- `ruff check .` runs Ruff's lint checks; `check` selects checking and `.` means the current directory.
+- `mypy rub_fixed_income` runs the type checker on the named package directory.
+- `build` builds the distribution artifacts.
+
 ## Fixed-cashflow risk and scenarios (0.4.0)
 
 `BondRiskRequest`, `BondRiskEngine`, and `BondScenario` provide signed RUB DV01/KRD, CS01/OFZ spread risk, and exact same-date repricing. Curve basis and spread convention are explicit; a calibrated base spread stays frozen under curve shocks. See [risk contract and example](docs/risk.md) for inputs, methods, identities and supported scope.
+
+## Second-order risk, JTD and local boundary (0.5.0)
+
+The fixed-RUB engine now provides a full 12-factor Hessian, central Taylor P&L with exact comparison, and signed immediate-default P&L with mandatory recovery. A pure local adapter binds validated schedules, market and curve snapshots to explicit zero or OIS quote factors. See [contract and executable example](docs/second-order-local-risk.md).
