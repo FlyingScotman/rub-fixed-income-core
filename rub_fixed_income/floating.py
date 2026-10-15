@@ -70,7 +70,8 @@ class FixingHistory:
     RUONIA must have a fixing on every ``calendar`` business day before the
     latest fixing; only the trailing ``max_unpublished_business_days`` business
     days before ``valuation_date`` may carry the latest fixing. The key rate stays
-    in force until changed, so gaps between its fixings are not errors.
+    in force until changed, so gaps between its fixings are not errors. An empty
+    history projects coupons observed wholly on or after ``valuation_date``.
     """
 
     index: FixingIndex
@@ -97,12 +98,10 @@ class FixingHistory:
         if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
             raise ValueError("max_unpublished_business_days must be a nonnegative integer")
         rows = tuple((day, finite_money(rate, "fixing rate")) for day, rate in tuple(self.fixings))
-        if not rows:
-            raise ValueError("fixing history is empty")
         for (left, _), (right, _) in pairwise(rows):
             if right <= left:
                 raise ValueError("fixing dates must be strictly increasing")
-        if rows[-1][0] >= self.valuation_date:
+        if rows and rows[-1][0] >= self.valuation_date:
             raise ValueError("fixing history must end before the valuation date")
         if any(rate <= -1.0 for _, rate in rows):
             raise ValueError("fixing rates must exceed -100 %")
@@ -116,16 +115,17 @@ class FixingHistory:
         object.__setattr__(self, "_dates", tuple(day for day, _ in rows))
 
     @property
-    def latest_fixing_date(self) -> date:
-        return self._dates[-1]
+    def latest_fixing_date(self) -> date | None:
+        return self._dates[-1] if self._dates else None
 
     @property
     def unpublished_business_days(self) -> tuple[date, ...]:
         """Business days after the latest fixing and before the valuation date."""
-        if not _DAILY_PUBLISHED[self.index]:
+        latest = self.latest_fixing_date
+        if not _DAILY_PUBLISHED[self.index] or latest is None:
             return ()
         days = []
-        day = self.latest_fixing_date + timedelta(days=1)
+        day = latest + timedelta(days=1)
         while day < self.valuation_date:
             if self.calendar.is_business_day(day):
                 days.append(day)
@@ -155,7 +155,7 @@ class FixingHistory:
             raise LookupError(f"no {label} fixing on or before {observation.isoformat()}")
         if not _DAILY_PUBLISHED[self.index] or self._dates[position] == observation:
             return self.fixings[position][1], False
-        if observation < self.latest_fixing_date:
+        if observation < self._dates[-1]:
             raise LookupError(f"missing {label} fixing on business day {observation.isoformat()}")
         unpublished = self.unpublished_business_days
         if len(unpublished) > self.max_unpublished_business_days:

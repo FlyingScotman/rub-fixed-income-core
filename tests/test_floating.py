@@ -197,7 +197,6 @@ def test_key_rate_stays_in_force_until_changed() -> None:
 @pytest.mark.parametrize(
     ("rows", "message"),
     [
-        ((), "fixing history is empty"),
         (((VALUATION, 0.15),), "must end before the valuation date"),
         (((date(2026, 8, 3), 0.1), (date(2026, 8, 3), 0.1)), "strictly increasing"),
         (((date(2026, 8, 1), 0.15),), "fixing on non-business day 2026-08-01"),
@@ -332,3 +331,13 @@ def test_floating_history_must_be_dated_at_the_curve_date() -> None:
     periods = _quarterly(VALUATION, 1)
     with pytest.raises(ValueError, match="dated at the curve date"):
         _floater_request(periods, DiscountCurve.flat(date(2026, 8, 4), 0.14), spread=0.0)
+
+
+def test_an_empty_history_projects_future_coupons_only() -> None:
+    empty = FixingHistory("ruonia", VALUATION, (), CALENDAR, "empty")
+    assert empty.latest_fixing_date is None
+    assert empty.unpublished_business_days == ()
+    future = _one(FloatingLeg(_rule(), (_period(date(2026, 8, 10), date(2026, 11, 10)),), empty))
+    assert future.source == "projected"
+    with pytest.raises(LookupError, match="no RUONIA fixing on or before 2026-08-04"):
+        _one(FloatingLeg(_rule(), (_period(date(2026, 8, 4), date(2026, 11, 10)),), empty))

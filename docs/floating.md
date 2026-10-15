@@ -14,6 +14,8 @@ the publication calendar and the coupon terms.
     is published on T+1, and rejecting later dates prevents look-ahead.
   - `snapshot_id` and `known_at_utc` name the caller's point-in-time selection, for
     example `CurveRepository.fixing_snapshot(...)` in market-data-store.
+  - An empty history is allowed. It projects coupons observed wholly on or after
+    `valuation_date`; any known observation it lacks is a `LookupError`.
   - **RUONIA** must have a fixing on every `calendar` business day up to its latest
     fixing; a missing business day is a `LookupError`. Only the trailing business days
     before `valuation_date` with no published fixing yet may carry the latest fixing,
