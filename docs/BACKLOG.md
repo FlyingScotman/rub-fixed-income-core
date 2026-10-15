@@ -98,3 +98,28 @@ other repositories and must be changed there, not in this core.
 27. ofz-rates-app: pytest is not a dev dependency.
 28. market-data-store (2) and ofz-market-figures-reporter (1): tests asserting
     `HTTPS_PROXY` routing in cron wrappers fail in the current environment.
+
+## Floater audit and local worker follow-up — 2026-10-15
+
+29. **P1 — fixing-aware floater core and API consistency (C05).** The service
+    already joins realized RUONIA/key-rate accrual with projection; known full
+    coupons are respected. The separate market-data-store `curves.py` API has no
+    history input and rejects elapsed periods with current-date curves. Introduce
+    explicit fixing history/as-of and contractual observation rules in core,
+    migrate both callers, and freeze known fixings under risk bumps. Cover full
+    and partial periods, margin, zero published coupons, lag, day count, rounding
+    and missing-history failure. Do not classify projected floaters as fixed risk.
+30. **P0 — point-in-time fixing selection (downstream, C05/HIST-01).**
+    `CurveRepository.index_fixings` selects by fixing date only; future-ingested
+    observations can enter historical results. Add known-at/revision selection,
+    preserve corrected observations and bind fixing snapshots to calculation IDs.
+31. **P0 — RUONIA observation gaps (downstream, C05/DATA-01).**
+    `_realized_ruonia` silently carries a stale fixing across missing weekdays.
+    Validate required observations with an official calendar and explicit
+    permitted carry rules; distinguish overnight fixings from key-rate changes.
+32. **Worker integration:** 0.6.0 supplies the pure portfolio worker and strict
+    market-data-store schedule bridge (`docs/local-worker.md`). Remaining: wire
+    validated live public bundles and private local positions into the actual
+    monitor, persist coverage/basis/content identity, validate Windows and measure
+    the real supported universe. No source-authenticity or complete-history claim
+    follows from snapshot labels or synthetic integration tests.
