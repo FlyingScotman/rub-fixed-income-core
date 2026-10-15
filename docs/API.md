@@ -101,6 +101,14 @@ All convention objects are frozen and hashable.
 `BondRiskRequest(floating_leg=...)` and `FLOATING_RISK_MODEL_VERSION`. See
 [floating coupons](floating.md).
 
+## FX futures (0.8.1)
+
+`FxFuturesContract`, `FxFuturesRiskRequest`, `FxFuturesRiskEngine` (`.risk`, `.reprice`,
+`.second_order`), `FxFuturesScenario`, `FxFuturesRiskResult`, `FxFuturesScenarioResult`,
+`FxFuturesSecondOrderRisk`, `FX_FUTURES_RISK_MODEL_VERSION` and
+`FX_FUTURES_SECOND_ORDER_MODEL_VERSION`. Prices are in RUB per `price_quote_units`
+foreign units. Money is signed RUB of variation margin. See [FX futures](fx-futures.md).
+
 ## Fixed-RUB risk extensions (0.5.0)
 
 See [second-order and local API](second-order-local-risk.md) for `BondRiskEngine.second_order`, `approximate`, `jump_to_default`, and `prepare_local_bond_risk`.
