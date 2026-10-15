@@ -23,6 +23,7 @@ linear guardrail; they do not call the exact solver.
 - [Conventions](docs/CONVENTIONS.md) — day counts, compounding, calendars, schedules, curve, yield, Z-spread, AI equations
 - [API](docs/API.md) — public functions, units, errors
 - [Consumers](docs/CONSUMERS.md) — who uses the core and how it is pinned
+- [FX futures](docs/fx-futures.md) — rate, basis and spot risk of FX futures against RUB
 - [Backlog](docs/BACKLOG.md) — remaining fixes and downstream migrations
 - [Changelog](CHANGELOG.md)
 
@@ -62,5 +63,11 @@ The fixed-RUB engine now provides a full 12-factor Hessian, central Taylor P&L w
 fixings, taken from an explicit point-in-time `FixingHistory` with RUONIA gap
 checks, with curve projection. `BondRiskRequest(floating_leg=...)` freezes the
 known part under every bump. See [floating coupons](docs/floating.md).
+
+## FX futures rate risk (0.8.1)
+
+`FxFuturesRiskEngine` prices FX futures against RUB by covered parity with a
+calibrated, frozen basis. It reports RUB-curve and foreign-curve bucket DV01,
+basis01, FX delta, exact scenarios and the full Hessian. See [FX futures](docs/fx-futures.md).
 
 Portfolio jobs and the public schedule bridge: [local worker](docs/local-worker.md). 0.7.0 adds shared OIS curve reuse, cooperative cancellation/time budgets and a versioned, hash-verified JSON result contract for storage.

@@ -138,6 +138,105 @@ def _snapshot_convention(convention: CurveConvention) -> CurveConvention:
     return replace(convention, fixed_leg_schedule=replace(schedule, calendar=calendar))
 
 
+RiskCurve = DiscountCurve | CurveBootstrapRequest
+
+
+def _snapshot_curve(curve: RiskCurve) -> RiskCurve:
+    """Validate and copy a risk curve input so caller mutations cannot reach it."""
+    curve = replace(curve, convention=_snapshot_convention(curve.convention))
+    if isinstance(curve, CurveBootstrapRequest):
+        quotes = tuple(sorted(curve.quotes, key=lambda q: q.maturity))
+        for quote in quotes:
+            finite_money(quote.par_rate, "OIS par rate")
+        return replace(curve, quotes=quotes)
+    nodes = tuple((d, positive_money(df, "discount factor")) for d, df in curve.nodes)
+    if curve._flat_continuous_rate is not None:
+        finite_money(curve._flat_continuous_rate, "flat continuous rate")
+    return replace(curve, nodes=nodes)
+
+
+def _curve_basis(curve: RiskCurve) -> str:
+    return "ois_quote" if isinstance(curve, CurveBootstrapRequest) else "continuous_zero"
+
+
+def _base_curve(source: RiskCurve, cache: ShockedCurveCache) -> DiscountCurve:
+    if isinstance(source, CurveBootstrapRequest):
+        return cache.bootstrap(source, _ZERO_SHOCK, lambda: bootstrap_discount_curve(source))
+    return source
+
+
+def _shock_curve(
+    source: RiskCurve,
+    base: DiscountCurve,
+    shifts: tuple[float, ...],
+    cache: ShockedCurveCache,
+) -> DiscountFactorCurve:
+    """Zero-rate overlay for a DiscountCurve, quote shift and rebootstrap for OIS."""
+    if not any(shifts):
+        return base
+    if isinstance(source, CurveBootstrapRequest):
+
+        def build() -> DiscountCurve:
+            quotes = tuple(
+                replace(
+                    q,
+                    par_rate=finite_money(
+                        q.par_rate
+                        + _shift_at(
+                            source.convention.time_day_count.year_fraction(
+                                source.curve_date, q.maturity
+                            ),
+                            shifts,
+                        )
+                        * 1e-4,
+                        "shocked OIS quote",
+                    ),
+                )
+                for q in source.quotes
+            )
+            return bootstrap_discount_curve(replace(source, quotes=quotes))
+
+        return cache.bootstrap(source, shifts, build)
+    return _ZeroShockCurve(base, shifts)
+
+
+def _central_derivatives(
+    price: Callable[[list[float]], float],
+    size: int,
+    bump: float,
+    base_price: float,
+    quantity: float,
+) -> tuple[tuple[float, ...], tuple[tuple[float, ...], ...]]:
+    """Central gradient and full Hessian of quantity * price over ``size`` bp factors."""
+    square = positive_money(bump * bump, "squared second-order bump")
+    positive_money(4 * square, "mixed-difference denominator")
+    gradient = []
+    hessian = [[0.0] * size for _ in range(size)]
+    for i in range(size):
+        moves = [0.0] * size
+        moves[i] = bump
+        up = price(moves)
+        moves[i] = -bump
+        down = price(moves)
+        gradient.append(finite_money((up - down) / (2 * bump) * quantity, "gradient"))
+        hessian[i][i] = finite_money(
+            ((up - base_price) + (down - base_price)) / square * quantity,
+            "diagonal gamma",
+        )
+        for j in range(i):
+            values = []
+            for sign_i, sign_j in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
+                pair = [0.0] * size
+                pair[i], pair[j] = sign_i * bump, sign_j * bump
+                values.append(price(pair))
+            mixed = finite_money(
+                ((values[0] - values[1]) - (values[2] - values[3])) / (4 * square) * quantity,
+                "cross gamma",
+            )
+            hessian[i][j] = hessian[j][i] = mixed
+    return tuple(gradient), tuple(tuple(row) for row in hessian)
+
+
 @dataclass(frozen=True)
 class BondRiskRequest:
     """Amounts are RUB per bond; quantity is signed bonds, price is dirty RUB/bond.
@@ -197,21 +296,7 @@ class BondRiskRequest:
             raise ValueError("at least one positive future bond cashflow is required")
         object.__setattr__(self, "cashflows", tuple(sorted(flows, key=lambda f: f.payment_date)))
         # Copy collection inputs so later caller mutations cannot change a calibrated state.
-        object.__setattr__(
-            self,
-            "curve",
-            replace(self.curve, convention=_snapshot_convention(self.curve.convention)),
-        )
-        if isinstance(self.curve, CurveBootstrapRequest):
-            quotes = tuple(sorted(self.curve.quotes, key=lambda q: q.maturity))
-            for quote in quotes:
-                finite_money(quote.par_rate, "OIS par rate")
-            object.__setattr__(self, "curve", replace(self.curve, quotes=quotes))
-        else:
-            nodes = tuple((d, positive_money(df, "discount factor")) for d, df in self.curve.nodes)
-            if self.curve._flat_continuous_rate is not None:
-                finite_money(self.curve._flat_continuous_rate, "flat continuous rate")
-            object.__setattr__(self, "curve", replace(self.curve, nodes=nodes))
+        object.__setattr__(self, "curve", _snapshot_curve(self.curve))
 
 
 @dataclass(frozen=True)
@@ -344,14 +429,7 @@ class BondRiskEngine:
         req = self.request
         if not isinstance(self.curve_cache, ShockedCurveCache):
             raise TypeError("curve_cache must be a ShockedCurveCache")
-        source = req.curve
-        curve = (
-            self.curve_cache.bootstrap(
-                source, _ZERO_SHOCK, lambda: bootstrap_discount_curve(source)
-            )
-            if isinstance(source, CurveBootstrapRequest)
-            else source
-        )
+        curve = _base_curve(req.curve, self.curve_cache)
         object.__setattr__(self, "_curve", curve)
         object.__setattr__(self, "projected_coupons", self._project(curve))
         spread = req.spread_bp
@@ -395,11 +473,7 @@ class BondRiskEngine:
 
     @property
     def curve_basis(self) -> str:
-        return (
-            "ois_quote"
-            if isinstance(self.request.curve, CurveBootstrapRequest)
-            else "continuous_zero"
-        )
+        return _curve_basis(self.request.curve)
 
     @property
     def model_version(self) -> str:
@@ -424,33 +498,7 @@ class BondRiskEngine:
         return tuple(sorted((*fixed, *((c.payment_date, c.amount_rub) for c in coupons))))
 
     def _shocked_curve(self, shifts: tuple[float, ...]) -> DiscountFactorCurve:
-        if not any(shifts):
-            return self._curve
-        source = self.request.curve
-        if isinstance(source, CurveBootstrapRequest):
-
-            def build() -> DiscountCurve:
-                quotes = tuple(
-                    replace(
-                        q,
-                        par_rate=finite_money(
-                            q.par_rate
-                            + _shift_at(
-                                source.convention.time_day_count.year_fraction(
-                                    source.curve_date, q.maturity
-                                ),
-                                shifts,
-                            )
-                            * 1e-4,
-                            "shocked OIS quote",
-                        ),
-                    )
-                    for q in source.quotes
-                )
-                return bootstrap_discount_curve(replace(source, quotes=quotes))
-
-            return self.curve_cache.bootstrap(source, shifts, build)
-        return _ZeroShockCurve(self._curve, shifts)
+        return _shock_curve(self.request.curve, self._curve, shifts, self.curve_cache)
 
     def _price(self, shifts: tuple[float, ...], spread_shift: float) -> float:
         try:
@@ -555,46 +603,22 @@ class BondRiskEngine:
         deltas deliberately differ from the default one-sided risk() result.
         """
         bump = positive_money(bump_bp, "second-order bump bp")
-        square = positive_money(bump * bump, "squared second-order bump")
-        positive_money(4 * square, "mixed-difference denominator")
         size = len(RISK_BUCKETS) + 1
-        quantity = self.request.quantity
 
         def price(moves: list[float]) -> float:
             return self._price(tuple(moves[:-1]), moves[-1])
 
-        gradient = []
-        hessian = [[0.0] * size for _ in range(size)]
-        for i in range(size):
-            moves = [0.0] * size
-            moves[i] = bump
-            up = price(moves)
-            moves[i] = -bump
-            down = price(moves)
-            gradient.append(finite_money((up - down) / (2 * bump) * quantity, "gradient"))
-            hessian[i][i] = finite_money(
-                ((up - self.base_price_rub) + (down - self.base_price_rub)) / square * quantity,
-                "diagonal gamma",
-            )
-            for j in range(i):
-                values = []
-                for sign_i, sign_j in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
-                    pair = [0.0] * size
-                    pair[i], pair[j] = sign_i * bump, sign_j * bump
-                    values.append(price(pair))
-                mixed = finite_money(
-                    ((values[0] - values[1]) - (values[2] - values[3])) / (4 * square) * quantity,
-                    "cross gamma",
-                )
-                hessian[i][j] = hessian[j][i] = mixed
+        gradient, hessian = _central_derivatives(
+            price, size, bump, self.base_price_rub, self.request.quantity
+        )
         return BondSecondOrderRisk(
             base_id=self.base_id,
             curve_basis=self.curve_basis,
             spread_convention=self.request.spread_convention.identifier,
             factors=(*RISK_BUCKETS, self.request.spread_kind + "_spread"),
             bump_bp=bump,
-            gradient_rub_per_bp=tuple(gradient),
-            hessian_rub_per_bp2=tuple(tuple(row) for row in hessian),
+            gradient_rub_per_bp=gradient,
+            hessian_rub_per_bp2=hessian,
             model_version=_SECOND_ORDER_MODELS[self.model_version],
         )
 

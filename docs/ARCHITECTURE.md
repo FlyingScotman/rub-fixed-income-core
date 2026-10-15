@@ -20,6 +20,8 @@ or floats.
 | `analytics.py` | Snapshot-based deep interface: `analyze_bond` (V1, frozen conventions) and `analyze_bond_v2` (explicit conventions recorded in the result); canonical JSON/SHA-256 and result-hash verification; `accrued_interest_rub`. |
 | `trade_grid.py` | Validated PCHIP price→metric grids with identity checks and exact fallback. |
 | `key_rate.py` | MOEX IRS KEYRATE swap pricing and the identified pillar-forward key-rate curve build. |
+| `risk.py` | Bond DV01/KRD, spread risk, scenarios, Hessian, JTD; shared curve shocking (`ShockedCurveCache`). |
+| `fx_futures.py` | FX futures against RUB: covered-parity price, two-curve rate risk, basis, FX delta, scenarios, Hessian. |
 
 Dependency direction (no cycles):
 
@@ -40,6 +42,9 @@ graph LR
   conventions --> key_rate
   discount --> key_rate
   dates --> key_rate
+  discount --> risk
+  compatibility --> risk
+  risk --> fx_futures
 ```
 
 ## Data flow

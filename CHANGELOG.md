@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.8.1 — FX futures rate risk
+
+- New `rub_fixed_income.fx_futures`: `FxFuturesContract`, `FxFuturesRiskRequest`,
+  `FxFuturesRiskEngine`, `FxFuturesScenario` and their result types.
+  - The price is covered parity, `S * DF_for(T)/DF_for(s) / (DF_rub(T)/DF_rub(s)) * exp(b*tau)`.
+    The basis `b` is calibrated from a market futures price and frozen under shocks.
+  - Risk: 11-bucket and parallel DV01 for both the RUB and the foreign curve, basis01,
+    FX delta in foreign units and in RUB per 1 %. Each curve is in `continuous_zero` or
+    `ois_quote` basis, as for bonds, and the two may differ.
+  - Exact scenarios split P&L into RUB rates, foreign rates, basis, spot and their
+    interaction. The full 23-factor Hessian is available.
+  - Daily variation margin: P&L is not discounted. Model `rub-fx-futures-parity-risk-v1`.
+  - See `docs/fx-futures.md`.
+- Internal: curve snapshotting, shocking and the central Hessian in `risk.py` are now
+  shared helpers. Bond numbers are bit-identical to 0.8.0 (risk, Hessian, scenarios,
+  Taylor comparison in both bases).
+- The version stays below 0.9 so that market-data-store's `>=0.8.0,<0.9` pin still
+  resolves. The change is additive.
+
 ## 0.8.0 — fixing-aware floating coupons
 
 - New `rub_fixed_income.floating`: `FixingHistory`, `FloatingCouponRule`,

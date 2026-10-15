@@ -138,3 +138,17 @@ other repositories and must be changed there, not in this core.
     monitor, persist coverage/basis/content identity, validate Windows and measure
     the real supported universe. No source-authenticity or complete-history claim
     follows from snapshot labels or synthetic integration tests.
+
+## FX futures — 2026-10-15
+
+33. **FX futures in the local worker and the monitor.** The 0.8.1 core
+    (`docs/fx-futures.md`) gives rate risk on the RUB and foreign curves, basis,
+    FX delta, scenarios and the Hessian for a single position. Remaining:
+    - a public FX futures snapshot (contract terms from the exchange specification,
+      settlement price, spot and its value date, both curves, evidence);
+    - the delivery date from the official calendar (P0 #1);
+    - positions and coverage in `run_local_risk`;
+    - a new result-contract version, because v1 fixes the bond field set;
+    - an agreed choice of the foreign curve (OIS, or implied from FX swaps).
+34. **OTC FX forwards and swaps.** Their P&L is paid at `T` and needs discounting
+    on the RUB curve. This is a separate settlement style, not the futures model.
