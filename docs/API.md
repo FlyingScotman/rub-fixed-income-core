@@ -1,4 +1,4 @@
-# API reference (0.14.0)
+# API reference (0.15.0)
 
 Everything below is importable from `rub_fixed_income`. Units: decimal rates/spreads unless
 the name ends in `_bp` (basis points) or `_pct` (percent); amounts in RUB per bond; clean

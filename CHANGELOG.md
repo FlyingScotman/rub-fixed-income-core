@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.15.0 — golden tests against MOEX-published bond analytics
+
+Roadmap item 0.10. Tests and evidence only; no library code changes.
+
+- `tests/fixtures/moex_bonds/` holds MOEX ISS bond data for 16 October 2026
+  (settlement 19 October), copied from the hub at `c7a9d44` with its provenance.
+- `tests/test_moex_goldens.py` builds instruments from the exchange's bondization data,
+  as a backend adapter would, and checks:
+  - **Accrued interest:** `ACCRUEDINT` to the kopeck for 7 bonds. They include an OFZ-PD,
+    corporates with and without a maturity, an amortizer on its amortised face, a fixed
+    bond, an OFZ-PK with a known current coupon, and a CNY bond in its own currency.
+  - **OFZ 26238 yield:** the effective yield at `WAPRICE`, `LAST` and `PREVWAPRICE`
+    (previous settlement), each within 0.5 bp of MOEX's 0.01 % rounding.
+  - **OFZ 26238 duration:** `DURATION` within one day.
+  - **Put bond:** duration to the offer within one day.
+  - **End to end:** `value_portfolio` on the KBD curve of the same morning reproduces the
+    OFZ 26238 accrued, yield and duration.
+- Two known gaps are recorded by tests rather than hidden (BACKLOG #36):
+  - 30/360 accrual on a USD bond (MOEX 2738.89, core 2740.44);
+  - yield to offer on a short put bond (MOEX 9.51 %, core about 9.3–9.4 %).
+- Roadmap status records the Windows CI benchmark for 0.13.0 (2k positions):
+  - OIS with Hessian 11.8 ms per position cold and 9.9 ms seeded;
+  - KBD with Hessian 11.0 ms.
+
 ## 0.14.0 — horizon valuation: carry, rolldown and P&L explain
 
 Roadmap item 0.8. New API only; nothing existing changes.

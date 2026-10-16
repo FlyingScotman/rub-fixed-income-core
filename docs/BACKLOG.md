@@ -164,3 +164,14 @@ other repositories and must be changed there, not in this core.
     the `clean_price_pct_to_dirty_amount` alias. Its `price_cashflows`/`solve_z_spread`
     calls without `settlement_date` still warn; moving them is a behaviour change for the
     store's owner before core 1.0.
+36. **MOEX golden gaps (0.15.0).** `tests/test_moex_goldens.py` records two differences:
+    - **USD bond RU000A0JXTS9 (board TQOD).** MOEX accrues 30/360 (116 of 180 days:
+      2738.89); core's split accrual counts actual days (2740.44). A day-count field on
+      the coupon leg would close this. It matters only for non-RUB bonds (package 3).
+    - **Short put bond RU000A0JS4Z7.** MOEX gives 9.51 % to the offer at
+      `PREVWAPRICE` 107.93; core gives 9.30–9.39 % on the same flows. Durations agree.
+      Find MOEX's method for bonds under a year to the offer (simple yield? offer-date
+      lag?) before relying on core yields for such bonds.
+    - **Coverage.** The golden set should grow to about 12 bonds on fixed EOD dates once
+      the hub archives EOD ISS bond snapshots.
+
