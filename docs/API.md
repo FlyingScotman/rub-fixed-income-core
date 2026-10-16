@@ -1,4 +1,4 @@
-# API reference (0.13.0)
+# API reference (0.14.0)
 
 Everything below is importable from `rub_fixed_income`. Units: decimal rates/spreads unless
 the name ends in `_bp` (basis points) or `_pct` (percent); amounts in RUB per bond; clean
@@ -161,6 +161,15 @@ foreign units. Money is signed RUB of variation margin. See [FX futures](fx-futu
 `benchmarks/portfolio_bench.py --positions 2000` measures ms per position (KBD and OIS;
 first order, Hessian, scenarios, seeded). CI runs it on windows-latest / Python 3.11 and
 writes the table to the job summary (informational, never gating).
+
+## Horizon valuation (0.14.0)
+
+| Name | Description |
+| --- | --- |
+| `horizon_valuation(instrument, curve, calendar, *, horizon_date, spread_bp=None, dirty_price_rub=None, spread_convention=None, redemption_horizon="maturity", curve_cache=None)` | `HorizonValuation` per bond: `pv_start_rub`, `pv_forward_rub` (today's forwards realised), `pv_rolled_rub` (curve shape held), coupons and principal received in `(S0, S1]`, accrued and nominal at both settlements, `carry_rub`, `rolldown_rub`, `horizon_pnl_rub`. Exactly one of `spread_bp` / `dirty_price_rub`. Fixed-coupon bonds; others raise `UnsupportedProduct`. |
+| `explain_horizon_pnl(instrument, start_curve, end_curve, calendar, *, start_spread_bp \| start_dirty_price_rub, end_spread_bp \| end_dirty_price_rub, ...)` | `HorizonPnlExplain`: `carry + rolldown + rates + spread + residual == total` (full revaluation change to the end curve's date). |
+| `roll_curve(curve, horizon_date)` | The curve moved forward with its shape in calendar days unchanged. |
+| `horizon_portfolio(*, snapshot, instruments, positions, policy, horizon_date, curve_cache=None)` | `PortfolioHorizonResult`: `PositionHorizon` rows (signed RUB, per-bond detail), coverage with the same rejection codes as `value_portfolio`, covered carry / rolldown / horizon P&L and a total when coverage is complete. |
 
 ## Fixed-RUB risk extensions (0.5.0)
 

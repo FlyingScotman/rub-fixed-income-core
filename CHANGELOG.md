@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.14.0 — horizon valuation: carry, rolldown and P&L explain
+
+Roadmap item 0.8. New API only; nothing existing changes.
+
+- `horizon_valuation` carries a fixed-coupon bond from the curve date to a horizon
+  business date with the Z-spread held. The spread is given or calibrated to the start
+  dirty price. The result separates:
+  - **carry**: today's forwards are realised;
+  - **rolldown**: the curve keeps its shape in calendar days (`roll_curve`);
+  - coupons and principal received in `(S0, S1]` (amortization included);
+  - accrued interest and outstanding nominal at both settlements.
+
+  With `redemption_horizon="confirmed_put"` a put bond is valued to the offer
+  (yield-to-offer).
+- `explain_horizon_pnl` splits the full revaluation change to an end curve and spread
+  into carry, rolldown, rates, spread and a cross-term residual. The parts sum exactly to
+  the total.
+- `horizon_portfolio` applies this to a book. Positions resolve as in `value_portfolio`
+  (same checks, curve, calendar, quote, accrued and rejection codes). Results are signed
+  RUB per position; totals are given only when coverage is complete.
+- Tests cover:
+  - analytical carry of a zero-coupon bond on a flat curve, and no rolldown there;
+  - a coupon and an amortization inside the horizon;
+  - positive rolldown on an upward-sloping curve;
+  - the put horizon and calibration from dirty price;
+  - exact reconciliation and a second-order residual;
+  - portfolio resolution identical to `value_portfolio`.
+
 ## 0.13.0 — caller-held curves and the 2k-position benchmark
 
 Roadmap item 0.7 (completed). No identifier or number changes: every pinned hash and

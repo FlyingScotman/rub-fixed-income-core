@@ -168,6 +168,27 @@ Portfolio results report first order and the sparse upper-triangle Hessian from 
 differences with the same bump (DEC08). Signs: DV01 is PV(+1 bp) − PV(0), negative for a
 long bond.
 
+## Horizon valuation: carry and rolldown (0.14.0)
+
+Start at settlement `S0` of business date `d0`; horizon at settlement `S1` of `d1` (the
+instrument's settlement lag in its calendar). The Z-spread is held.
+
+- **Received:** coupons and principal paid in `(S0, S1]`, as cash (no reinvestment).
+- **Carry** = `PV(S1 | today's curve read forward from S1) + received - PV(S0)`: the return
+  if today's forwards are realised. For a zero-coupon bond on a flat continuous curve
+  with a continuous spread it is `PV(S0) * (exp((r + s) * h) - 1)`, `h` in ACT/365F.
+- **Rolldown** = `PV(S1 | rolled curve) - PV(S1 | forwards)`. The rolled curve keeps
+  today's shape in calendar days: `DF_rolled(d1 + k) / DF_rolled(d1) = DF(d0 + k) / DF(d0)`.
+  It is zero on a flat curve and positive for a long bond on an upward-sloping curve.
+- **Explain** to an end curve (dated `d1`) and end spread `s1`:
+  - `rates = V(end curve, s0) - V(rolled, s0)`;
+  - `spread = V(rolled, s1) - V(rolled, s0)`;
+  - `residual` is the cross term.
+
+  The parts sum exactly to `V(end, s1) + received - PV(S0)`.
+- **Put bonds:** `redemption_horizon="confirmed_put"` values to the first confirmed put
+  (yield-to-offer), as the desk quotes them.
+
 ## Financed-bond accumulation
 
 `constant_daily_accumulation_periods(start, horizon, boundaries, r)`: factor per period

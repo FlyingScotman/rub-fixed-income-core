@@ -4,7 +4,7 @@
 
 Written against core v0.6.0 (HEAD `454a78c`, 16 October 2026), then reconciled with **0.8.1** and updated release by release from 0.9.0.
 
-## Status after 0.7.0–0.13.0
+## Status after 0.7.0–0.14.0
 
 | Release | Delivered | Roadmap item | Remaining |
 |---|---|---|---|
@@ -16,6 +16,7 @@ Written against core v0.6.0 (HEAD `454a78c`, 16 October 2026), then reconciled w
 | 0.11.0 | KBD evaluator, G-spread and materialised curve (golden: MOEX standard yields within 0.01 bp); curve-spec registry (`rub_ofz_kbd_v1`, `rub_ruonia_ois_legacy_v1`, `rub_key_rate_swap_v1`); desk factors `IR\|curve\|bucket`, `CS`, `FX\|ccy` with sparse Hessian; `value_portfolio` over `Instrument`/`MarketSnapshot`/`Position` with coded coverage and result contract v2 | 0.6, minimal 0.5, §2 items 4 and 6 | Full 0.5 (`rub_ruonia_ois_moex_v2`, spot/payment lags, tenor resolver); prebuilt shocked curves across calls and the 2k Windows benchmark (0.7); floaters and FX futures in `value_portfolio` |
 | 0.12.0 | `DeprecationWarning` on `analyze_bond` V1, `solve_continuous_z_spread`, the curve-date `price_cashflows`/`solve_z_spread` path, the `clean_price_pct_to_dirty_amount` alias and `bind_market_data_store_schedule`; shared risk internals in `_risk_common.py`; docs refreshed | 0.9 | Removal of the deprecated APIs in 1.0; V1 → annual Z default (BACKLOG #7) |
 | 0.13.0 | Caller-held curves: `PrebuiltCurve`, `ShockedCurveCache.export`/`seed` (verified by exact repricing), `value_portfolio(curve_cache=...)`; shared curve snapshots and per-curve memos (numbers unchanged); `benchmarks/portfolio_bench.py` with a Windows CI report. 2k positions, Linux: OIS with Hessian 10.0 ms/position cold, 8.1 ms seeded; KBD 9.3 ms | 0.7 (completed) | Faster OIS bootstrap (BACKLOG #12) would cut the cold cost further; Windows numbers come from the CI job summary |
+| 0.14.0 | `horizon_valuation`, `explain_horizon_pnl`, `roll_curve`, `horizon_portfolio`: carry (forwards realised), rolldown (constant curve shape), coupons and amortization received, accrued at both ends, yield-to-offer for confirmed puts; explain into carry + rolldown + rates + spread + residual that sums exactly | 0.8 | Floaters at the horizon (package 1); a hashed horizon result contract if the backend persists it; Taylor (factor) attribution of `rates` for PnL explain (M5, DEC05) |
 
 The sections below keep the original 0.6.0 baseline for traceability. Where they conflict with this table, **this table is current**.
 

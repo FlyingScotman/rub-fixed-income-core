@@ -25,9 +25,11 @@ from ._money import finite_money, positive_money
 from ._version import __version__
 from .bond import YieldRequest, solve_effective_annual_yield
 from .canonical import canonical_json_bytes, canonical_sha256
+from .cashflows import clean_price_pct_to_dirty_rub
 from .compatibility import bond_duration
 from .conventions import ZSpreadConvention, calendar_fingerprint
 from .curve_specs import CurveKind, get_curve_spec
+from .dates import BusinessCalendar
 from .discount import CurveBootstrapRequest, DiscountCurve
 from .domain import (
     AccountingCategory,
@@ -39,6 +41,7 @@ from .domain import (
 )
 from .errors import CoreRejection, InvalidTerms, UnsupportedProduct
 from .factors import FactorRisk, bond_factor_risk
+from .horizon import HORIZON_MODEL_VERSION, HorizonValuation, horizon_valuation
 from .kbd import KBD_MODEL_VERSION, ZcycParameters, g_spread_bp, kbd_discount_curve
 from .local_risk import (
     FixedRubBondInput,
@@ -56,13 +59,16 @@ __all__ = [
     "CurveUse",
     "FactorTotal",
     "PortfolioCoverage",
+    "PortfolioHorizonResult",
     "PortfolioRiskResult",
     "PortfolioScenario",
     "PortfolioScenarioResult",
+    "PositionHorizon",
     "PositionScenarioPnl",
     "PositionValuation",
     "Rejection",
     "ValuationPolicy",
+    "horizon_portfolio",
     "portfolio_result_from_json",
     "portfolio_result_to_json",
     "value_portfolio",
@@ -430,17 +436,7 @@ def value_portfolio(
     return replace(result, result_sha256=canonical_sha256(portfolio_result_hash_projection(result)))
 
 
-def _value_position(
-    position: Position,
-    instruments: Mapping[str, Instrument],
-    snapshot: MarketSnapshot,
-    policy: ValuationPolicy,
-    curve: Callable[[str], _BuiltCurve],
-    cache: ShockedCurveCache,
-    job_id: str,
-    run_id: str,
-    used_calendars: dict[str, CalendarUse],
-) -> tuple[PositionValuation, PreparedLocalBondRisk]:
+def _supported_instrument(position: Position, instruments: Mapping[str, Instrument]) -> Instrument:
     instrument = instruments.get(position.instrument_id)
     if instrument is None:
         raise InvalidTerms("instrument terms were not supplied for this position")
@@ -454,14 +450,36 @@ def _value_position(
         raise UnsupportedProduct("perpetual bonds need a call assumption (package 9)")
     if any(o.kind.value == "call" for o in instrument.offers):
         raise UnsupportedProduct("callable bonds are not supported (package 9)")
+    return instrument
+
+
+def _use_calendar(
+    snapshot: MarketSnapshot, instrument: Instrument, used: dict[str, CalendarUse]
+) -> BusinessCalendar:
     calendar = snapshot.calendar(instrument.calendar_id)
-    used_calendars[instrument.calendar_id] = CalendarUse(
+    used[instrument.calendar_id] = CalendarUse(
         instrument.calendar_id,
         calendar.version,
         calendar_fingerprint(calendar),
         calendar.valid_from,
         calendar.valid_to,
     )
+    return calendar
+
+
+def _value_position(
+    position: Position,
+    instruments: Mapping[str, Instrument],
+    snapshot: MarketSnapshot,
+    policy: ValuationPolicy,
+    curve: Callable[[str], _BuiltCurve],
+    cache: ShockedCurveCache,
+    job_id: str,
+    run_id: str,
+    used_calendars: dict[str, CalendarUse],
+) -> tuple[PositionValuation, PreparedLocalBondRisk]:
+    instrument = _supported_instrument(position, instruments)
+    calendar = _use_calendar(snapshot, instrument, used_calendars)
     settlement = calendar.add_business_days(snapshot.business_date, instrument.settlement_lag_days)
     curve_id = policy.curve_for(instrument.instrument_id)
     built = curve(curve_id)
@@ -659,3 +677,158 @@ def portfolio_result_from_json(data: bytes | str) -> PortfolioRiskResult:
     if not verify_portfolio_result(raw):
         raise ValueError("portfolio result_sha256 does not verify")
     return cast(PortfolioRiskResult, decode(PortfolioRiskResult, raw, "result"))
+
+
+@dataclass(frozen=True)
+class PositionHorizon:
+    """Carry and rolldown of one position (RUB, signed by quantity) and its per-bond detail."""
+
+    position_id: str
+    instrument_id: str
+    book: str
+    accounting_category: AccountingCategory
+    curve_id: str
+    quantity: float
+    carry_rub: float
+    rolldown_rub: float
+    received_rub: float
+    horizon_pnl_rub: float
+    per_bond: HorizonValuation
+
+
+@dataclass(frozen=True)
+class PortfolioHorizonResult:
+    """Book carry to ``horizon_date``; totals are ``None`` unless coverage is complete."""
+
+    snapshot_id: str
+    business_date: date
+    horizon_date: date
+    library_version: str
+    coverage: PortfolioCoverage
+    positions: tuple[PositionHorizon, ...]
+    calendars: tuple[CalendarUse, ...]
+    covered_carry_rub: float
+    covered_rolldown_rub: float
+    covered_horizon_pnl_rub: float
+    total_horizon_pnl_rub: float | None
+    model_version: str = HORIZON_MODEL_VERSION
+
+
+def horizon_portfolio(
+    *,
+    snapshot: MarketSnapshot,
+    instruments: Sequence[Instrument],
+    positions: Sequence[Position],
+    policy: ValuationPolicy,
+    horizon_date: date,
+    curve_cache: ShockedCurveCache | None = None,
+) -> PortfolioHorizonResult:
+    """Carry and rolldown of a book from the snapshot's business date to ``horizon_date``.
+
+    Positions resolve exactly as in :func:`value_portfolio` (instrument checks, curve,
+    calendar, quote and accrued, horizon policy); each spread is calibrated to the
+    quoted dirty price and held. Rejections carry the same codes.
+    """
+    for names, label in (
+        ([i.instrument_id for i in instruments], "instrument"),
+        ([p.position_id for p in positions], "position"),
+    ):
+        if len(set(names)) != len(names):
+            raise ValueError(f"duplicate {label} identifiers")
+    if horizon_date <= snapshot.business_date:
+        raise InvalidTerms("horizon date must be after the snapshot business date")
+    by_id = {i.instrument_id: i for i in instruments}
+    cache = ShockedCurveCache() if curve_cache is None else curve_cache
+    built: dict[str, _BuiltCurve | CoreRejection] = {}
+    used_calendars: dict[str, CalendarUse] = {}
+    rows: list[PositionHorizon] = []
+    rejections: list[Rejection] = []
+    for position in positions:
+        try:
+            rows.append(
+                _horizon_position(
+                    position, by_id, snapshot, policy, horizon_date, built, cache, used_calendars
+                )
+            )
+        except CoreRejection as exc:
+            rejections.append(
+                Rejection(position.position_id, position.instrument_id, exc.code, exc.message)
+            )
+        except (ValueError, LookupError, ArithmeticError) as exc:
+            rejections.append(
+                Rejection(
+                    position.position_id, position.instrument_id, CALCULATION_FAILED, str(exc)
+                )
+            )
+    coverage = _coverage(positions, rejections)
+    covered = finite_money(math.fsum(r.horizon_pnl_rub for r in rows), "covered horizon P&L")
+    return PortfolioHorizonResult(
+        snapshot.snapshot_id,
+        snapshot.business_date,
+        horizon_date,
+        __version__,
+        coverage,
+        tuple(rows),
+        tuple(used_calendars[k] for k in sorted(used_calendars)),
+        finite_money(math.fsum(r.carry_rub for r in rows), "covered carry"),
+        finite_money(math.fsum(r.rolldown_rub for r in rows), "covered rolldown"),
+        covered,
+        covered if coverage.status == "complete" else None,
+    )
+
+
+def _horizon_position(
+    position: Position,
+    instruments: Mapping[str, Instrument],
+    snapshot: MarketSnapshot,
+    policy: ValuationPolicy,
+    horizon_date: date,
+    built: dict[str, _BuiltCurve | CoreRejection],
+    cache: ShockedCurveCache,
+    used_calendars: dict[str, CalendarUse],
+) -> PositionHorizon:
+    instrument = _supported_instrument(position, instruments)
+    calendar = _use_calendar(snapshot, instrument, used_calendars)
+    curve_id = policy.curve_for(instrument.instrument_id)
+    if curve_id not in built:
+        try:
+            built[curve_id] = _build_curve(snapshot.curve(curve_id), snapshot.business_date)
+        except CoreRejection as exc:
+            built[curve_id] = exc
+    outcome = built[curve_id]
+    if isinstance(outcome, CoreRejection):
+        raise outcome
+    if outcome.curve.curve_date != snapshot.business_date:
+        raise InvalidTerms(f"curve {curve_id} is not dated the snapshot business date")
+    settlement = calendar.add_business_days(snapshot.business_date, instrument.settlement_lag_days)
+    quote = snapshot.quote(instrument.instrument_id)
+    accrued = (
+        quote.accrued_per_bond
+        if quote.accrued_per_bond is not None
+        else instrument.accrued(settlement)
+    )
+    nominal = instrument.outstanding_face(settlement)
+    per_bond = horizon_valuation(
+        instrument,
+        outcome.curve,
+        calendar,
+        horizon_date=horizon_date,
+        dirty_price_rub=clean_price_pct_to_dirty_rub(quote.clean_price_pct, nominal, accrued),
+        spread_convention=policy.spread_convention,
+        redemption_horizon=policy.horizon,
+        curve_cache=cache,
+    )
+    q = position.quantity
+    return PositionHorizon(
+        position.position_id,
+        instrument.instrument_id,
+        position.book,
+        position.accounting_category,
+        curve_id,
+        q,
+        per_bond.carry_rub * q,
+        per_bond.rolldown_rub * q,
+        per_bond.received_rub * q,
+        per_bond.horizon_pnl_rub * q,
+        per_bond,
+    )
