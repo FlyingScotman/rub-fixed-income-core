@@ -1,4 +1,4 @@
-# API reference (0.3.1)
+# API reference (0.9.0)
 
 Everything below is importable from `rub_fixed_income`. Units: decimal rates/spreads unless
 the name ends in `_bp` (basis points) or `_pct` (percent); amounts in RUB per bond; clean
@@ -108,6 +108,17 @@ All convention objects are frozen and hashable.
 `FxFuturesSecondOrderRisk`, `FX_FUTURES_RISK_MODEL_VERSION` and
 `FX_FUTURES_SECOND_ORDER_MODEL_VERSION`. Prices are in RUB per `price_quote_units`
 foreign units. Money is signed RUB of variation margin. See [FX futures](fx-futures.md).
+
+## Foundations (0.9.0)
+
+| Name | Description |
+| --- | --- |
+| `BusinessCalendar(holidays, working_days, version, valid_from=None, valid_to=None)` | Bounded calendars raise `CalendarRangeError` outside `[valid_from, valid_to]`. `.is_bounded`, `.covers(d)`, `.require_covered(d)`. Sets are frozen on construction. |
+| `calendar_identity(calendar) -> (version, fingerprint)` | What to record in results. |
+| `canonical_json_bytes(value)`, `canonical_sha256(value)` | Now in `rub_fixed_income.canonical` (still importable from `analytics`). Enums, sets, nested dataclasses and date keys have canonical forms. |
+| `to_dict(value)`, `from_dict(cls, data)` | Strict JSON-ready round trip of core dataclasses; `from_dict` re-runs validation. |
+| `CoreRejection` and `UnsupportedProduct`, `MissingMarketData`, `CalendarRangeError`, `UnknownCurveSpec`, `InvalidTerms` | Typed rejections with a stable `.code`; all subclass `ValueError`. |
+| `DiscountCurve.flat_continuous_rate` | Rate of a `DiscountCurve.flat` curve, `None` for node curves. |
 
 ## Fixed-RUB risk extensions (0.5.0)
 

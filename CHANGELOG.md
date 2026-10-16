@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.9.0 — foundations: calendars, canonical hashing, serialization, typed rejections
+
+Roadmap package 0, items 0.1 and 0.4, and part of 0.9. Every identifier that
+hashed before is byte-identical (pinned in `tests/test_hash_stability.py`).
+
+- **Calendars with a covered range.** `BusinessCalendar` gains `valid_from` and
+  `valid_to` (both or neither). A bounded calendar raises `CalendarRangeError` for
+  any date outside the range instead of assuming Mon–Fri; settlement, schedules
+  and date adjustment inherit this. Unbounded calendars behave as before.
+  - `calendar_fingerprint` includes the range only for bounded calendars, so
+    existing fingerprints and every identifier built on them are unchanged.
+  - New `calendar_identity(calendar) -> (version, fingerprint)` for results.
+  - Holidays and working days are frozen on construction. A caller's mutable set
+    can no longer change a calendar after it is built.
+  - New validation: a non-empty `version`, dates only, no date that is both a
+    holiday and a working day, overrides inside the range.
+- **Canonical hashing** moved to `rub_fixed_income.canonical`.
+  `rub_fixed_income.analytics.canonical_json_bytes` / `canonical_sha256` remain
+  importable. Values that used to raise `TypeError` now have canonical forms:
+  enums as their value, sets as sorted lists, dataclasses nested in mappings or
+  sequences, and date or enum mapping keys.
+- **Serialization.** New `to_dict(value)` / `from_dict(cls, data)` for core's own
+  dataclasses (strict field sets, enums by value, ISO dates, UTC-aware
+  timestamps, frozensets, Decimal strings, unions resolved by shape). The local
+  worker's result decoder now uses it; the v1 result fixture round-trips byte for
+  byte. `ScheduleConvention.to_dict()` (the provenance summary) is unchanged.
+- **Typed rejections** in `rub_fixed_income.errors`: `CoreRejection` with a stable
+  `code`, and `UnsupportedProduct`, `MissingMarketData`, `CalendarRangeError`,
+  `UnknownCurveSpec`, `InvalidTerms`. All are `ValueError` subclasses.
+- `DiscountCurve.flat_continuous_rate` is public; `risk.py` no longer reads the
+  private field. The dead `analytics._price_at_yield` is removed.
+- Tooling: CI on Windows and Ubuntu with Python 3.11; `uv run mypy` passes on the
+  package and tests; the QR probe test is no longer shipped in the sdist.
+- **Version pin:** market-data-store pins `>=0.8.0,<0.9`. Its editable install keeps
+  running, but its next `uv lock` needs the pin widened (BACKLOG #35).
+
 ## 0.8.1 — FX futures rate risk
 
 - New `rub_fixed_income.fx_futures`: `FxFuturesContract`, `FxFuturesRiskRequest`,

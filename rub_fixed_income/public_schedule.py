@@ -8,7 +8,7 @@ from dataclasses import replace
 from datetime import date
 
 from ._money import non_negative_money
-from .analytics import canonical_sha256
+from .canonical import canonical_sha256
 from .cashflows import BondCashflow
 from .local_worker import PublicBondSnapshot
 

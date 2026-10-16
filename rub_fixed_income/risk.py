@@ -16,7 +16,7 @@ from itertools import pairwise
 from typing import Literal
 
 from ._money import finite_money, non_negative_money, positive_money
-from .analytics import canonical_sha256
+from .canonical import canonical_sha256
 from .cashflows import BondCashflow
 from .compatibility import price_cashflows, solve_z_spread
 from .conventions import CurveConvention, ZSpreadConvention
@@ -150,8 +150,8 @@ def _snapshot_curve(curve: RiskCurve) -> RiskCurve:
             finite_money(quote.par_rate, "OIS par rate")
         return replace(curve, quotes=quotes)
     nodes = tuple((d, positive_money(df, "discount factor")) for d, df in curve.nodes)
-    if curve._flat_continuous_rate is not None:
-        finite_money(curve._flat_continuous_rate, "flat continuous rate")
+    if curve.flat_continuous_rate is not None:
+        finite_money(curve.flat_continuous_rate, "flat continuous rate")
     return replace(curve, nodes=nodes)
 
 
@@ -404,7 +404,7 @@ def _curve_identity(curve: DiscountCurve | CurveBootstrapRequest) -> dict[str, o
     }
     if isinstance(curve, DiscountCurve):
         payload.update(
-            nodes=curve.nodes, flat_rate=curve._flat_continuous_rate, model=curve.model_version
+            nodes=curve.nodes, flat_rate=curve.flat_continuous_rate, model=curve.model_version
         )
     else:
         payload["quotes"] = [(q.tenor, q.maturity, q.par_rate) for q in curve.quotes]

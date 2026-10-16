@@ -42,6 +42,13 @@ Identifiers include `calendar.version` **and** `calendar_fingerprint(calendar)` 
 holiday/working-day sets), so two calendars with the same label but different content are
 distinguishable in provenance.
 
+**Covered range (0.9.0).** `BusinessCalendar(..., valid_from, valid_to)` declares the dates
+the calendar actually knows. Outside that range every business-day query raises
+`CalendarRangeError`; it is never assumed Mon–Fri. The hub publishes the range with each
+calendar version, and MOEX weekend trading sessions are **not** business days. For a bounded
+calendar the fingerprint also covers the range. `calendar_identity(calendar)` returns
+`(version, fingerprint)` for recording in results.
+
 ## Schedules
 
 - Legacy `dates.annual_schedule(start, end)`: forward annual roll from `start`, unadjusted,

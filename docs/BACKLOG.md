@@ -152,3 +152,6 @@ other repositories and must be changed there, not in this core.
     - an agreed choice of the foreign curve (OIS, or implied from FX swaps).
 34. **OTC FX forwards and swaps.** Their P&L is paid at `T` and needs discounting
     on the RUB curve. This is a separate settlement style, not the futures model.
+35. *(downstream)* **market-data-store core pin.** It pins `>=0.8.0,<0.9`; core
+    0.9.0 follows the roadmap's minor bump per package. The editable install keeps
+    running, but widen the pin (for example `<1.0`) before its next `uv lock`.

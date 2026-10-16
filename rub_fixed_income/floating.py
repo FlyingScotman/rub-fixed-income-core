@@ -20,7 +20,7 @@ from itertools import pairwise
 from typing import Literal
 
 from ._money import finite_money, non_negative_money, positive_money
-from .analytics import canonical_sha256
+from .canonical import canonical_sha256
 from .conventions import DayCount, calendar_fingerprint
 from .dates import BusinessCalendar
 from .discount import DiscountFactorCurve

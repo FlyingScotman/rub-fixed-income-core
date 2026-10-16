@@ -61,10 +61,19 @@ from .conventions import (
     ZSpreadConvention,
     adjust_date,
     calendar_fingerprint,
+    calendar_identity,
     generate_schedule,
 )
 from .dates import BusinessCalendar
 from .discount import CurveBootstrapRequest, DiscountCurve, OisQuote, bootstrap_discount_curve
+from .errors import (
+    CalendarRangeError,
+    CoreRejection,
+    InvalidTerms,
+    MissingMarketData,
+    UnknownCurveSpec,
+    UnsupportedProduct,
+)
 from .floating import (
     FLOATING_MODEL_VERSION,
     FixingHistory,
@@ -122,6 +131,10 @@ from .risk import (
     ShockedCurveCache,
     key_rate_weights,
 )
+from .serialization import (
+    from_dict,
+    to_dict,
+)
 from .trade_grid import (
     GridBuildPolicy,
     GridIdentity,
@@ -165,8 +178,10 @@ __all__ = [
     "BusinessDayConvention",
     "CalculationFailure",
     "CalculationPolicy",
+    "CalendarRangeError",
     "CashEvent",
     "Compounding",
+    "CoreRejection",
     "CurveBootstrapRequest",
     "CurveConvention",
     "CurveSnapshotV1",
@@ -192,6 +207,7 @@ __all__ = [
     "FxFuturesSecondOrderRisk",
     "GridBuildPolicy",
     "GridIdentity",
+    "InvalidTerms",
     "KeyRateCurveBuildRequest",
     "KeyRateCurveBuildResult",
     "KeyRateCurveDiagnostics",
@@ -204,6 +220,7 @@ __all__ = [
     "KeyRateSwapQuote",
     "LocalBondScenarioResult",
     "MarketObservationV1",
+    "MissingMarketData",
     "OisQuote",
     "PreparedLocalBondRisk",
     "RiskRunContext",
@@ -213,6 +230,8 @@ __all__ = [
     "TradeGrid",
     "TradeGridNode",
     "TradeMetricLookup",
+    "UnknownCurveSpec",
+    "UnsupportedProduct",
     "ValuationContext",
     "YieldConvention",
     "YieldRequest",
@@ -227,12 +246,14 @@ __all__ = [
     "build_key_rate_forward_curve",
     "build_trade_grid",
     "calendar_fingerprint",
+    "calendar_identity",
     "canonical_json_bytes",
     "canonical_sha256",
     "clean_price_pct_to_dirty_amount",
     "clean_price_pct_to_dirty_rub",
     "constant_daily_accumulation_periods",
     "dirty_rub_to_clean_price_pct",
+    "from_dict",
     "generate_schedule",
     "key_rate_weights",
     "lookup_trade_metric",
@@ -245,5 +266,6 @@ __all__ = [
     "solve_effective_annual_yield",
     "solve_nominal_annual_yield",
     "solve_z_spread",
+    "to_dict",
     "verify_result_sha256",
 ]

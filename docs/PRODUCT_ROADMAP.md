@@ -2,15 +2,16 @@
 
 > **Canonical home of this plan.** It was dispatched on 16 October 2026 from the system architecture of the Trading Desk Monitor (`trading_desk_monitor/docs/architecture/07_CORE_PRODUCT_COVERAGE.md`, commit `740a476`). From now on, maintain it **here**. The system copy is a frozen snapshot. For this library's role in the system, read [SYSTEM_CONTEXT.md](SYSTEM_CONTEXT.md).
 
-Written against core v0.6.0 (HEAD `454a78c`, 16 October 2026), then reconciled with **0.8.1**.
+Written against core v0.6.0 (HEAD `454a78c`, 16 October 2026), then reconciled with **0.8.1** and updated release by release from 0.9.0.
 
-## Status after 0.7.0–0.8.1
+## Status after 0.7.0–0.9.0
 
 | Release | Delivered | Roadmap item | Remaining |
 |---|---|---|---|
 | 0.7.0 | `ShockedCurveCache`: shocked OIS curves are shared across all positions of a job; cancellation and time budgets; versioned, hash-verified result contract `rub-local-portfolio-risk-result.v1` | 0.7 (shared shocked curves), largely | Accept prebuilt base and shocked curves from the caller, so the backend can persist them across jobs; Windows / Python 3.11 benchmark for 2k positions |
 | 0.8.0 | `floating`: `FixingHistory` (point-in-time, RUONIA gap checks), `FloatingCouponRule`, `FloatingLeg`; compounded or arithmetic averaging, lookback; known fixings and published coupons frozen under bumps; `BondRiskRequest(floating_leg=...)` | Package 1 (floaters), core part | Floors and caps; payment-lag observation shifts; in-arrears key-rate fixings; **separate projection and discount curves** (today single-curve, with the spread as a discount margin); reproduce MOEX-published current coupons for sample OFZ-PK and corporate floaters |
 | 0.8.1 | `fx_futures`: FX futures against RUB by covered parity with a calibrated, frozen basis; RUB and foreign curve DV01, basis01, FX delta, exact scenarios, 23-factor Hessian; daily variation margin | Package 5, FX futures part (also feeds packages 3–4) | OFZ, RUONIA and key-rate futures; FX forwards and FX swaps (package 4) |
+| 0.9.0 | Bounded `BusinessCalendar` (`valid_from`/`valid_to`, `CalendarRangeError`), `calendar_identity`; canonical hashing for enums/sets/nested dataclasses in `canonical.py`; `to_dict`/`from_dict`; typed rejections (`errors.py`); CI on Windows/Ubuntu Python 3.11 | 0.1 (calendar type), 0.4, part of 0.9 | Record calendar identity in results of the new portfolio path (0.11.0); pass calendars through Instrument schedules (0.10.0) |
 
 The sections below keep the original 0.6.0 baseline for traceability. Where they conflict with this table, **this table is current**.
 

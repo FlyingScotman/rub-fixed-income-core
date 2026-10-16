@@ -15,7 +15,7 @@ from datetime import date
 from typing import Literal
 
 from ._money import finite_money, positive_money
-from .analytics import canonical_sha256
+from .canonical import canonical_sha256
 from .conventions import DayCount
 from .discount import CurveBootstrapRequest, DiscountCurve, DiscountFactorCurve
 from .risk import (

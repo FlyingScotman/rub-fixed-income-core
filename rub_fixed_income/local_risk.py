@@ -12,7 +12,7 @@ from typing import Literal
 
 from ._money import non_negative_money, positive_money
 from ._version import __version__
-from .analytics import canonical_sha256
+from .canonical import canonical_sha256
 from .cashflows import BondCashflow, clean_price_pct_to_dirty_rub
 from .conventions import ZSpreadConvention
 from .discount import CurveBootstrapRequest, DiscountCurve

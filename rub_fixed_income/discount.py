@@ -73,6 +73,11 @@ class DiscountCurve:
     def valuation_date(self) -> date:
         return self.curve_date
 
+    @property
+    def flat_continuous_rate(self) -> float | None:
+        """The continuous rate of a ``DiscountCurve.flat`` curve, ``None`` for a node curve."""
+        return self._flat_continuous_rate
+
     def discount_factor(self, target: date) -> float:
         if target < self.curve_date:
             raise ValueError("cannot discount before curve date")
