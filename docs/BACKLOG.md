@@ -53,10 +53,10 @@ other repositories and must be changed there, not in this core.
     (documented). Revisit if a non-ACT/365F curve time basis is used in production.
 15. `zero_rate`/`forward_rate` compounding for forwards is fixed annual; add a `Compounding`
     argument if a consumer needs it.
-16. Documented `mypy` command: bare `uv run mypy` fails on pre-existing untyped
-    `tests/test_qr_bond_reconciliation_probe.py` (and numpy stubs need Python ≥ 3.12 when the
-    venv is 3.14 with `python_version = "3.11"`); `mypy rub_fixed_income` passes. Fix the probe
-    typing or exclude it.
+16. *Done after 0.8.1.* `uv run mypy` passes: the untyped probe test is excluded in
+    `[tool.mypy]` and from the sdist. Run it in a Python 3.11 venv
+    (`uv sync --extra dev --python 3.11`); numpy stubs need Python ≥ 3.12 syntax support
+    when the venv is newer than `python_version = "3.11"`. CI runs Windows and Ubuntu on 3.11.
 17. **Git tags for historic versions are absent.** The repository history starts at 0.2.1
     (root commit `1baac88` already declares 0.2.1), so 0.1.0 / 0.2.0 cannot be tagged with
     certainty. 0.3.0 is the first tag.

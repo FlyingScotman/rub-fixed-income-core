@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "claude/**", "codex/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # The desk runs core on Windows with Python 3.11 (PRODUCT_ROADMAP, runtime constraint).
+        os: [windows-latest, ubuntu-latest]
+        python: ["3.11"]
+        include:
+          - os: ubuntu-latest
+            python: "3.12"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install
+        run: uv sync --extra dev --locked
+      - name: Tests
+        run: uv run pytest -q
+      - name: Lint
+        run: uv run ruff check .
+      - name: Type check
+        run: uv run mypy
+      - name: Build
+        run: uv build

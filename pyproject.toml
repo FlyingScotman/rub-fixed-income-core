@@ -30,7 +30,13 @@ include = [
     "/rub_fixed_income",
     "/tests",
 ]
-exclude = ["**/__pycache__", "**/*.pyc", "/dist"]
+exclude = [
+    "**/__pycache__",
+    "**/*.pyc",
+    "/dist",
+    # Needs tools/, which is not shipped; it tests a proprietary-stack probe.
+    "/tests/test_qr_bond_reconciliation_probe.py",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -41,6 +47,8 @@ target-version = "py311"
 
 [tool.mypy]
 files = ["rub_fixed_income", "tests"]
+# The QR reconciliation probe test drives an untyped proprietary-stack script (BACKLOG #16).
+exclude = ["tests/test_qr_bond_reconciliation_probe\\.py$"]
 python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
