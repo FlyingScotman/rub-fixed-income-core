@@ -22,7 +22,7 @@ jobs:
           - os: ubuntu-latest
             python: "3.12"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ matrix.python }}
@@ -33,6 +33,8 @@ jobs:
       - name: Lint
         run: uv run ruff check .
       - name: Type check
+        # mypy targets python_version 3.11; numpy's stubs need the checking interpreter to match.
+        if: matrix.python == '3.11'
         run: uv run mypy
       - name: Build
         run: uv build
