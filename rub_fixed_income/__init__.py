@@ -194,6 +194,7 @@ from .risk import (
     BondScenarioResult,
     BondSecondOrderRisk,
     BucketRisk,
+    PrebuiltCurve,
     ShockedCurveCache,
     key_rate_weights,
 )
@@ -322,6 +323,7 @@ __all__ = [
     "Position",
     "PositionScenarioPnl",
     "PositionValuation",
+    "PrebuiltCurve",
     "PreparedLocalBondRisk",
     "PrincipalLeg",
     "ProductType",

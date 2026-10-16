@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.13.0 — caller-held curves and the 2k-position benchmark
+
+Roadmap item 0.7 (completed). No identifier or number changes: every pinned hash and
+fixture still matches, and results are byte-identical with or without the new caches.
+
+- **Caller-held curves.** `PrebuiltCurve(request, shifts, curve)` with stable string keys
+  `request_id` / `curve_key`; `ShockedCurveCache.export()` and `.seed(entries)`; and
+  `value_portfolio(..., curve_cache=...)`. The backend can persist the base and shocked
+  OIS curves of one job and seed the next with them. `seed` accepts a curve only if it
+  reprices its (shocked) quotes within 1e-7 bp and matches the request's date,
+  convention and model. Otherwise it raises `InvalidTerms` and adds nothing.
+- **Speed without changing numbers.** Every position on a curve now shares one
+  validated snapshot of it (for immutable inputs), so the per-curve caches below are
+  shared too:
+  - the canonical identity of a curve (a 1,100-node KBD curve was re-hashed for every
+    position);
+  - bucket weights and base discount factors of zero-rate shocks;
+  - one shared view per shock vector;
+  - a bounded discount-factor memo per curve.
+
+  The shocked-curve cache skips rehashing the job's request. All of these caches live
+  outside the dataclass fields and stay out of equality, hashing and pickles.
+- **Benchmark.** `benchmarks/portfolio_bench.py` values a synthetic book of distinct
+  bonds (bullets, amortizers, confirmed puts, 1–15Y) on KBD and on 17 RUONIA OIS quotes.
+  At 2,000 positions on Linux / Python 3.11, in ms per position:
+
+  | Curve | First order | Hessian | Hessian + 5 scenarios | Seeded cache |
+  |---|---|---|---|---|
+  | KBD | 3.2 | 9.3 | 9.6 | — |
+  | OIS | 2.3 | 10.0 | 10.3 | 8.1 |
+
+  Before 0.13.0 at 200 positions: KBD 9.1 / 30.4, OIS 5.4 / 31.3 ms per position.
+  A non-gating CI job runs the benchmark on windows-latest / Python 3.11 and posts the
+  table to the job summary.
+- mypy now also checks `benchmarks/`.
+
 ## 0.12.0 — API consolidation (deprecations) and documentation
 
 Roadmap item 0.9. No behaviour or identifier changes: every deprecated call returns

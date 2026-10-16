@@ -38,3 +38,25 @@ jobs:
         run: uv run mypy
       - name: Build
         run: uv build
+
+  benchmark:
+    # Reports ms per position for a 2k-position book on the desk runtime (roadmap 0.7).
+    # Informational: timings on shared runners vary, so this job never gates a merge.
+    name: Benchmark (windows-latest / Python 3.11, 2k positions)
+    if: github.event_name == 'push'
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: uv sync --extra dev --locked
+      - name: Benchmark
+        shell: bash
+        run: uv run python benchmarks/portfolio_bench.py --positions 2000 --json benchmark.json | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: portfolio-benchmark
+          path: benchmark.json

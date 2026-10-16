@@ -1,4 +1,4 @@
-# API reference (0.12.0)
+# API reference (0.13.0)
 
 Everything below is importable from `rub_fixed_income`. Units: decimal rates/spreads unless
 the name ends in `_bp` (basis points) or `_pct` (percent); amounts in RUB per bond; clean
@@ -146,8 +146,21 @@ foreign units. Money is signed RUB of variation margin. See [FX futures](fx-futu
 | `FactorRisk(factors, first_order, hessian, difference, bump_bp, has_second_order)` | `HessianEntry(i, j, value)` upper triangle; `.first_order_by_factor()`, `.hessian_by_factor()`. |
 | `bond_factor_risk(risk, curve_id, second_order=None)`, `fx_futures_factor_risk(risk, rub_curve_id, foreign_curve_id, second_order=None)` | Convert engine results. |
 | `ValuationPolicy(discount_curve_id, spread_kind, spread_convention, horizon, curve_overrides, include_second_order, bump_bp)` | Valuation choices; part of the job identity. |
-| `value_portfolio(*, run_id, as_of, snapshot, instruments, positions, policy, scenarios=(), time_budget_seconds=None, should_cancel=None)` | `PortfolioRiskResult` with `PositionValuation`s, `PortfolioCoverage` (coded `Rejection`s), `PortfolioScenarioResult`s, `CurveUse`, `CalendarUse`, `FactorTotal`s. |
+| `value_portfolio(*, run_id, as_of, snapshot, instruments, positions, policy, scenarios=(), time_budget_seconds=None, should_cancel=None, curve_cache=None)` | `PortfolioRiskResult` with `PositionValuation`s, `PortfolioCoverage` (coded `Rejection`s), `PortfolioScenarioResult`s, `CurveUse`, `CalendarUse`, `FactorTotal`s. |
 | `portfolio_result_to_json`, `portfolio_result_from_json`, `verify_portfolio_result` | Contract `rub-portfolio-risk-result.v2`. |
+
+## Caller-held curves (0.13.0)
+
+| Name | Description |
+| --- | --- |
+| `PrebuiltCurve(request, shifts, curve)` | A bootstrapped OIS curve for a `CurveBootstrapRequest` with 11 bucket shifts (bp). `.request_id` and `.curve_key` are canonical SHA-256 strings for the backend's store; `to_dict`/`from_dict` serialise it. |
+| `ShockedCurveCache.export()` | Every cached base and shocked curve as `PrebuiltCurve`s, ordered by `curve_key`. |
+| `ShockedCurveCache.seed(entries)` | Adds caller-held curves; each must reprice its (shocked) quotes within 1e-7 bp and match the request's date, convention and model, otherwise `InvalidTerms` and nothing is added. Returns the number added; `.seeded` counts them. |
+| `value_portfolio(..., curve_cache=cache)` | Reuses `cache` (seeded or kept in memory across calls). Results are byte-identical with or without it. |
+
+`benchmarks/portfolio_bench.py --positions 2000` measures ms per position (KBD and OIS;
+first order, Hessian, scenarios, seeded). CI runs it on windows-latest / Python 3.11 and
+writes the table to the job summary (informational, never gating).
 
 ## Fixed-RUB risk extensions (0.5.0)
 

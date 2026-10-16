@@ -39,7 +39,26 @@ def _dump(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
+class _Canonical:
+    """An already-canonical value (internal): emitted as is, so large stable parts such
+    as curve nodes are converted once and reused across hashes. Bytes are unchanged."""
+
+    __slots__ = ("value",)
+
+    def __init__(self, value: object) -> None:
+        self.value = value
+
+    def __deepcopy__(self, memo: dict[int, object]) -> _Canonical:
+        return self
+
+
+def _precanonical(value: object) -> _Canonical:
+    return _Canonical(_canonical_value(value))
+
+
 def _canonical_value(value: object) -> object:
+    if isinstance(value, _Canonical):
+        return value.value
     if isinstance(value, Enum):
         return _canonical_value(value.value)
     if isinstance(value, date):

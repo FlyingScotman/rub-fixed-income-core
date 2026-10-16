@@ -282,6 +282,7 @@ def value_portfolio(
     scenarios: Sequence[PortfolioScenario] = (),
     time_budget_seconds: float | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    curve_cache: ShockedCurveCache | None = None,
 ) -> PortfolioRiskResult:
     """Value a book and return its risk in desk factors, with explicit coverage.
 
@@ -289,6 +290,10 @@ def value_portfolio(
     become rejections with a stable code (``CoreRejection.code``, or
     ``CALCULATION_FAILED`` for a numerical failure). Totals are ``None`` unless
     coverage is complete; covered subtotals are always reported.
+
+    ``curve_cache`` lets the caller keep bootstrapped base and shocked OIS curves
+    across calls (seed it from persisted :class:`PrebuiltCurve` entries, read them back
+    with :meth:`ShockedCurveCache.export`). Results are identical with or without it.
     """
     if not run_id:
         raise InvalidTerms("run_id is required")
@@ -296,6 +301,8 @@ def value_portfolio(
         raise InvalidTerms("as_of must carry a UTC offset")
     if time_budget_seconds is not None and finite_money(time_budget_seconds, "time budget") < 0:
         raise ValueError("time_budget_seconds must be nonnegative")
+    if curve_cache is not None and not isinstance(curve_cache, ShockedCurveCache):
+        raise TypeError("curve_cache must be a ShockedCurveCache")
     for names, label in (
         ([i.instrument_id for i in instruments], "instrument"),
         ([p.position_id for p in positions], "position"),
@@ -330,7 +337,7 @@ def value_portfolio(
         }
     )
     built: dict[str, _BuiltCurve | CoreRejection] = {}
-    cache = ShockedCurveCache()
+    cache = ShockedCurveCache() if curve_cache is None else curve_cache
     valuations: list[PositionValuation] = []
     rejections: list[Rejection] = []
     prepared_by_position: dict[str, PreparedLocalBondRisk] = {}

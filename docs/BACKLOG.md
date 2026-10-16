@@ -49,6 +49,10 @@ other repositories and must be changed there, not in this core.
     Fine for ≤ 30 pillars; optimise if used intraday at scale. Since 0.7.0 the worker
     shares shocked curves across positions, so OIS jobs pay ~250 bootstraps per distinct
     curve (~2.2 s with Hessian on the synthetic job). A faster bootstrap is the next lever.
+    0.13.0: one bootstrap costs ~15 ms; at 2k positions the ~250 shocked curves add
+    ~1.9 ms per position cold, and nothing when the backend seeds them
+    (`ShockedCurveCache.seed`). A faster bootstrap changes curve bytes, so it needs a new
+    model version.
 13. `price_cashflows` legacy path (no `settlement_date`) counts a flow on the curve date at face
     and ignores earlier flows; settlement-aware callers should always pass `settlement_date`.
     *Deprecated in 0.12.0* (warns; removal in 1.0).
@@ -155,6 +159,8 @@ other repositories and must be changed there, not in this core.
     - an agreed choice of the foreign curve (OIS, or implied from FX swaps).
 34. **OTC FX forwards and swaps.** Their P&L is paid at `T` and needs discounting
     on the RUB curve. This is a separate settlement style, not the futures model.
-35. *(downstream)* **market-data-store core pin.** It pins `>=0.8.0,<0.9`; core
-    0.9.0 follows the roadmap's minor bump per package. The editable install keeps
-    running, but widen the pin (for example `<1.0`) before its next `uv lock`.
+35. *(downstream, done in market-data-store PR #5)* **market-data-store core pin.** It
+    pinned `>=0.8.0,<0.9`; the PR widens it to `<1.0`, regenerates the lock and moves off
+    the `clean_price_pct_to_dirty_amount` alias. Its `price_cashflows`/`solve_z_spread`
+    calls without `settlement_date` still warn; moving them is a behaviour change for the
+    store's owner before core 1.0.
