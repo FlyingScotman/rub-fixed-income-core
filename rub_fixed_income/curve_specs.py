@@ -6,9 +6,11 @@ and, for swap curves, the quote conventions. The backend maps each market-data h
 ID is never reused for different conventions: a change gets a new version.
 
 0.11.0 registers the curves the M1 slice and the existing bootstraps need. The
-exchange-conformant RUONIA OIS spec (``rub_ruonia_ois_moex_v2``, audit F08: TOM start,
-modified following, ACT/ACT with a stub, +1 business-day payment lag) is a later
-release; until then ``rub_ruonia_ois_legacy_v1`` names today's bootstrap exactly.
+exchange-conformant RUONIA OIS spec (``rub_ruonia_ois_moex_v2``) is not registered: the
+audit's summary (F08: TOM start, modified following, ACT/ACT with a stub, +1 business-day
+payment lag) leaves the fixed-leg frequency and float compounding open, and the MOEX
+specification text was not available to confirm it (BACKLOG #37). Until then
+``rub_ruonia_ois_legacy_v1`` names today's bootstrap exactly.
 """
 
 from __future__ import annotations

@@ -168,6 +168,23 @@ Portfolio results report first order and the sparse upper-triangle Hessian from 
 differences with the same bump (DEC08). Signs: DV01 is PV(+1 bp) − PV(0), negative for a
 long bond.
 
+## Tenor codes (0.16.0)
+
+`resolve_tenor` maps a market tenor code to dates on a business calendar:
+
+- **Spot.** The spot date is `spot_lag_days` business days after the trade date. TOM is 1.
+- **`<n>D/W/M/Y` tenors** run from spot by calendar days, weeks or months; month ends
+  clamp. The end date is then adjusted with the business-day convention (default
+  modified following).
+- **Overnight codes:**
+  - `ON` runs from the trade date to the next business day;
+  - `TN` runs from T+1 to T+2;
+  - `SN` runs from spot to the next business day.
+
+KEYRATE swaps resolve their dates through it, unchanged. RUONIA OIS quotes still enter
+the bootstrap as maturities (`ois_quotes` builds them). The bootstrap has no spot or
+payment lag until the exchange specification is confirmed (BACKLOG #37).
+
 ## Horizon valuation: carry and rolldown (0.14.0)
 
 Start at settlement `S0` of business date `d0`; horizon at settlement `S1` of `d1` (the

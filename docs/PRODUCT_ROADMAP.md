@@ -4,7 +4,7 @@
 
 Written against core v0.6.0 (HEAD `454a78c`, 16 October 2026), then reconciled with **0.8.1** and updated release by release from 0.9.0.
 
-## Status after 0.7.0–0.15.0
+## Status after 0.7.0–0.16.0
 
 | Release | Delivered | Roadmap item | Remaining |
 |---|---|---|---|
@@ -18,6 +18,7 @@ Written against core v0.6.0 (HEAD `454a78c`, 16 October 2026), then reconciled w
 | 0.13.0 | Caller-held curves: `PrebuiltCurve`, `ShockedCurveCache.export`/`seed` (verified by exact repricing), `value_portfolio(curve_cache=...)`; shared curve snapshots and per-curve memos (numbers unchanged); `benchmarks/portfolio_bench.py` with a Windows CI report. 2k positions, Linux: OIS with Hessian 10.0 ms/position cold, 8.1 ms seeded; KBD 9.3 ms | 0.7 (completed) | Faster OIS bootstrap (BACKLOG #12) would cut the cold cost further. Windows CI (windows-latest, Python 3.11, 2k positions): OIS + Hessian 11.8 ms cold / 9.9 ms seeded, KBD + Hessian 11.0 ms, first order 2.8–3.7 ms |
 | 0.14.0 | `horizon_valuation`, `explain_horizon_pnl`, `roll_curve`, `horizon_portfolio`: carry (forwards realised), rolldown (constant curve shape), coupons and amortization received, accrued at both ends, yield-to-offer for confirmed puts; explain into carry + rolldown + rates + spread + residual that sums exactly | 0.8 | Floaters at the horizon (package 1); a hashed horizon result contract if the backend persists it; Taylor (factor) attribution of `rates` for PnL explain (M5, DEC05) |
 | 0.15.0 | MOEX goldens (`tests/test_moex_goldens.py`, fixtures from the hub): `ACCRUEDINT` to the kopeck for 7 bonds (OFZ-PD, corporates, amortizer, OFZ-PK current coupon, CNY bond); OFZ 26238 yield at three prices within 0.5 bp and duration within a day, also end to end through `value_portfolio` on KBD; put-bond duration to offer | 0.10, partly | About 12 bonds on fixed EOD dates need EOD ISS exports (only one intraday snapshot is archived); 30/360 accrual and the MOEX short-put yield method (BACKLOG #36); the bridge and fixing tests from the untracked `implementation/` folder are not in this checkout |
+| 0.16.0 | `parse_tenor`, `add_tenor`, `resolve_tenor` (spot lag, business-day convention, `ON`/`TN`/`SN`), `ois_quotes`; KRS dates routed through it unchanged | 0.5, part | `rub_ruonia_ois_moex_v2` and spot / payment lags and stubs in the OIS bootstrap: blocked on the MOEX RUONIA OIS specification text (BACKLOG #37) |
 
 The sections below keep the original 0.6.0 baseline for traceability. Where they conflict with this table, **this table is current**.
 

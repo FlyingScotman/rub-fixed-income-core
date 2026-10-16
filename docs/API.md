@@ -1,4 +1,4 @@
-# API reference (0.15.0)
+# API reference (0.16.0)
 
 Everything below is importable from `rub_fixed_income`. Units: decimal rates/spreads unless
 the name ends in `_bp` (basis points) or `_pct` (percent); amounts in RUB per bond; clean
@@ -170,6 +170,15 @@ writes the table to the job summary (informational, never gating).
 | `explain_horizon_pnl(instrument, start_curve, end_curve, calendar, *, start_spread_bp \| start_dirty_price_rub, end_spread_bp \| end_dirty_price_rub, ...)` | `HorizonPnlExplain`: `carry + rolldown + rates + spread + residual == total` (full revaluation change to the end curve's date). |
 | `roll_curve(curve, horizon_date)` | The curve moved forward with its shape in calendar days unchanged. |
 | `horizon_portfolio(*, snapshot, instruments, positions, policy, horizon_date, curve_cache=None)` | `PortfolioHorizonResult`: `PositionHorizon` rows (signed RUB, per-bond detail), coverage with the same rejection codes as `value_portfolio`, covered carry / rolldown / horizon P&L and a total when coverage is complete. |
+
+## Tenors (0.16.0)
+
+| Name | Description |
+| --- | --- |
+| `parse_tenor(code) -> Tenor` | `ON`, `TN`, `SN`, `<n>D/W/M/Y` (case-insensitive); anything else raises `InvalidTerms`. |
+| `add_tenor(start, tenor)` | Unadjusted end of a `D/W/M/Y` tenor (month ends clamp). |
+| `resolve_tenor(trade_date, tenor, calendar, *, spot_lag_days=1, business_day_convention=MODIFIED_FOLLOWING) -> TenorDates` | `effective_date`, `unadjusted_end`, `end_date`. A bounded calendar raises `CalendarRangeError` outside its range. |
+| `ois_quotes(trade_date, [(tenor, rate), ...], calendar, *, spot_lag_days=1, business_day_convention=...)` | `OisQuote`s with resolved maturities, sorted; duplicate tenors or maturities raise. |
 
 ## Fixed-RUB risk extensions (0.5.0)
 

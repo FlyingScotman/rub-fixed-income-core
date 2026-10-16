@@ -174,4 +174,14 @@ other repositories and must be changed there, not in this core.
       lag?) before relying on core yields for such bonds.
     - **Coverage.** The golden set should grow to about 12 bonds on fixed EOD dates once
       the hub archives EOD ISS bond snapshots.
+37. **RUONIA OIS exchange spec (`rub_ruonia_ois_moex_v2`, audit F08).**
+    - **What is known.** Only a summary survives in this checkout: TOM start, modified
+      following, ACT/ACT with a stub, +1 business-day payment lag. The fixed-leg
+      frequency, float compounding (lookback or lockout) and the stub side are not stated.
+    - **What is missing.** The MOEX methodology files (`fs.moex.com/files/26130`,
+      `27002`) and NFA standard terms could not be fetched from the build environment.
+    - **To do.** With the text: add spot and payment lags and stub handling to the
+      bootstrap's par-rate leg. New convention fields must stay out of existing curve
+      identities. Then register the spec and test par repricing on the hub's ratescalcs
+      snapshot (17 tenors, `ois_quotes`).
 

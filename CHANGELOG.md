@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.16.0 — tenor resolver
+
+Roadmap item 0.5, part. New API only.
+
+- `tenors.py` adds:
+  - `parse_tenor` and `Tenor`;
+  - `add_tenor`;
+  - `resolve_tenor(trade_date, tenor, calendar, *, spot_lag_days=1, business_day_convention=MODIFIED_FOLLOWING)`,
+    which returns `TenorDates` and handles `ON`, `TN`, `SN` and `<n>D/W/M/Y`;
+  - `ois_quotes`, which turns `(tenor, rate)` pairs into sorted `OisQuote`s with
+    resolved maturities.
+
+  The backend can therefore pass the hub's tenor codes and a calendar instead of
+  hand-made maturities.
+- KEYRATE swap dates now come from `resolve_tenor`. A test checks that they are
+  identical to the previous private helper on 40 trade dates × 11 tenors. Overnight codes
+  stay rejected there.
+- Not in this release: the exchange-conformant `rub_ruonia_ois_moex_v2` spec and spot /
+  payment lags in the OIS bootstrap. The MOEX and NFA specification pages are
+  unreachable from the build environment, and the audit summary leaves the fixed-leg
+  frequency and float compounding open, so nothing was built on guessed conventions
+  (BACKLOG #37).
+
 ## 0.15.0 — golden tests against MOEX-published bond analytics
 
 Roadmap item 0.10. Tests and evidence only; no library code changes.
