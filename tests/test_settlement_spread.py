@@ -31,6 +31,10 @@ FLOWS = (
     (date(2029, 8, 28), 1060.0),
 )
 
+# These tests pin the behaviour of APIs deprecated in 0.12.0 (kept until 1.0);
+# tests/test_deprecations.py checks that each one warns.
+pytestmark = pytest.mark.filterwarnings("ignore:rub_fixed_income:DeprecationWarning")
+
 
 def _rebased(curve: DiscountCurve, settlement: date) -> DiscountCurve:
     """Mirror of currency-bond-monitor curves.py manual settlement rebase."""

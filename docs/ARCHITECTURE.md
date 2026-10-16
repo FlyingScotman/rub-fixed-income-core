@@ -22,6 +22,19 @@ or floats.
 | `key_rate.py` | MOEX IRS KEYRATE swap pricing and the identified pillar-forward key-rate curve build. |
 | `risk.py` | Bond DV01/KRD, spread risk, scenarios, Hessian, JTD; shared curve shocking (`ShockedCurveCache`). |
 | `fx_futures.py` | FX futures against RUB: covered-parity price, two-curve rate risk, basis, FX delta, scenarios, Hessian. |
+| `_risk_common.py` | Private internals shared by `risk` and `fx_futures`: bucket weights, curve snapshotting and shocking, `ShockedCurveCache`, central derivatives, curve identity (0.12.0). |
+| `floating.py` | Fixing-aware floating coupons: `FixingHistory`, `FloatingCouponRule`, `FloatingLeg` (0.8.0). |
+| `local_risk.py`, `local_worker.py` | Per-bond risk adapter and the v1 portfolio worker over `PublicBondSnapshot` (0.5.0–0.7.0). |
+| `public_schedule.py` | Deprecated bridge from the retired market-data-store schedule payload. |
+| `canonical.py` | Canonical JSON bytes and SHA-256 identities (0.9.0). |
+| `serialization.py` | `to_dict` / `from_dict` for core dataclasses (0.9.0). |
+| `errors.py` | Typed rejections with stable codes, all `ValueError` (0.9.0). |
+| `domain.py` | `Instrument`, `MarketSnapshot`, `Position` and their parts (0.10.0). |
+| `kbd.py` | MOEX KBD/G-curve evaluator, G-spread, materialised curve (0.11.0). |
+| `curve_specs.py` | Versioned curve-spec registry keyed by core spec IDs (0.11.0). |
+| `factors.py` | Desk factor vocabulary `IR\|curve\|bucket`, `CS`, `FX\|ccy`; sparse Hessian (0.11.0). |
+| `portfolio.py` | `value_portfolio`: a book against one `MarketSnapshot`, coded coverage, result contract v2 (0.11.0). |
+| `_deprecation.py` | `DeprecationWarning` helper for APIs kept until 1.0 (0.12.0). |
 
 Dependency direction (no cycles):
 
@@ -44,7 +57,21 @@ graph LR
   dates --> key_rate
   discount --> risk
   compatibility --> risk
-  risk --> fx_futures
+  _risk_common --> risk
+  _risk_common --> fx_futures
+  canonical --> serialization
+  errors --> dates
+  dates --> domain
+  cashflows --> domain
+  floating --> domain
+  kbd --> domain
+  kbd --> curve_specs
+  risk --> factors
+  fx_futures --> factors
+  domain --> portfolio
+  curve_specs --> portfolio
+  factors --> portfolio
+  local_risk --> portfolio
 ```
 
 ## Data flow
@@ -60,6 +87,10 @@ graph LR
 5. **Snapshot analytics**: `BondTermsV1`, schedule, `MarketObservationV1`, `CurveSnapshotV1`,
    `ValuationContext`, `CalculationPolicy` → `analyze_bond[_v2]` → hashed result or
    `CalculationFailure`.
+6. **Portfolio (0.11.0)**: `Instrument[]` + `Position[]` + one `MarketSnapshot` (curves by ID
+   with spec IDs, calendars, fixings, FX, quotes) + `ValuationPolicy` → `value_portfolio` →
+   `PortfolioRiskResult` (per-position PV, spreads, desk-factor risk, JTD; coded coverage;
+   hash-verified contract `rub-portfolio-risk-result.v2`).
 
 ## Invariants
 
@@ -77,6 +108,9 @@ graph LR
 
 ## Error model
 
+- **`CoreRejection`** (0.9.0, a `ValueError`) – typed rejections with a stable `code`:
+  `UnsupportedProduct`, `MissingMarketData`, `CalendarRangeError`, `UnknownCurveSpec`,
+  `InvalidTerms`. `value_portfolio` records them per position instead of raising.
 - **`ValueError`** – invalid input (non-finite / non-positive price, non-finite cash flows,
   spreads, yields, quotes, DFs; settlement before curve date; no future cash flow; invalid
   conventions) and **unbracketed roots** (message contains `"not bracketed"`), including a

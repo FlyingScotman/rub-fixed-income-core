@@ -6,8 +6,11 @@ other repositories and must be changed there, not in this core.
 
 ## P0
 
-1. **Official versioned business calendar.** The core ships no holidays (default
-   weekends-only). Wire an official, versioned MOEX/CBR trading/settlement calendar source
+1. **Official versioned business calendar.** *Core side done in 0.9.0–0.11.0*: bounded
+   calendars reject dates outside their range, and `value_portfolio` records each calendar's
+   version and fingerprint. The hub publishes the calendar per snapshot (system doc 02).
+   Original item: the core ships no holidays (default weekends-only). Wire an official,
+   versioned MOEX/CBR trading/settlement calendar source
    (with transfers and working weekends) into a `BusinessCalendar` builder owned by a data
    project (e.g. market-data-store) and record `version` + `calendar_fingerprint` in outputs.
    Do not hard-code holiday lists from memory.
@@ -48,7 +51,7 @@ other repositories and must be changed there, not in this core.
     curve (~2.2 s with Hessian on the synthetic job). A faster bootstrap is the next lever.
 13. `price_cashflows` legacy path (no `settlement_date`) counts a flow on the curve date at face
     and ignores earlier flows; settlement-aware callers should always pass `settlement_date`.
-    Consider deprecating the implicit curve-date path.
+    *Deprecated in 0.12.0* (warns; removal in 1.0).
 14. Curve interpolation weights are calendar days even if `time_day_count` ≠ ACT/365F
     (documented). Revisit if a non-ACT/365F curve time basis is used in production.
 15. `zero_rate`/`forward_rate` compounding for forwards is fixed annual; add a `Compounding`

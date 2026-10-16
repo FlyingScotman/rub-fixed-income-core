@@ -16,6 +16,7 @@ from datetime import date, datetime
 from typing import Literal, cast
 
 from ._money import finite_money
+from ._risk_common import _curve_identity
 from ._version import __version__
 from .canonical import canonical_json_bytes, canonical_sha256
 from .cashflows import BondCashflow
@@ -35,7 +36,6 @@ from .risk import (
     BondScenario,
     BondSecondOrderRisk,
     ShockedCurveCache,
-    _curve_identity,
 )
 from .serialization import decode
 

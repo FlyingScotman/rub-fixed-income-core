@@ -4,7 +4,7 @@
 
 Written against core v0.6.0 (HEAD `454a78c`, 16 October 2026), then reconciled with **0.8.1** and updated release by release from 0.9.0.
 
-## Status after 0.7.0–0.11.0
+## Status after 0.7.0–0.12.0
 
 | Release | Delivered | Roadmap item | Remaining |
 |---|---|---|---|
@@ -14,6 +14,7 @@ Written against core v0.6.0 (HEAD `454a78c`, 16 October 2026), then reconciled w
 | 0.9.0 | Bounded `BusinessCalendar` (`valid_from`/`valid_to`, `CalendarRangeError`), `calendar_identity`; canonical hashing for enums/sets/nested dataclasses in `canonical.py`; `to_dict`/`from_dict`; typed rejections (`errors.py`); CI on Windows/Ubuntu Python 3.11 | 0.1 (calendar type), 0.4, part of 0.9 | Record calendar identity in results of the new portfolio path (0.11.0); pass calendars through Instrument schedules (0.10.0) |
 | 0.10.0 | `Cashflow` with coupon/principal split, accrual period and kind; `accrued_interest` from the split; `Instrument`, `MarketSnapshot`, `Position` and their parts in `domain.py` | 0.2, 0.3 | Floating coupons are not projected by `Instrument.cashflows` (package 1 in the portfolio path); `public_schedule` still collapses the split (it is deprecated) |
 | 0.11.0 | KBD evaluator, G-spread and materialised curve (golden: MOEX standard yields within 0.01 bp); curve-spec registry (`rub_ofz_kbd_v1`, `rub_ruonia_ois_legacy_v1`, `rub_key_rate_swap_v1`); desk factors `IR\|curve\|bucket`, `CS`, `FX\|ccy` with sparse Hessian; `value_portfolio` over `Instrument`/`MarketSnapshot`/`Position` with coded coverage and result contract v2 | 0.6, minimal 0.5, §2 items 4 and 6 | Full 0.5 (`rub_ruonia_ois_moex_v2`, spot/payment lags, tenor resolver); prebuilt shocked curves across calls and the 2k Windows benchmark (0.7); floaters and FX futures in `value_portfolio` |
+| 0.12.0 | `DeprecationWarning` on `analyze_bond` V1, `solve_continuous_z_spread`, the curve-date `price_cashflows`/`solve_z_spread` path, the `clean_price_pct_to_dirty_amount` alias and `bind_market_data_store_schedule`; shared risk internals in `_risk_common.py`; docs refreshed | 0.9 | Removal of the deprecated APIs in 1.0; V1 → annual Z default (BACKLOG #7) |
 
 The sections below keep the original 0.6.0 baseline for traceability. Where they conflict with this table, **this table is current**.
 

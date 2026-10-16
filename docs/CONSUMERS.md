@@ -18,6 +18,27 @@ them (cron jobs and two long-running MCP servers pick it up on next import/resta
 | corporate-bond-monitor | `==0.1.0` | **non-editable** path; stale `.venv` with 0.1.0 | Windows desk app | `analyze_bond` (continuous Z), `BondTermsV1`…, `verify_result_sha256`, trade grids, `canonical_*` |
 | rgbi-futures-arbitrage-monitor | `==0.1.0` | vendored 0.1.0 wheel (not affected by main) | crons | financed-bond projection, accumulation, clean/dirty conversion (scipy brentq locally; no compatibility/analytics) |
 
+## Desk backend (trading-desk-monitor), from 0.11.0
+
+The desk backend is the target runtime consumer (`docs/SYSTEM_CONTEXT.md`). Its entry point
+is `value_portfolio` over `Instrument`, `MarketSnapshot` and `Position`, which its hub adapter
+builds; results are stored as `rub-portfolio-risk-result.v2`. It pins a tagged release.
+
+## Deprecations in 0.12.0 and what consumers should move to
+
+Nothing is removed before 1.0. Each call below now emits a `DeprecationWarning` (hidden by
+default outside `__main__` and test runners) and returns exactly what it returned before.
+
+| Deprecated | Replacement | Known users |
+| --- | --- | --- |
+| `analyze_bond` (V1, continuous Z) | `analyze_bond_v2` (annual Z by default; store the convention id) | corporate-bond-monitor (pinned 0.1.0) |
+| `solve_continuous_z_spread` | `solve_z_spread(..., settlement_date=s, convention=ZSpreadConvention(compounding=CONTINUOUS))` | none known |
+| `price_cashflows` / `solve_z_spread` without `settlement_date` | pass `settlement_date` | market-data-store, currency-bond-monitor |
+| `clean_price_pct_to_dirty_amount` | `clean_price_pct_to_dirty_rub` | market-data-store, moex-market-data-mcp |
+| `public_schedule.bind_market_data_store_schedule` | build an `Instrument` from the hub snapshot in the backend adapter | none in production |
+
+market-data-store also pins `<0.9`; widen the pin before its next lock (BACKLOG #35).
+
 ## Version-pin behaviour on upgrade
 
 Verified with a throwaway project: a consumer that pins `==0.2.1` on an editable path source

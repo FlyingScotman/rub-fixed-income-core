@@ -8,6 +8,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from itertools import pairwise
 from typing import Literal
 
+from ._deprecation import deprecated
 from ._money import finite_money
 from ._solver import bisect
 from .bond import YieldRequest, solve_effective_annual_yield
@@ -349,6 +350,7 @@ def analyze_bond(
     stored V1 result hashes stay reproducible. Use :func:`analyze_bond_v2` to choose the
     Z-spread convention (desk default annual) and to record it in the result.
     """
+    deprecated("analyze_bond (V1, continuous Z-spread)", "use analyze_bond_v2")
     try:
         prepared = _prepare(
             terms_snapshot,

@@ -55,6 +55,11 @@ CURVE = CurveSnapshotV1(
     DiscountCurve(VALUATION, ((date(2027, 1, 1), 1 / 1.08), (date(2028, 1, 1), 1 / 1.08**2))),
     "c",
 )
+
+# These tests pin the behaviour of APIs deprecated in 0.12.0 (kept until 1.0);
+# tests/test_deprecations.py checks that each one warns.
+pytestmark = pytest.mark.filterwarnings("ignore:rub_fixed_income:DeprecationWarning")
+
 MARKET = MarketObservationV1(97.0, SETTLE, "midpoint", "m")
 CONTEXT = ValuationContext(VALUATION, SETTLE)
 

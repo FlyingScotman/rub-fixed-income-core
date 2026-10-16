@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from dataclasses import replace
 from datetime import date
 
+from ._deprecation import deprecated
 from ._money import non_negative_money
 from .canonical import canonical_sha256
 from .cashflows import BondCashflow
@@ -32,6 +33,10 @@ def bind_market_data_store_schedule(
     an ``exact_published`` service label alone is insufficient evidence of those.
     The expected build ID must come from the supplied curve's own provenance.
     """
+    deprecated(
+        "bind_market_data_store_schedule (retired market-data-store payload)",
+        "build an Instrument from the hub snapshot in the backend adapter (ADR-003)",
+    )
     if terms.cashflows:
         raise ValueError("terms must have empty cashflows before binding")
     if terms.cashflow_currency != "RUB" or terms.coupon_model != "fixed":

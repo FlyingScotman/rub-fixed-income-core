@@ -42,6 +42,10 @@ CALENDAR = BusinessCalendar(
     version="synthetic-test-calendar",
 )
 
+# These tests pin the behaviour of APIs deprecated in 0.12.0 (kept until 1.0);
+# tests/test_deprecations.py checks that each one warns.
+pytestmark = pytest.mark.filterwarnings("ignore:rub_fixed_income:DeprecationWarning")
+
 
 def _bond_inputs() -> tuple[
     BondTermsV1,

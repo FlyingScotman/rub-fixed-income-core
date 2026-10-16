@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.12.0 — API consolidation (deprecations) and documentation
+
+Roadmap item 0.9. No behaviour or identifier changes: every deprecated call returns
+exactly what it returned before and only adds a `DeprecationWarning` at the caller's line
+(hidden by default outside `__main__` and test runners). Removal is planned for 1.0.
+
+- Deprecated: `analyze_bond` (V1, continuous Z; use `analyze_bond_v2`),
+  `solve_continuous_z_spread`, `price_cashflows` and `solve_z_spread` without
+  `settlement_date`, the `clean_price_pct_to_dirty_amount` alias, and
+  `public_schedule.bind_market_data_store_schedule` (the retired market-data-store payload;
+  the backend adapter builds an `Instrument` instead, ADR-003).
+- The test suite turns this library's deprecation warnings into errors; tests that pin
+  legacy behaviour say so explicitly, and `tests/test_deprecations.py` checks every warning.
+- Private risk helpers shared by `risk` and `fx_futures` (and `local_worker`) moved to
+  `_risk_common.py`; nothing imports private names from `risk` any more. Public names
+  (`RISK_BUCKETS`, `RISK_PILLARS`, `ShockedCurveCache`, `key_rate_weights`, ...) are still
+  importable from `rub_fixed_income.risk`. `ShockedCurveCache.__module__` is now
+  `rub_fixed_income._risk_common`.
+- Docs: API reference, architecture module map and data flow, consumer migration table,
+  backlog and roadmap status refreshed for 0.9.0–0.12.0.
+
 ## 0.11.0 — KBD curve, curve-spec registry, desk factors, portfolio valuation
 
 Roadmap items 0.6, a minimal 0.5 and §2 (factor vocabulary, coverage codes): the

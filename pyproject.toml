@@ -1,6 +1,6 @@
 [project]
 name = "rub-fixed-income-core"
-version = "0.11.0"
+version = "0.12.0"
 description = "Deterministic RUB fixed-income dates, cash-flow, financing, yield, discount-curve, and KRS projection math"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -40,6 +40,8 @@ exclude = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# A test that exercises a deprecated API must say so (pytest.warns or a module mark).
+filterwarnings = ["error:rub_fixed_income:DeprecationWarning"]
 
 [tool.ruff]
 line-length = 100

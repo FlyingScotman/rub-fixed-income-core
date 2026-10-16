@@ -24,6 +24,10 @@ from rub_fixed_income.cashflows import BondCashflow
 from rub_fixed_income.dates import year_fraction
 from rub_fixed_income.discount import DiscountCurve
 
+# These tests pin the behaviour of APIs deprecated in 0.12.0 (kept until 1.0);
+# tests/test_deprecations.py checks that each one warns.
+pytestmark = pytest.mark.filterwarnings("ignore:rub_fixed_income:DeprecationWarning")
+
 
 def test_analyze_fixed_bullet_returns_ai_yield_durations_zspread_and_stable_hash() -> None:
     settlement = date(2026, 1, 1)

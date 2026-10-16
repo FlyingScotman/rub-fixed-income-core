@@ -1,4 +1,4 @@
-# API reference (0.11.0)
+# API reference (0.12.0)
 
 Everything below is importable from `rub_fixed_income`. Units: decimal rates/spreads unless
 the name ends in `_bp` (basis points) or `_pct` (percent); amounts in RUB per bond; clean
@@ -37,7 +37,7 @@ All convention objects are frozen and hashable.
 
 - `EventKey(event_date, ordinal)`, `CashEvent(key, amount_rub_per_bond, event_id)`, `BondCashflow(payment_date, amount)`.
 - `clean_price_pct_to_dirty_rub(clean_pct, current_nominal_rub, accrued_interest_rub) -> float`; `dirty_rub_to_clean_price_pct(...)`. Raise for non-positive nominal or negative AI; **(0.3.1)** also for clean/dirty price ≤ 0, dirty ≤ AI (implied clean ≤ 0), non-finite/`bool` input, overflowing result.
-- `clean_price_pct_to_dirty_amount(...)` — alias.
+- `clean_price_pct_to_dirty_amount(...)` — alias. **Deprecated (0.12.0)**: use `clean_price_pct_to_dirty_rub`.
 
 ## Discount curves
 
@@ -60,11 +60,11 @@ All convention objects are frozen and hashable.
   "not bracketed" (0.3.0)**.
 - `bond_duration(*, annual_yield, settlement_date, cashflows, compounding_frequency=1, day_count_basis=365.0, convention=None) -> DurationResult(macaulay_years, modified_years, present_value)`
   Raises: non-finite yield **(0.3.0)**, base `1 + y/m <= 0`, no positive PV, non-finite/`bool` flows and overflowing PV or duration **(0.3.1)**.
-- `price_cashflows(cashflows, curve, *, spread=0.0, compounding_frequency=1, settlement_date=None, convention: ZSpreadConvention | None = None) -> float`
+- `price_cashflows(cashflows, curve, *, spread=0.0, compounding_frequency=1, settlement_date=None, convention: ZSpreadConvention | None = None) -> float` — **deprecated without `settlement_date` (0.12.0)**.
   Raises: non-finite spread/cash flows **(0.3.0)**, settlement before curve date, rate outside compounding domain, `bool` flows and overflowing result **(0.3.1)**. Signed flows netting to 0 return `0.0`.
 - `solve_z_spread(cashflows, dirty_price, curve, *, compounding_frequency=1, settlement_date=None, convention=None) -> float`
   Raises: empty flows, non-finite/≤0 price **(0.3.0)**, non-finite flows **(0.3.0)**, no flow after settlement **(0.3.0)**, settlement before curve date, conflicting `compounding_frequency` + `convention`, "Z-spread root is not bracketed" (bracket −95%…500%), non-finite objective mid-solve **(0.3.0)**; `RuntimeError` "did not converge".
-- `solve_continuous_z_spread(cashflows, dirty_price, curve, *, settlement_date=None) -> float` — continuous Z over settlement-forward DFs; bracket ±500%.
+- `solve_continuous_z_spread(cashflows, dirty_price, curve, *, settlement_date=None) -> float` — continuous Z over settlement-forward DFs; bracket ±500%. **Deprecated (0.12.0)**: use `solve_z_spread` with a continuous `ZSpreadConvention` and `settlement_date`.
 
 ## Effective yield and financing (`bond`)
 
@@ -75,7 +75,7 @@ All convention objects are frozen and hashable.
 ## Snapshot analytics (`analytics`)
 
 - Inputs: `BondTermsV1(issue_id, current_nominal_rub, maturity_date, horizon, horizon_date, accrual_period_start, accrual_period_end, coupon_amount_rub, terms_hash)`, `MarketObservationV1(clean_price_pct_of_current_nominal, settlement_date, selected_price_basis, market_hash)`, `CurveSnapshotV1(curve_world_instance_id, discount_curve, curve_hash)`, `ValuationContext(valuation_date, settlement_date)`, `CalculationPolicy(money_quantum=Decimal("0.01"), spread_lower_bp=-5000, spread_upper_bp=5000, root_tolerance=1e-13)` (+ `.validate()` **(new)**).
-- `analyze_bond(terms, schedule, market, curve, context, policy) -> BondAnalyticsResultV1 | CalculationFailure` — frozen V1 conventions (continuous Z). **(0.3.0)**: invalid policy → `INVALID_UNITS`; AI 0 on coupon date.
+- `analyze_bond(terms, schedule, market, curve, context, policy) -> BondAnalyticsResultV1 | CalculationFailure` — frozen V1 conventions (continuous Z). **Deprecated (0.12.0)**: use `analyze_bond_v2`. **(0.3.0)**: invalid policy → `INVALID_UNITS`; AI 0 on coupon date.
 - `analyze_bond_v2(..., *, yield_convention=None, z_spread_convention=None) -> BondAnalyticsResultV2 | CalculationFailure` **(new)** — default annual Z; result adds `yield_convention`, `z_spread_convention`.
 - `V1_YIELD_CONVENTION`, `V1_Z_SPREAD_CONVENTION` **(new)** constants.
 - Result units: `accrued_interest_rub`, `dirty_price_rub_per_bond` (RUB per bond), `yield_pct` (%), durations (years), `z_spread_bp` (bp), `repricing_error_rub_per_bond`.
