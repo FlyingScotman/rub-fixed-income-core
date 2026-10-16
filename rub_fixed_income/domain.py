@@ -22,6 +22,7 @@ from .dates import BusinessCalendar
 from .discount import CurveBootstrapRequest, DiscountCurve
 from .errors import InvalidTerms, MissingMarketData
 from .floating import FixingHistory, FloatingCouponPeriod, FloatingCouponRule
+from .kbd import ZcycParameters
 
 __all__ = [
     "AccountingCategory",
@@ -385,11 +386,15 @@ class BondPriceObservation:
 
 @dataclass(frozen=True)
 class CurveEntry:
-    """A curve under a desk curve ID, built to a registered curve spec."""
+    """A curve under a desk curve ID, built to a registered curve spec.
+
+    ``curve`` is a built curve, OIS quotes to bootstrap, or KBD parameters; the
+    valuation builds and shares it once per call.
+    """
 
     curve_id: str
     spec_id: str
-    curve: DiscountCurve | CurveBootstrapRequest
+    curve: DiscountCurve | CurveBootstrapRequest | ZcycParameters
 
     def __post_init__(self) -> None:
         _text(self.curve_id, "curve_id")

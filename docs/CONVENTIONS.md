@@ -150,6 +150,24 @@ period end gives 0. A settlement before the first accrual period is rejected
   `z_spread_convention` identifiers and its own hash. Reproduce V1 spreads with
   `z_spread_convention=ZSpreadConvention(compounding=CONTINUOUS)`.
 
+## KBD (MOEX G-curve) (0.11.0)
+
+`G(t) = B1 + B2·L + B3·(L − e^(−t/T1)) + Σ G_i·exp(−((t − a_i)/b_i)²)`, `L = T1/t·(1 − e^(−t/T1))`,
+`a_1 = 0`, `a_2 = 0.6`, `a_(i+1) = a_i + 0.6·1.6^(i−1)`, `b_1 = 0.6`, `b_(i+1) = 1.6·b_i`.
+`G` is a continuously compounded zero rate in bp; MOEX publishes `exp(G/10⁴) − 1`. Time `t`
+is ACT/365F years from the trade date. The discount curve is `DF(t) = exp(−G(t)/10⁴·t)` on
+the node grid, log-linear between nodes, flat-forward beyond 30Y. G-spread is the bond's
+effective annual yield minus the KBD yield at an explicit tenor (the portfolio uses the
+Macaulay duration at that yield).
+
+## Desk risk factors (0.11.0)
+
+`IR|<curve_id>|<bucket>` (1 bp at one of the 11 bucket pillars), `CS` (1 bp of own credit or
+OFZ spread), `FX|<ccy>` (1 % against RUB) and `FXBASIS|<ccy>` (1 bp of a futures basis).
+Portfolio results report first order and the sparse upper-triangle Hessian from central
+differences with the same bump (DEC08). Signs: DV01 is PV(+1 bp) − PV(0), negative for a
+long bond.
+
 ## Financed-bond accumulation
 
 `constant_daily_accumulation_periods(start, horizon, boundaries, r)`: factor per period

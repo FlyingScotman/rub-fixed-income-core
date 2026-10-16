@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.11.0 — KBD curve, curve-spec registry, desk factors, portfolio valuation
+
+Roadmap items 0.6, a minimal 0.5 and §2 (factor vocabulary, coverage codes): the
+core side of the M1 vertical slice (an OFZ book on the KBD curve).
+
+- **KBD / G-curve** (`kbd.py`): `ZcycParameters`, `kbd_zero_rate_bp`,
+  `kbd_effective_yield`, `g_spread_bp` and `kbd_discount_curve`. It reproduces MOEX's
+  published standard yields within 0.01 bp on archived publications
+  (`tests/fixtures/kbd/`, copied from the hub's fixtures). The materialised curve
+  (daily nodes to 2Y, weekly to 5Y, monthly to 30Y) is within 0.005 bp of the formula
+  on every day to 30Y, so Z-spread, bucket risk, the Hessian and scenarios work on it
+  unchanged. Model `moex-kbd-gcurve-v1`.
+- **Curve-spec registry** (`curve_specs.py`): `CurveSpec`, `CURVE_SPECS`,
+  `get_curve_spec` (raises `UnknownCurveSpec`). Registered: `rub_ofz_kbd_v1`,
+  `rub_ruonia_ois_legacy_v1` (today's bootstrap, named exactly) and
+  `rub_key_rate_swap_v1`. The exchange-conformant `rub_ruonia_ois_moex_v2` follows later.
+- **Desk factors** (`factors.py`): `ir_factor` (`IR|<curve>|<bucket>`), `CS`,
+  `fx_factor` (`FX|<ccy>`), `fx_basis_factor`; `FactorRisk` with a sparse upper-triangle
+  Hessian; `bond_factor_risk` and `fx_futures_factor_risk`. First order and Hessian are
+  central with the same bump (DEC08).
+- **Portfolio valuation** (`portfolio.py`): `value_portfolio(run_id, as_of, snapshot,
+  instruments, positions, policy, scenarios)` over the 0.10.0 domain model. It values
+  fixed-coupon RUB bonds (bullet, amortizing, confirmed put) on a KBD curve, a prebuilt
+  curve or OIS quotes, with settlement from the instrument's calendar. Each position
+  gets PV, prices, accrued, Z-spread, effective yield, Macaulay duration, G-spread on
+  KBD, desk-factor risk and JTD. Everything else is a coded `Rejection` in coverage
+  (`UNSUPPORTED_PRODUCT`, `MISSING_MARKET_DATA`, `CALENDAR_OUT_OF_RANGE`,
+  `UNKNOWN_CURVE_SPEC`, `INVALID_TERMS`, `CALCULATION_FAILED`, `CANCELLED`,
+  `TIME_BUDGET_EXCEEDED`). Results carry the curves and calendar identities used and
+  covered factor totals, and are hash-verified as `rub-portfolio-risk-result.v2`
+  (`portfolio_result_to_json` / `_from_json` / `verify_portfolio_result`).
+  `run_local_risk` and the v1 contract are unchanged.
+- `CurveEntry.curve` may also hold `ZcycParameters`; the valuation builds it once.
+- `DiscountCurve.discount_factor` finds the node interval by bisection over cached log
+  discount factors instead of a linear scan. Results are bit-identical (same values,
+  same interval); dense curves such as KBD become cheap to read.
+- Indicative speed (Linux, Python 3.11, 200 positions on KBD): 9 ms per position with
+  first-order risk, 29 ms with the Hessian. The 2k-position benchmark on Windows is
+  roadmap item 0.7.
+
 ## 0.10.0 — domain model and the coupon/principal split
 
 Roadmap package 0, items 0.2 and 0.3. Additive: existing entry points, results and

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from bisect import bisect_left
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import date
@@ -66,6 +67,18 @@ class DiscountCurve:
             CurveConvention() if convention is None else convention,
         )
 
+    def _log_nodes(self) -> tuple[tuple[date, ...], tuple[float, ...]]:
+        # Lazily cached outside the dataclass fields (equality, hashing and asdict
+        # ignore it). The same math.log values as a linear scan: results are identical.
+        cached = self.__dict__.get("_log_node_cache")
+        if cached is None:
+            cached = (
+                tuple(node_date for node_date, _ in self.nodes),
+                tuple(math.log(df) for _, df in self.nodes),
+            )
+            object.__setattr__(self, "_log_node_cache", cached)
+        return cast(tuple[tuple[date, ...], tuple[float, ...]], cached)
+
     def _time(self, start: date, end: date) -> float:
         return self.convention.time_day_count.year_fraction(start, end)
 
@@ -87,15 +100,16 @@ class DiscountCurve:
             return math.exp(-self._flat_continuous_rate * self._time(self.curve_date, target))
         if not self.nodes:
             raise ValueError("discount curve has no nodes")
-        left_date = self.curve_date
-        left_log_df = 0.0
-        for right_date, right_df in self.nodes:
-            right_log_df = math.log(right_df)
-            if target <= right_date:
-                weight = (target - left_date).days / (right_date - left_date).days
-                return math.exp(left_log_df + weight * (right_log_df - left_log_df))
-            left_date = right_date
-            left_log_df = right_log_df
+        dates, log_dfs = self._log_nodes()
+        index = bisect_left(dates, target)
+        if index < len(dates):
+            right_date, right_log_df = dates[index], log_dfs[index]
+            if index == 0:
+                left_date, left_log_df = self.curve_date, 0.0
+            else:
+                left_date, left_log_df = dates[index - 1], log_dfs[index - 1]
+            weight = (target - left_date).days / (right_date - left_date).days
+            return math.exp(left_log_df + weight * (right_log_df - left_log_df))
         if len(self.nodes) == 1:
             prior_date, prior_log_df = self.curve_date, 0.0
         else:

@@ -1,4 +1,4 @@
-# API reference (0.10.0)
+# API reference (0.11.0)
 
 Everything below is importable from `rub_fixed_income`. Units: decimal rates/spreads unless
 the name ends in `_bp` (basis points) or `_pct` (percent); amounts in RUB per bond; clean
@@ -132,6 +132,22 @@ foreign units. Money is signed RUB of variation margin. See [FX futures](fx-futu
 | `MarketSnapshot(snapshot_id, business_date, known_at, curves, calendars, fixings, fx, quotes, evidence)` | `.curve(id)`, `.calendar(id)`, `.fixing(id)`, `.fx_rate(ccy)`, `.quote(instrument_id)`; missing keys raise `MissingMarketData`. |
 | `CurveEntry`, `CalendarEntry`, `FixingEntry`, `FxRate`, `BondPriceObservation`, `SnapshotEvidence` | Snapshot entries. |
 | `Position(position_id, instrument_id, quantity, book, accounting_category, currency, recovery_rate=None)` | `AccountingCategory`: `TRADING`, `HTM`, `REPO`. |
+
+## KBD, curve specs, factors and portfolio valuation (0.11.0)
+
+| Name | Description |
+| --- | --- |
+| `ZcycParameters(trade_date, b1, b2, b3, t1, g)` | One MOEX KBD publication (`b*`, `g` in bp, `t1` in years). |
+| `kbd_zero_rate_bp(params, t)`, `kbd_effective_yield(params, t)` | Continuous zero rate (bp) and effective annual yield (decimal) at `t` years. |
+| `kbd_discount_curve(params, curve_date=None, *, horizon_years=30)` | Materialised `DiscountCurve` (ACT/365F), within 0.005 bp of the formula. |
+| `g_spread_bp(params, bond_effective_yield, tenor_years)` | Bond yield minus KBD yield at an explicit tenor (MOEX: duration), in bp. |
+| `CurveSpec`, `CurveKind`, `CURVE_SPECS`, `get_curve_spec(spec_id)` | Versioned registry; unknown IDs raise `UnknownCurveSpec`. |
+| `ir_factor(curve_id, bucket)`, `CS_FACTOR`, `fx_factor(ccy)`, `fx_basis_factor(ccy)` | Desk factor keys. |
+| `FactorRisk(factors, first_order, hessian, difference, bump_bp, has_second_order)` | `HessianEntry(i, j, value)` upper triangle; `.first_order_by_factor()`, `.hessian_by_factor()`. |
+| `bond_factor_risk(risk, curve_id, second_order=None)`, `fx_futures_factor_risk(risk, rub_curve_id, foreign_curve_id, second_order=None)` | Convert engine results. |
+| `ValuationPolicy(discount_curve_id, spread_kind, spread_convention, horizon, curve_overrides, include_second_order, bump_bp)` | Valuation choices; part of the job identity. |
+| `value_portfolio(*, run_id, as_of, snapshot, instruments, positions, policy, scenarios=(), time_budget_seconds=None, should_cancel=None)` | `PortfolioRiskResult` with `PositionValuation`s, `PortfolioCoverage` (coded `Rejection`s), `PortfolioScenarioResult`s, `CurveUse`, `CalendarUse`, `FactorTotal`s. |
+| `portfolio_result_to_json`, `portfolio_result_from_json`, `verify_portfolio_result` | Contract `rub-portfolio-risk-result.v2`. |
 
 ## Fixed-RUB risk extensions (0.5.0)
 

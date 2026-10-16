@@ -1,3 +1,3 @@
 """Single runtime version shared by results and package exports."""
 
-__version__ = "0.10.0"
+__version__ = "0.11.0"
