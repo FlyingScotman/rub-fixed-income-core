@@ -19,6 +19,8 @@ linear guardrail; they do not call the exact solver.
 
 ## Documentation
 
+- [System context](docs/SYSTEM_CONTEXT.md) — where this library fits in the Trading Desk Monitor, its obligations, and links to the system architecture
+- [Product roadmap](docs/PRODUCT_ROADMAP.md) — **development plan**: foundations (package 0) and product packages 1–9 with acceptance criteria
 - [Architecture](docs/ARCHITECTURE.md) — module map, data flow, invariants, error model
 - [Conventions](docs/CONVENTIONS.md) — day counts, compounding, calendars, schedules, curve, yield, Z-spread, AI equations
 - [API](docs/API.md) — public functions, units, errors
