@@ -132,6 +132,14 @@ The continuous and annual spreads differ materially (OFZ 26238 probe: annual 139
 coupon; MOEX convention). `analyze_bond` rounds AI half-up to `CalculationPolicy.money_quantum`
 (default 0.01 RUB).
 
+### Accrued interest from split cashflows (0.10.0)
+
+`accrued_interest(cashflows, settlement)` and `Instrument.accrued(settlement)` use the
+coupon whose `[accrual_start, accrual_end)` contains the settlement date:
+`coupon * elapsed_days / period_days`, rounded half-up to 0.01 per bond. Settlement on the
+period end gives 0. A settlement before the first accrual period is rejected
+(`InvalidTerms`); one after the last coupon gives 0.
+
 ## `analyze_bond` conventions
 
 - `analyze_bond` (V1, frozen): yield = effective annual ACT/365F; Z = **continuous** ACT/365F

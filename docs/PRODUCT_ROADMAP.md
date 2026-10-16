@@ -4,7 +4,7 @@
 
 Written against core v0.6.0 (HEAD `454a78c`, 16 October 2026), then reconciled with **0.8.1** and updated release by release from 0.9.0.
 
-## Status after 0.7.0–0.9.0
+## Status after 0.7.0–0.10.0
 
 | Release | Delivered | Roadmap item | Remaining |
 |---|---|---|---|
@@ -12,6 +12,7 @@ Written against core v0.6.0 (HEAD `454a78c`, 16 October 2026), then reconciled w
 | 0.8.0 | `floating`: `FixingHistory` (point-in-time, RUONIA gap checks), `FloatingCouponRule`, `FloatingLeg`; compounded or arithmetic averaging, lookback; known fixings and published coupons frozen under bumps; `BondRiskRequest(floating_leg=...)` | Package 1 (floaters), core part | Floors and caps; payment-lag observation shifts; in-arrears key-rate fixings; **separate projection and discount curves** (today single-curve, with the spread as a discount margin); reproduce MOEX-published current coupons for sample OFZ-PK and corporate floaters |
 | 0.8.1 | `fx_futures`: FX futures against RUB by covered parity with a calibrated, frozen basis; RUB and foreign curve DV01, basis01, FX delta, exact scenarios, 23-factor Hessian; daily variation margin | Package 5, FX futures part (also feeds packages 3–4) | OFZ, RUONIA and key-rate futures; FX forwards and FX swaps (package 4) |
 | 0.9.0 | Bounded `BusinessCalendar` (`valid_from`/`valid_to`, `CalendarRangeError`), `calendar_identity`; canonical hashing for enums/sets/nested dataclasses in `canonical.py`; `to_dict`/`from_dict`; typed rejections (`errors.py`); CI on Windows/Ubuntu Python 3.11 | 0.1 (calendar type), 0.4, part of 0.9 | Record calendar identity in results of the new portfolio path (0.11.0); pass calendars through Instrument schedules (0.10.0) |
+| 0.10.0 | `Cashflow` with coupon/principal split, accrual period and kind; `accrued_interest` from the split; `Instrument`, `MarketSnapshot`, `Position` and their parts in `domain.py` | 0.2, 0.3 | Floating coupons are not projected by `Instrument.cashflows` (package 1 in the portfolio path); `public_schedule` still collapses the split (it is deprecated) |
 
 The sections below keep the original 0.6.0 baseline for traceability. Where they conflict with this table, **this table is current**.
 

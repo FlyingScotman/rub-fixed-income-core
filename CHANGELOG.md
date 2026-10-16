@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.10.0 — domain model and the coupon/principal split
+
+Roadmap package 0, items 0.2 and 0.3. Additive: existing entry points, results and
+identifiers are unchanged.
+
+- **`Cashflow`** (`cashflows.py`): a `BondCashflow` split into `coupon` and
+  `principal`, with the coupon's `accrual_start`/`accrual_end` and a
+  `CashflowKind` (`COUPON`, `AMORTIZATION`, `MATURITY`, `OFFER_REDEMPTION`). Build it
+  with `Cashflow.split(...)`; `amount` is always `coupon + principal`. Because it is a
+  `BondCashflow`, every pricing and risk entry point accepts it and gives the same
+  numbers and identifiers as the totals.
+- **`accrued_interest(cashflows, settlement)`**: linear accrued interest from the
+  split, rounded half-up to 0.01 (same formula as `analytics.accrued_interest_rub`).
+- **Domain types** (`domain.py`):
+  - `Instrument` (terms only): `ProductType`, currency, initial face, a
+    `FixedCouponLeg` of known `CouponPeriod`s or a `FloatingCouponLeg` (rule,
+    periods, fixing ID), a `PrincipalLeg` of `Redemption`s, `Offer`s, calendar ID and
+    settlement lag. `cashflows(after, horizon, offer)`, `outstanding_face(on)`,
+    `horizon("maturity" | "confirmed_put", settlement)`, `accrued(settlement)`.
+  - `MarketSnapshot`, shared by all positions: `CurveEntry` (curve ID + curve-spec
+    ID), `CalendarEntry`, `FixingEntry`, `FxRate`, `BondPriceObservation`,
+    `SnapshotEvidence`, `snapshot_id`, `known_at`. Lookups raise `MissingMarketData`.
+  - `Position`: signed quantity, book, `AccountingCategory`, currency, recovery.
+  - All validate on construction (typed `InvalidTerms`) and round-trip through
+    `to_dict`/`from_dict`.
+- `SnapshotEvidence` moved from `local_worker` to `domain`; `local_worker` re-exports it.
+
 ## 0.9.0 — foundations: calendars, canonical hashing, serialization, typed rejections
 
 Roadmap package 0, items 0.1 and 0.4, and part of 0.9. Every identifier that

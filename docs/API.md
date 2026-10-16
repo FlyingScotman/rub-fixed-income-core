@@ -1,4 +1,4 @@
-# API reference (0.9.0)
+# API reference (0.10.0)
 
 Everything below is importable from `rub_fixed_income`. Units: decimal rates/spreads unless
 the name ends in `_bp` (basis points) or `_pct` (percent); amounts in RUB per bond; clean
@@ -119,6 +119,19 @@ foreign units. Money is signed RUB of variation margin. See [FX futures](fx-futu
 | `to_dict(value)`, `from_dict(cls, data)` | Strict JSON-ready round trip of core dataclasses; `from_dict` re-runs validation. |
 | `CoreRejection` and `UnsupportedProduct`, `MissingMarketData`, `CalendarRangeError`, `UnknownCurveSpec`, `InvalidTerms` | Typed rejections with a stable `.code`; all subclass `ValueError`. |
 | `DiscountCurve.flat_continuous_rate` | Rate of a `DiscountCurve.flat` curve, `None` for node curves. |
+
+## Domain model (0.10.0)
+
+| Name | Description |
+| --- | --- |
+| `Cashflow.split(payment_date, *, coupon, principal, accrual_start, accrual_end, kind)` | A `BondCashflow` with the coupon/principal split; accepted wherever `BondCashflow` is. |
+| `CashflowKind` | `COUPON`, `AMORTIZATION`, `MATURITY`, `OFFER_REDEMPTION`. |
+| `accrued_interest(cashflows, settlement, *, quantum=Decimal("0.01"))` | Accrued from the split; `quantum=None` returns the raw value. |
+| `Instrument(instrument_id, product, currency, initial_face, coupon_leg, principal_leg, calendar_id, offers=(), settlement_lag_days=1, isin=None, issuer_id=None)` | `.cashflows(after=, horizon=, offer=)`, `.outstanding_face(on)`, `.horizon(policy, settlement)`, `.accrued(settlement)`, `.maturity_date`, `.is_perpetual`. |
+| `ProductType`, `FixedCouponLeg`, `CouponPeriod`, `FloatingCouponLeg`, `PrincipalLeg`, `Redemption`, `Offer`, `OfferKind` | Instrument terms. |
+| `MarketSnapshot(snapshot_id, business_date, known_at, curves, calendars, fixings, fx, quotes, evidence)` | `.curve(id)`, `.calendar(id)`, `.fixing(id)`, `.fx_rate(ccy)`, `.quote(instrument_id)`; missing keys raise `MissingMarketData`. |
+| `CurveEntry`, `CalendarEntry`, `FixingEntry`, `FxRate`, `BondPriceObservation`, `SnapshotEvidence` | Snapshot entries. |
+| `Position(position_id, instrument_id, quantity, book, accounting_category, currency, recovery_rate=None)` | `AccountingCategory`: `TRADING`, `HTM`, `REPO`. |
 
 ## Fixed-RUB risk extensions (0.5.0)
 

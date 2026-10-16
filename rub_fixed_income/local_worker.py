@@ -21,6 +21,7 @@ from .canonical import canonical_json_bytes, canonical_sha256
 from .cashflows import BondCashflow
 from .conventions import ZSpreadConvention
 from .discount import CurveBootstrapRequest, DiscountCurve
+from .domain import SnapshotEvidence as SnapshotEvidence  # noqa: PLC0414 (moved; re-exported)
 from .local_risk import (
     CurveRiskBasis,
     FixedRubBondInput,
@@ -57,23 +58,6 @@ def _text(value: str, name: str) -> None:
 def _aware(value: datetime) -> None:
     if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("timestamps must have explicit UTC offsets")
-
-
-@dataclass(frozen=True)
-class SnapshotEvidence:
-    snapshot_id: str
-    source_id: str
-    observed_at: datetime
-    known_at: datetime
-    valid_until: datetime
-
-    def validate(self, as_of: datetime) -> None:
-        _text(self.snapshot_id, "snapshot_id")
-        _text(self.source_id, "source_id")
-        for value in (self.observed_at, self.known_at, self.valid_until):
-            _aware(value)
-        if not self.observed_at <= self.known_at <= as_of <= self.valid_until:
-            raise ValueError("snapshot is stale, future-known or has inconsistent timestamps")
 
 
 @dataclass(frozen=True)
