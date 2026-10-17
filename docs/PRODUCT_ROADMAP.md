@@ -4,7 +4,7 @@
 
 Written against core v0.6.0 (HEAD `454a78c`, 16 October 2026), then reconciled with **0.8.1** and updated release by release from 0.9.0.
 
-## Status after 0.7.0–0.24.0
+## Status after 0.7.0–0.25.0
 
 | Release | Delivered | Roadmap item | Remaining |
 |---|---|---|---|
@@ -27,6 +27,7 @@ Written against core v0.6.0 (HEAD `454a78c`, 16 October 2026), then reconciled w
 | 0.22.0 | `rub_ruonia_ois_moex_v2` from the MOEX SPFI curve methodology and NFA `RUB-RUONIA-OIS-COMPOUND`: TOM start, MODFOL, single period to 1Y then annual with a short initial stub, Act/Act ISDA, +1 business-day payment lag, compounded RUONIA without lookback; `OisSwapConvention` in the bootstrap; legacy spec unchanged | 0.5 (exchange OIS spec, resolves F08) | NCC contract text (BACKLOG #59); par repricing on live MOEX curve values, subscriber-only on ISS (#60); the swap side of v2 in `swaps` (#61); `cny_ruonia_xccy_v1` |
 | 0.23.0 | OFZ-IN: point-in-time `CpiSeries`, `CpiIndexation` (3-month lag, linear by day), indexed coupon and principal legs with the deflation floor, valuation on a caller-built real curve with the new factor type `REAL\|curve\|bucket`; MOEX goldens over the whole history of SU52002–52005 (`ACCINT` and 45 coupons exact, face within 2.6e-4 from CBR CPI, real yield within 0.5 bp) | Package 9: OFZ-IN linkers (core part) | Official CPI levels and terms text (BACKLOG #62); real-curve builder, breakeven factor, linker scenarios and horizon (#63); gold-linked corporates (#64) |
 | 0.24.0 | `cds`: ISDA Standard Model single-name CDS; explicit conventions (`isda_standard`); hazard bootstrap from par spreads and upfronts with a stated recovery; spread ↔ upfront ↔ hazard; outstanding contracts by side; IR bucket DV01, CS01 (`CS`) parallel and per quote, recovery01, scenarios, 12-factor Hessian, JTD with the bond sign (DEC07); reproduces 20 published Markit upfronts | Package 8 (model) | Licensed CDS quotes and recovery (backend data); `value_portfolio` integration (BACKLOG #66); recovery and per-tenor credit factors (#67); index CDS (#68); a bank-system golden (#69); credit-curve export / seed (#70) |
+| 0.25.0 | `xccy`: CNY/RUB cross-currency swaps vs RUONIA (fixed or RUONIA RUB leg, fixed or explicit-index CNY leg, initial / intermediate / final exchanges, simple spread, frozen fixings); MOEX `XCS CNYRUB` as spec `cny_ruonia_xccy_v1`; CNY discount-curve bootstrap from XCCY par quotes; par rate / spread solver; KRD per curve role, `XCCYBASIS`, exact FX delta, scenarios, Hessian; a final-exchange-only swap equals the FX forward | Package 7 (core part) | Portfolio integration (BACKLOG #71); NCC XCCY text (#72); live `CNY-XCS-CNYRUO` golden (#73); basis vs `RUSFARCNY` (#74); MTM resets, compounded spreads, lookback, rounding (#75); XCCY carry and persisted curves (#76); quote-fixed FX risk (#77) |
 
 The sections below keep the original 0.6.0 baseline for traceability. Where they conflict with this table, **this table is current**.
 

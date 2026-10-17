@@ -153,6 +153,30 @@ Seasoned RUONIA OIS and key-rate swaps; see [swaps](swaps.md).
 
 `benchmarks/swap_bench.py --positions 2000` times 1000 OIS and 1000 KRS positions.
 
+## Cross-currency swaps (package 7)
+
+CNY/RUB swaps against RUONIA, module `rub_fixed_income.xccy`; see [xccy](xccy.md).
+Money is signed RUB of PV; foreign flows are converted by covered parity at spot.
+
+| Name | Description |
+| --- | --- |
+| `XccySwap(trade_id, rub_leg, foreign_leg, mark_to_market_resets=False)` | Opposite-side legs. Resets and RUB indices other than RUONIA raise `UnsupportedProduct`. `.currency`. |
+| `XccyLeg(currency, side, day_count, periods, exchanges=(), fixed_rate=None, index=None, spread=0.0)` | `side` `receive`/`pay`; exactly one of `fixed_rate` and `index`; `spread` decimal, simple (NFA 7.3(а)). `.sign`, `.is_floating`. |
+| `XccyPeriod(accrual_start, accrual_end, payment_date, notional, known_amount=None)`, `NotionalExchange(payment_date, amount)` | Interest period with its notional (a published `known_amount` is frozen); a notional payment, + received by the leg's receiver. |
+| `CompoundedIndex(name, weight_basis, annualization_basis)`, `RUONIA_OIS_COMPOUND` | `(prod(1 + r_i n_i / W) - 1) * A / d`; bases `nfa_act` (365, or 366 with a leap day in the period), `act_365f`, `act_360`. `RUONIA_OIS_COMPOUND` is NFA 8.4(б). |
+| `IndexFixings(index, valuation_date, fixings, calendar, snapshot_id)` | Fixings of a foreign index; RUONIA uses `FixingHistory`. |
+| `xccy_leg_periods(ois_convention, effective, unadjusted_end, end, notional)`, `notional_exchanges(periods, *, initial_date, final_date)` | Periods on the `OisSwapConvention` rule; initial, intermediate (amortization) and final exchanges. |
+| `XccyQuoteConvention(swap, rub_index, initial_exchange_lag_days, final_exchange_lag_days, spec_id)`, `xcs_cnyrub_convention(calendar)`, `XCCY_QUOTE_SPEC_ID` | Terms of a quoted swap; the MOEX `XCS CNYRUB` standard swap, spec `cny_ruonia_xccy_v1` (`CurveKind.XCCY_BOOTSTRAP`). |
+| `standard_xccy_swap(trade_id, trade_date, tenor, convention, *, currency, foreign_notional, notional_fx_rate, fixed_rate, foreign_side, rub_spread=0.0)` | A standard foreign-fixed vs RUONIA swap from a tenor code. |
+| `XccyParQuote(tenor, rate)`, `XccyCurveBootstrapRequest(trade_date, currency, spot_rate, spot_value_date, notional_fx_rate, quotes, convention, short_end=None, curve_convention=CurveConvention())`, `bootstrap_xccy_curve(request, *, rub_discount_curve, rub_projection_curve=None) -> DiscountCurve` | The foreign discount curve (RUB collateral) that reprices every par quote within 1e-7 bp (`XCCY_CURVE_MODEL_VERSION`); `short_end` e.g. an FX-implied curve. |
+| `XccyRiskRequest(swap, spot_rate, spot_value_date, rub_discount_curve, foreign_discount_curve, basis_bp, rub_projection_curve=None, foreign_projection_curve=None, rub_fixings=None, foreign_fixings=None, basis_day_count=ACT_365_FIXED)` | Valuation date = curve date; flows paid on or before it are settled. Foreign discount: `DiscountCurve` or `XccyCurveBootstrapRequest` (`xccy_quote` basis). |
+| `XccyRiskEngine(request, curve_cache=ShockedCurveCache(), xccy_cache=XccyCurveCache())` | `.base_pv_rub`, `.base_id`, `.roles`, `.fx_today`, `.cashflows() -> XccyCashflow`s, `.risk(bump_bp=1, difference="central") -> XccyRiskResult`, `.reprice(XccyScenario) -> XccyScenarioResult`, `.second_order(bump_bp=1) -> XccySecondOrderRisk`. |
+| `XccyRiskResult`, `XccyCurveRisk`, `XccyBucketRisk`, `XccyCashflow`, `XccyScenarioResult`, `XccySecondOrderRisk`, `XccyCurveCache` | Results (`XCCY_MODEL_VERSION`, `XCCY_SECOND_ORDER_MODEL_VERSION`); the shared cache of rebuilt foreign curves. |
+| `XccyScenario(rub_shifts_bp, foreign_shifts_bp, basis_shift_bp, fx_spot_shift_pct, rub_projection_shifts_bp=None, foreign_projection_shifts_bp=None)`, `.parallel(...)`, `.from_fx_scenario(FxFuturesScenario)` | Exact scenarios; projection shifts default to the discount shifts. |
+| `xccy_par_rate(request, *, leg)` | The fixed rate or spread of `leg` (`rub` / `foreign`) that zeroes the PV. |
+| `xccy_factor_risk(risk, curve_ids, second_order=None) -> FactorRisk`, `xccy_basis_factor(ccy)` | `IR\|<curve>\|<bucket>` per role, `XCCYBASIS\|<ccy>`, `FX\|<ccy>`; sparse Hessian with FX × rates and RUB × foreign terms. |
+
+`benchmarks/xccy_bench.py --positions 2000` times a synthetic XCS CNYRUB book.
 ## Credit default swaps (package 8)
 
 Module `rub_fixed_income.cds`; see [CDS](cds.md). ISDA Standard Model; money in the

@@ -348,3 +348,32 @@ other repositories and must be changed there, not in this core.
     per entity (34–40 ms per position). Keeping a `CdsCurveCache` across jobs needs an
     export / seed API with a repricing check, like `ShockedCurveCache.seed`.
 
+## Cross-currency swaps — 0.25.0
+
+71. **XCCY in `value_portfolio`.** Needs an `XccyInstrument` (or a separate position
+    type), an FX spot with its value date in `MarketSnapshot` (as #45), curve IDs per
+    role (RUB discount, RUB projection, CNY curve as `cny_discount_factors_v1` or
+    `cny_ruonia_xccy_v1` with its quotes, the NCC notional rate and the spot), RUONIA and
+    foreign index fixings, coverage codes, factor totals shared with bonds, FX forwards
+    and swaps (`XCCYBASIS|CNY`, or an alias to `FXBASIS|CNY` if the desk treats them as
+    one), one `XccyCurveCache` per job, and result contract `v3`.
+72. **NCC XCCY specification** («Валютно-процентный своп»,
+    `nationalclearingcentre.ru/catalog/0204/274`, refused by the proxy): confirm the
+    exchange dates (today NFA 2011 6.2 defaults, no +1B), the amortization rule and the
+    rounding.
+73. **XCCY golden.** `CNY-XCS-CNYRUO`, `CNY-HYB-CNYRUO` and NCC's `CNY-DSC-CSARUB` are on
+    ISS for subscribers only. With access, test the bootstrapped curve against NCC's
+    CSA=RUB CNY discount factors and repricing of MOEX quotes.
+74. **Basis against `RUSFARCNY`.** MOEX lists `XCCY/BASIS` vs RUSFARCNY; a basis curve
+    needs the RUSFARCNY-OIS-COMPOUND formula from a primary source and a CNY projection
+    spec (`CNY-OIS-RUSFCN`).
+75. **More XCCY terms:** mark-to-market resets (FX fixing source and lag), the
+    compounded-spread variants of the NCC parameters, lookback and observation shift, the
+    0.0001 % rounding of settled RUONIA indices (NFA 8.4(б)) and 2-decimal amounts,
+    KEYRATE or RUSFAR RUB legs.
+76. **XCCY carry and persisted curves.** Horizon / carry for XCCY, and export / seed of
+    shocked XCCY curves across jobs (a cold quote-basis job rebuilds about 530).
+77. **Quote-fixed FX risk.** On the quote basis the CNY curve is held under spot moves
+    (sticky curve, linear FX delta). A desk that holds the quotes under FX moves needs
+    the curve rebuilt under spot shocks.
+

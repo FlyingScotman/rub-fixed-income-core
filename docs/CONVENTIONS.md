@@ -363,6 +363,49 @@ from a registered spec); see [swaps](swaps.md).
 | `rub_key_rate_swap_v1` | spot 1, MODFOL, ACT/ACT ISDA; fixed 12M backward, single period up to 12M; float 3M backward arithmetic; no payment lag |
 | `rub_ruonia_ois_legacy_v1` | spot 0, unadjusted, ACT/365F; both legs legacy annual; RUONIA compounded ACT/365F; no payment lag |
 
+## Cross-currency swaps (package 7)
+
+See [xccy](xccy.md); sources in [sources/xccy_cnyrub](sources/xccy_cnyrub/README.md).
+
+- **Legs.** Each leg is a bond in its currency: its receiver pays the initial exchange,
+  receives the coupons, any amortization (intermediate exchanges, NFA 2011 6.4(д)) and
+  the final exchange. Notionals are fixed by the terms; mark-to-market resets are
+  rejected.
+- **RUONIA float** (`RUB-RUONIA-OIS-COMPOUND`, NFA 8.4(б)):
+  `N * ((prod(1 + r_i n_i / Act) * DF_p(c) / DF_p(e) - 1) * Act / d + spread) * DCF`.
+  - `Act` is 365, or 366 if any day of the period is in a leap year.
+  - `d` is the number of days in the period. `DCF` is the leg's day count.
+  - Each day takes the latest business-day fixing on or before it: no offset, no
+    lookback.
+  - Fixings before the valuation date are known. From the first unobserved day `c` to
+    the end `e`, the projection curve compounds.
+  - A foreign index states both bases explicitly (`CompoundedIndex`).
+- **Spread** is added simply, `N * (rate + spread) * DCF` (NFA 2011, 7.3(а)).
+- **Valuation.**
+  `PV = sum CF_rub DF_rub(P) + S DF_rub(s) / DF_for(s) * sum CF_for DF_for(P) exp(b tau(s, P))`.
+  - `S` is RUB per foreign unit for value date `s`.
+  - `b` is the basis in bp: continuous, `basis_day_count`, `tau` signed, with the sign
+    of the FX-forward basis.
+  - A final-exchange-only swap equals an FX forward.
+  - Flows paid on or before the valuation date have settled.
+- **`cny_ruonia_xccy_v1` (MOEX `XCS CNYRUB`).**
+  - Trade T+0, start TOM, end start + tenor, MODFOL on the joint SPFI/MOSCOW/BEIJING/RUONIA
+    calendar.
+  - CNY fixed against RUONIA flat. A single period up to 1Y and annual beyond, short
+    initial stub, Act/Act ISDA on both legs, +1B payments.
+  - The RUB notional is the CNY notional at the NCC central rate of the trade date.
+  - Initial exchange on the start date, final exchange on the end date: the NFA 2011
+    6.2 defaults, since the NCC text was not reachable.
+  - The quote is the CNY fixed par rate.
+- **Bootstrap.** One node per quote at its last CNY payment date: a constant continuous
+  forward from the previous node, log-linear DF in between. Every quote reprices within
+  1e-7 bp.
+- **Risk.** `IR|<curve>|<bucket>` per curve role, `XCCYBASIS|<ccy>` (1 bp of `b`) and
+  `FX|<ccy>` (1 %, exact, `foreign leg RUB value / 100`), central (DEC08).
+  - On a bootstrapped foreign curve (`xccy_quote`), RUB shocks and quote shifts rebuild
+    the curve with the quotes, the spot and the notional rate held.
+  - Spot moves hold the curve.
+
 ## Horizon valuation: carry and rolldown (0.14.0)
 
 Start at settlement `S0` of business date `d0`; horizon at settlement `S1` of `d1` (the

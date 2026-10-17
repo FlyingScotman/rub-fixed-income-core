@@ -31,6 +31,7 @@ linear guardrail; they do not call the exact solver.
 - [Callables](docs/callables.md) — exercise assumptions, perpetuals and constant-CPR pass-throughs
 - [Linkers](docs/linkers.md) — OFZ-IN indexation, real-curve valuation and the `REAL` factor
 - [CDS](docs/cds.md) — ISDA Standard Model single-name CDS: hazard bootstrap, CS01, JTD
+- [XCCY](docs/xccy.md) — CNY/RUB cross-currency swaps vs RUONIA and the CNY curve bootstrap
 - [Backlog](docs/BACKLOG.md) — remaining fixes and downstream migrations
 - [Changelog](CHANGELOG.md)
 

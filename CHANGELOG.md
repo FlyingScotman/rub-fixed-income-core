@@ -1,5 +1,61 @@
 # Changelog
 
+## 0.25.0 — cross-currency swaps CNY/RUB vs RUONIA
+
+Package 7 (core part). New module `rub_fixed_income.xccy` (`docs/xccy.md`). No existing
+number, serialised form or pinned hash changes. XCCY swaps are not in `value_portfolio`.
+
+- **Terms.** `XccySwap` with a RUB leg and a foreign leg (`XccyLeg`) of opposite sides.
+  - The RUB leg is fixed, or floats on `RUB-RUONIA-OIS-COMPOUND`
+    (`RUONIA_OIS_COMPOUND`, NFA 8.4(б): `Act` = 366 when a leap day is in the period).
+  - The foreign leg is fixed, or floats on an explicit `CompoundedIndex` with
+    `IndexFixings`.
+  - Per-period notionals (`XccyPeriod`) and explicit `NotionalExchange`s: initial,
+    intermediate (amortization) and final, built by `notional_exchanges` (NFA 2011
+    6.4).
+  - A simple spread on a floating leg (NFA 7.3(а)). Published amounts
+    (`known_amount`) and known fixings are frozen.
+  - Mark-to-market resets and non-RUONIA RUB indices raise `UnsupportedProduct`.
+- **Standard swap.** `xcs_cnyrub_convention(calendar)` is MOEX `XCS CNYRUB`, from the SPFI
+  curve methodology (25 December 2024, Appendix 1 §3): TOM start, MODFOL on the joint
+  SPFI/MOSCOW/BEIJING/RUONIA calendar, CNY fixed vs RUONIA flat, single period to 1Y then
+  annual with a short initial stub, Act/Act ISDA, +1B payments, notional at the NCC
+  central rate of the trade date. The exchanges fall on the start and end dates, the NFA
+  2011 6.2 defaults. `standard_xccy_swap` builds one from a tenor code. Spec
+  `cny_ruonia_xccy_v1` is registered (`CurveKind.XCCY_BOOTSTRAP`) with its sources.
+- **Valuation.** Foreign flows by covered parity at spot on a foreign discount curve
+  under RUB collateral: `S * DF_rub(s) / DF_for(s) * DF_for(P) * exp(b tau)`. A swap
+  with only a final exchange equals `FxForwardRiskEngine` exactly: PV, buckets, basis,
+  FX delta and Hessian.
+- **Bootstrap.** `bootstrap_xccy_curve(XccyCurveBootstrapRequest(...))` builds the CNY
+  discount curve from the hub's `cny_ruonia_xccy` par quotes (`XccyParQuote`, the CNY
+  fixed rate of MOEX `CNY-XCS-CNYRUO`).
+  - One node per quote; every quote reprices within 1e-7 bp.
+  - An optional FX-implied short end gives MOEX's hybrid curve (FX swaps up to 9M).
+- **Par basis.** `xccy_par_rate(request, leg=...)` returns the par fixed rate or the par
+  spread of either leg.
+- **Risk.** `XccyRiskEngine`:
+  - `cashflows()`;
+  - bucket and parallel DV01 per curve role (RUB discount, RUB projection, foreign
+    discount, foreign projection), `basis01`;
+  - the exact FX delta (foreign leg RUB value / 100);
+  - exact `XccyScenario`s (also from an `FxFuturesScenario`);
+  - the central Hessian with exact FX × rates and RUB × CNY cross terms;
+  - `xccy_factor_risk`: `IR|<curve>|<bucket>`, `XCCYBASIS|<ccy>`, `FX|<ccy>`.
+
+  On a bootstrapped curve (`xccy_quote` basis) RUB shocks and quote shifts rebuild it,
+  with the quotes held, through the shared `XccyCurveCache`.
+- **Benchmark.** `benchmarks/xccy_bench.py --positions 2000`, Linux, Python 3.11:
+  - 1.0 ms per position first order, 3.8 ms with the Hessian on discount-factor curves;
+  - 1.4 ms and 9.5 ms on 17 OIS + 10 XCCY quotes (cold caches).
+- **Tests.** `tests/test_xccy.py` (27): par repricing of 10 quotes on both bases and
+  sides; a seasoned swap against an independent reconstruction (RUONIA by hand, leap
+  year, two RUB curves, spread) and against `FloatingLeg`; the FX-forward identity; FX
+  delta, signs, scaling, bucket sums, second-order bump convergence, the Hessian bit for
+  bit against the generic helper; quote-basis risk; scenarios; rejections; round trip.
+  Sources and SHA-256: `docs/sources/xccy_cnyrub/README.md`.
+- Remaining work is BACKLOG #71–#77.
+
 ## 0.24.0 — single-name CDS
 
 Package 8 (model).

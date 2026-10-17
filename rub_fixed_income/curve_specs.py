@@ -48,6 +48,7 @@ class CurveKind(Enum):
     KBD_PARAMETRIC = "kbd_parametric"
     OIS_BOOTSTRAP = "ois_bootstrap"
     KEY_RATE_SWAP = "key_rate_swap"
+    XCCY_BOOTSTRAP = "xccy_bootstrap"
     DISCOUNT_FACTORS = "discount_factors"
     REAL_DISCOUNT_FACTORS = "real_discount_factors"
 
@@ -173,6 +174,48 @@ _FOREIGN_SPECS = tuple(
     for currency, source in _DISCOUNT_SOURCES.items()
 )
 
+# Package 7: the CNY discount curve under RUB collateral, bootstrapped from MOEX XCS
+# CNYRUB par quotes (``xccy.bootstrap_xccy_curve``, ``xccy.xcs_cnyrub_convention``).
+_XCCY_SPECS = (
+    CurveSpec(
+        spec_id="cny_ruonia_xccy_v1",
+        kind=CurveKind.XCCY_BOOTSTRAP,
+        currency="CNY",
+        time_day_count=DayCount.ACT_365_FIXED,
+        interpolation="log-linear-df, flat-forward extrapolation",
+        model_version="xccy-cny-logdf-v1",
+        description="MOEX XCS CNYRUB standard swap: trade date T+0, start TOM, end start + "
+        "tenor, MODFOL, CNY fixed vs RUB RUONIA-OIS-COMPOUND flat, single period up to 1Y and "
+        "annual beyond with a short initial stub, Act/Act ISDA both legs, +1 business-day "
+        "payment lag, notional at the trade date's NCC central rate, initial exchange on the "
+        "start and final exchange on the end date; quote = CNY fixed par rate "
+        "(CNY-XCS-CNYRUO); CNY discount curve under RUB collateral",
+        fixed_leg_frequency_months=12,
+        fixed_leg_day_count=DayCount.ACT_ACT_ISDA,
+        spot_lag_business_days=1,
+        payment_lag_business_days=1,
+        business_day_convention="MODIFIED_FOLLOWING",
+        float_averaging="RUB-RUONIA-OIS-COMPOUND (daily compounded, no lookback)",
+        float_leg_day_count=DayCount.ACT_ACT_ISDA,
+        stub="short_initial",
+        calendars=("SPFI", "MOSCOW", "BEIJING", "RUONIA"),
+        sources=(
+            (
+                "MOEX, Методика формирования ценовых кривых СПФИ, 2024-12-25, Appendix 1, "
+                "section 3, XCS CNYRUB; https://www.moex.com/ru/documents/27002"
+            ),
+            (
+                "NFA, Изменения № 1 в Стандартные условия срочных сделок на процентные "
+                "ставки и сделок свопцион 2011 г., 2021-08-17, 8.4(б) RUB-RUONIA-OIS-COMPOUND"
+            ),
+            (
+                "NFA/NAUFOR/ARB, Стандартные условия срочных сделок на процентные ставки, "
+                "сделок валютно-процентный своп и сделок свопцион 2011, 6.1-6.4 (exchanges)"
+            ),
+        ),
+    ),
+)
+
 _REAL_SPECS = (
     CurveSpec(
         spec_id="rub_real_discount_factors_v1",
@@ -190,7 +233,7 @@ _REAL_SPECS = (
 )
 
 CURVE_SPECS = MappingProxyType(
-    {spec.spec_id: spec for spec in (*_SPECS, *_FOREIGN_SPECS, *_REAL_SPECS)}
+    {spec.spec_id: spec for spec in (*_SPECS, *_FOREIGN_SPECS, *_XCCY_SPECS, *_REAL_SPECS)}
 )
 
 
