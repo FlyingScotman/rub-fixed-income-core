@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.27.0 — OFZ, RUONIA and key-rate futures
+
+Package 5 (rest, core part). New modules `rate_futures` and `ofz_futures`
+(`docs/rate-futures.md`); no pinned hash or existing number changes. MOEX has listed no
+OFZ futures since the June 2022 expiry, so the OFZ golden uses the December 2021 series.
+Futures are not yet in `value_portfolio` (BACKLOG #87).
+
+- `rate_futures`: MOEX one-month RUONIA futures (RUON), RUONIA index futures and KEYRATE
+  index futures, terms from the MOEX specifications in force (interest-rate futures of
+  10 March 2026; debt and money-market index futures of 8 September 2026) and the Bank of
+  Russia / MOEX index methodologies. `RuoniaAverageFuturesContract`,
+  `RuoniaIndexFuturesContract`, `KeyRateFuturesContract`,
+  `ruonia_average_settlement_period`, step values and spec variation margin
+  (`rate_futures_variation_margin`).
+- Point-in-time RUONIA (`RuoniaFixings`): every business day before the valuation date
+  needs a fixing; days the Bank of Russia publishes none (the last business day of a
+  year) must be declared and carry the previous fixing. Undeclared gaps raise
+  `MissingFixing`.
+- Final settlement and index reproduction: `ruonia_average_final_price`,
+  `ruonia_index_value` (Bank of Russia formula with the leap-year basis,
+  `cbr_ruonia_year_fraction`), `ruonia_index_final_price`, `key_rate_index_value`.
+- `RateFuturesRiskEngine`: price from fixings plus a RUONIA projection curve
+  (`DiscountCurve` or OIS request) or a `KeyRateForwardCurve`, partially fixed periods,
+  a calibrated basis frozen under shocks, bucket DV01, parallel DV01, basis01, exact
+  scenarios, 12-factor Hessian, `for_quantity` sharing repricings.
+- `ofz_futures`: OFZ basket futures (OFZ2/OFZ4/OFZ6/OF10/OF15) per the MOEX basket
+  specification of 24 April 2015: `ofz_conversion_factor` (Appendix 4 formula, ACT/365F,
+  exchange yield as input), `OfzFuturesContract.delivery_price_pct`,
+  `ofz_default_delivery_issue` (item 4.4), `OfzFuturesRiskEngine` with carry on a
+  funding curve, the cheapest to deliver, implied repo, gross and net basis, bond-curve
+  and funding-curve buckets, CS01, basis01, exact scenarios (with a switch of the
+  cheapest bond) and the 24-factor Hessian. Delivery options are not valued.
+- Desk factors `rate_futures_factor_risk`, `ofz_futures_factor_risk` and a new factor
+  key `FUTBASIS|<contract_id>` (`futures_basis_factor`).
+- Goldens (`tests/test_rate_futures_goldens.py`, `tests/test_ofz_futures_goldens.py`)
+  from ISS FORTS history, ISS news and the Bank of Russia web service: RUON final
+  settlements of RRZ5..RRU6 (9 of 10 exact), RFU6 final settlement exact, the RUONIA
+  index to 2e-15 including the 2025-12-30 gap, the KEYRATE index; December 2021 OFZ
+  futures: 19 of 25 conversion factors exact (6 within 2e-4), all 25 delivery prices,
+  all 5 default delivery issues, settlement prices within 0.04-0.7 %.
+- `benchmarks/rate_futures_bench.py`: 2,000 positions, 12 contracts; with engines shared
+  per contract 0.36 ms/position first order, 1.05 ms with the Hessian (zero curve),
+  3.0 ms with an OIS projection rebootstrapped under shocks; one engine per position
+  12.6 / 14.5 ms with the Hessian (Linux, Python 3.13).
+
 ## 0.26.0 — floaters: bounds, shifts, two curves, portfolio and MOEX goldens
 
 Package 1 (floaters) and BACKLOG #29 (core part). Every new field of an existing type is

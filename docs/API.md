@@ -169,6 +169,29 @@ Seasoned RUONIA OIS and key-rate swaps; see [swaps](swaps.md).
 
 `benchmarks/swap_bench.py --positions 2000` times 1000 OIS and 1000 KRS positions.
 
+## Rate futures (package 5)
+
+MOEX RUON, RUONIA index, KEYRATE and OFZ basket futures; see [rate futures](rate-futures.md).
+Money is signed RUB of daily variation margin (not discounted).
+
+| Name | Description |
+| --- | --- |
+| `RuoniaAverageFuturesContract(contract_id, period_start, period_end, notional_rub=1e6, price_step_pct=0.01, final_price_decimals=2)` | One-month RUONIA futures; `.step_value_rub` (`W`), `.margin_per_point_rub` (`Round(W/R; 5)`), `.last_trading_day`. `ruonia_average_settlement_period(year, month, calendar)` gives the period. |
+| `RuoniaIndexFuturesContract(contract_id, last_trading_day)`, `KeyRateFuturesContract(contract_id, meeting_date, effective_date)` | RUONIA index futures (10,000 RUB per point) and KEYRATE futures (1,000 RUB per point). |
+| `RuoniaFixings(valuation_date, fixings, calendar, snapshot_id, unpublished_dates=frozenset())`, `RuoniaIndexValue(index_date, value)` | Point-in-time RUONIA (decimal); undeclared gaps raise `MissingFixing`, declared ones carry the previous fixing. |
+| `ruonia_average_final_price(contract, fixings)`, `ruonia_index_value(anchor, fixings, target)`, `ruonia_index_final_price(contract, anchor, fixings)`, `key_rate_index_value(day, key_rate_history, scheduled_meetings, calendar)`, `cbr_ruonia_year_fraction(start, end)` | Final settlement and index reproduction per the specifications and methodologies. |
+| `rate_futures_variation_margin(contract, previous_price, price, quantity=1)` | Variation margin per the specification (RUON rounds each leg to kopecks). |
+| `RateFuturesRiskRequest(contract, projection_curve, fixings=None, index_anchor=None, futures_price=None, basis_bp=None, quantity=1)` | RUONIA contracts: `DiscountCurve` / `CurveBootstrapRequest` + fixings (+ anchor); KEYRATE: `KeyRateForwardCurve`. Exactly one of `futures_price` / `basis_bp`. |
+| `RateFuturesRiskEngine(request, curve_cache=ShockedCurveCache())` | `.base_price`, `.theoretical_price`, `.basis_bp`, `.risk(bump_bp=1, difference=...) -> RateFuturesRiskResult`, `.reprice(RateFuturesScenario) -> RateFuturesScenarioResult`, `.second_order() -> RateFuturesSecondOrderRisk` (12 factors), `.for_quantity(q)`. |
+| `RateFuturesScenario(curve_shifts_bp, basis_shift_bp)`, `.parallel(shift_bp, basis_shift_bp)` | Exact scenarios. |
+| `OfzFuturesContract(contract_id, last_trading_day, delivery_date, bonds_per_lot=10)` | `.delivery_price_pct(F, CF, face)` = `F / N * CF / face * 100`. |
+| `DeliverableBond(instrument, conversion_factor, clean_price_pct)`, `ofz_conversion_factor(instrument, delivery_date, conversion_yield, *, day_count=ACT_365_FIXED, decimals=4)`, `ofz_default_delivery_issue(basket)` | Basket bond with the exchange CF; the Appendix 4 CF formula; the default delivery issue rule. |
+| `OfzFuturesRiskRequest(contract, basket, spot_settlement_date, bond_curve, funding_curve, futures_price=None, basis_bp=None, quantity=1)`, `OfzFuturesRiskEngine(request, curve_cache=...)` | `.basket() -> DeliverableAnalysis` rows (forward, theoretical price, implied repo, gross / net basis, cheapest), `.risk() -> OfzFuturesRiskResult` (bond and funding buckets, CS01, basis01, cheapest bond), `.reprice(OfzFuturesScenario)`, `.second_order()` (24 factors), `.for_quantity(q)`. |
+| `rate_futures_factor_risk(risk, curve_id, second_order=None)`, `ofz_futures_factor_risk(risk, bond_curve_id, funding_curve_id, second_order=None)`, `futures_basis_factor(contract_id)` | Desk factors `IR\|<curve>\|<bucket>`, `CS`, `FUTBASIS\|<contract_id>`. |
+| `RATE_FUTURES_RISK_MODEL_VERSION`, `RATE_FUTURES_SECOND_ORDER_MODEL_VERSION`, `OFZ_FUTURES_RISK_MODEL_VERSION`, `OFZ_FUTURES_SECOND_ORDER_MODEL_VERSION` | Model versions recorded in results. |
+
+`benchmarks/rate_futures_bench.py --positions 2000` times a book of 12 contracts.
+
 ## Cross-currency swaps (package 7)
 
 CNY/RUB swaps against RUONIA, module `rub_fixed_income.xccy`; see [xccy](xccy.md).

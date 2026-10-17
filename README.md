@@ -32,6 +32,7 @@ linear guardrail; they do not call the exact solver.
 - [Linkers](docs/linkers.md) — OFZ-IN indexation, real-curve valuation and the `REAL` factor
 - [CDS](docs/cds.md) — ISDA Standard Model single-name CDS: hazard bootstrap, CS01, JTD
 - [XCCY](docs/xccy.md) — CNY/RUB cross-currency swaps vs RUONIA and the CNY curve bootstrap
+- [Rate futures](docs/rate-futures.md) — RUONIA, RUONIA index, KEYRATE and OFZ basket futures
 - [Backlog](docs/BACKLOG.md) — remaining fixes and downstream migrations
 - [Changelog](CHANGELOG.md)
 

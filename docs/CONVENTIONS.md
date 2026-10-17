@@ -198,7 +198,8 @@ Macaulay duration at that yield).
 ## Desk risk factors (0.11.0)
 
 `IR|<curve_id>|<bucket>` (1 bp at one of the 11 bucket pillars), `CS` (1 bp of own credit or
-OFZ spread), `FX|<ccy>` (1 % against RUB) and `FXBASIS|<ccy>` (1 bp of an FX futures or forward basis).
+OFZ spread), `FX|<ccy>` (1 % against RUB), `FXBASIS|<ccy>` (1 bp of an FX futures or forward basis)
+and `FUTBASIS|<contract_id>` (1 bp of a rate futures basis, package 5).
 Portfolio results report first order and the sparse upper-triangle Hessian from central
 differences with the same bump (DEC08). Signs: DV01 is PV(+1 bp) − PV(0), negative for a
 long bond. Inflation-linked bonds (package 9a) carry `REAL|<curve_id>|<bucket>` (1 bp at a
@@ -395,6 +396,32 @@ from a registered spec); see [swaps](swaps.md).
 | --- | --- |
 | `rub_key_rate_swap_v1` | spot 1, MODFOL, ACT/ACT ISDA; fixed 12M backward, single period up to 12M; float 3M backward arithmetic; no payment lag |
 | `rub_ruonia_ois_legacy_v1` | spot 0, unadjusted, ACT/365F; both legs legacy annual; RUONIA compounded ACT/365F; no payment lag |
+
+## Rate futures (package 5)
+
+See [rate futures](rate-futures.md) for the specifications cited.
+
+- **Units.** RUON prices in % (`100 - rate`), RUONIA and KEYRATE index futures in index
+  points, OFZ futures in RUB per lot of 10 bonds, clean. Fixings and curve rates are
+  decimal. Money is RUB of variation margin per contract times the signed quantity:
+  RUON `Round(W/R; 5)` per point (`W = Round(T/365 * 1e6 * 0.01%; 5)`), RUONIA index
+  10,000, KEYRATE 1,000, OFZ 1 RUB per RUB of price. Margin is daily: no discounting.
+- **RUONIA days.** A calendar day takes the RUONIA of the latest business day on or
+  before it. A business day without a published RUONIA must be declared
+  (`RuoniaFixings.unpublished_dates`); it carries the previous fixing (RUON) and is not a
+  calculation day of the index (simple interest across it). Projected RUONIA is the
+  curve's overnight forward on the Bank of Russia basis `d/366 + (days - d)/365`.
+- **Final prices.** RUON rounds half up to 0.01, the RUONIA index futures to 4 decimals,
+  KEYRATE (the index) to 0.01; theoretical prices of contracts still projecting are
+  unrounded.
+- **OFZ.** CF on ACT/365F at the delivery date, 4 decimals, the conversion yield an input;
+  the bond spread is continuous ACT/365F over the bond curve, the carry uses the funding
+  curve, the basis is continuous ACT/365F on the carry. The cheapest bond minimises
+  `10 * (forward - AI(D)) / CF`. Delivery options are not valued.
+- **Risk.** Central or forward bucket DV01 per curve role; `FUTBASIS|<contract_id>` for
+  1 bp of the calibrated basis; `CS` for 1 bp of every OFZ basket spread. Key-rate curve
+  shocks use the bucket hats at the effective date's ACT/ACT ISDA time; decided rates do
+  not move.
 
 ## Cross-currency swaps (package 7)
 

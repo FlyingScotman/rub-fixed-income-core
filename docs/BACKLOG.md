@@ -408,3 +408,30 @@ other repositories and must be changed there, not in this core.
     Telescoped compounding or prefix sums would help but change results in the last
     bit, so they need a new model version; a sparse Hessian is the other lever.
 
+## Rate futures — 0.27.0
+
+87. **Rate futures in `value_portfolio` and the local worker.** Needs terms for
+    `RATE_FUTURE` (RUON / RUONIA index / KEYRATE) and `OFZ_FUTURE` (contract dates, basket
+    ISINs with published CFs) or a futures position type; snapshot entries for RUONIA
+    fixings with declared unpublished days, a published RUONIA index value, the key-rate
+    forward curve, basket closing prices and the settlement price; curve roles
+    (projection, bond, funding) per contract; `FUTBASIS|<contract_id>` in the result
+    contract and factor totals; coverage codes for expired contracts, undeclared RUONIA
+    gaps and baskets without prices; one engine per contract (`for_quantity`).
+88. **RRK6 (RUON-5.26) final settlement.** ISS shows 85.79, the specification formula on
+    CBR fixings gives 85.82 (no open interest); nine other expiries match exactly. Ask
+    MOEX whether a decision changed it or a fixing was revised.
+89. **OFZ conversion-factor time basis for long bonds.** ACT/365F with one round yield per
+    series reproduces 19 of 25 December 2021 factors; six OF10/OF15 factors are 1–2 units
+    of the fourth decimal off. Pricing uses published factors. The per-series conversion
+    yields (6.6–8.7 %) were inferred from prices; the exchange decisions were not found.
+90. **Delivery-option value for OFZ futures** (quality and timing) needs a stated
+    stochastic model; today the model price carries none.
+91. **Live settlement marks.** RF* / KK* settlement prices without trades are MOEX marks
+    (RFZ6 on 2026-10-16 implies RUONIA 54 bp below the KEYRATE path); a tighter
+    mid-life golden needs MOEX's mark methodology or traded days.
+92. **RUSFAR one-month futures (`1MFR`)** share the RUON specification but need a RUSFAR
+    fixings type (MOEX indicator calculated at 12:30 for the same day).
+93. **First KEYRATE expiry (KKV6, 2026-10-23).** Add its final settlement to the goldens:
+    it should equal the key rate decided that day.
+
