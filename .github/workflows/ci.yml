@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "claude/**", "codex/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # The desk runs core on Windows with Python 3.11 (PRODUCT_ROADMAP, runtime constraint).
+        os: [windows-latest, ubuntu-latest]
+        python: ["3.11"]
+        include:
+          - os: ubuntu-latest
+            python: "3.12"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install
+        run: uv sync --extra dev --locked
+      - name: Tests
+        run: uv run pytest -q
+      - name: Lint
+        run: uv run ruff check .
+      - name: Type check
+        # mypy targets python_version 3.11; numpy's stubs need the checking interpreter to match.
+        if: matrix.python == '3.11'
+        run: uv run mypy
+      - name: Build
+        run: uv build
+
+  benchmark:
+    # Reports ms per position for a 2k-position book on the desk runtime (roadmap 0.7).
+    # Informational: timings on shared runners vary, so this job never gates a merge.
+    name: Benchmark (windows-latest / Python 3.11, 2k positions)
+    if: github.event_name == 'push'
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: uv sync --extra dev --locked
+      - name: Benchmark
+        shell: bash
+        run: uv run python benchmarks/portfolio_bench.py --positions 2000 --json benchmark.json | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: portfolio-benchmark
+          path: benchmark.json

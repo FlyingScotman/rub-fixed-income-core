@@ -6,8 +6,11 @@ other repositories and must be changed there, not in this core.
 
 ## P0
 
-1. **Official versioned business calendar.** The core ships no holidays (default
-   weekends-only). Wire an official, versioned MOEX/CBR trading/settlement calendar source
+1. **Official versioned business calendar.** *Core side done in 0.9.0–0.11.0*: bounded
+   calendars reject dates outside their range, and `value_portfolio` records each calendar's
+   version and fingerprint. The hub publishes the calendar per snapshot (system doc 02).
+   Original item: the core ships no holidays (default weekends-only). Wire an official,
+   versioned MOEX/CBR trading/settlement calendar source
    (with transfers and working weekends) into a `BusinessCalendar` builder owned by a data
    project (e.g. market-data-store) and record `version` + `calendar_fingerprint` in outputs.
    Do not hard-code holiday lists from memory.
@@ -46,17 +49,21 @@ other repositories and must be changed there, not in this core.
     Fine for ≤ 30 pillars; optimise if used intraday at scale. Since 0.7.0 the worker
     shares shocked curves across positions, so OIS jobs pay ~250 bootstraps per distinct
     curve (~2.2 s with Hessian on the synthetic job). A faster bootstrap is the next lever.
+    0.13.0: one bootstrap costs ~15 ms; at 2k positions the ~250 shocked curves add
+    ~1.9 ms per position cold, and nothing when the backend seeds them
+    (`ShockedCurveCache.seed`). A faster bootstrap changes curve bytes, so it needs a new
+    model version.
 13. `price_cashflows` legacy path (no `settlement_date`) counts a flow on the curve date at face
     and ignores earlier flows; settlement-aware callers should always pass `settlement_date`.
-    Consider deprecating the implicit curve-date path.
+    *Deprecated in 0.12.0* (warns; removal in 1.0).
 14. Curve interpolation weights are calendar days even if `time_day_count` ≠ ACT/365F
     (documented). Revisit if a non-ACT/365F curve time basis is used in production.
 15. `zero_rate`/`forward_rate` compounding for forwards is fixed annual; add a `Compounding`
     argument if a consumer needs it.
-16. Documented `mypy` command: bare `uv run mypy` fails on pre-existing untyped
-    `tests/test_qr_bond_reconciliation_probe.py` (and numpy stubs need Python ≥ 3.12 when the
-    venv is 3.14 with `python_version = "3.11"`); `mypy rub_fixed_income` passes. Fix the probe
-    typing or exclude it.
+16. *Done after 0.8.1.* `uv run mypy` passes: the untyped probe test is excluded in
+    `[tool.mypy]` and from the sdist. Run it in a Python 3.11 venv
+    (`uv sync --extra dev --python 3.11`); numpy stubs need Python ≥ 3.12 syntax support
+    when the venv is newer than `python_version = "3.11"`. CI runs Windows and Ubuntu on 3.11.
 17. **Git tags for historic versions are absent.** The repository history starts at 0.2.1
     (root commit `1baac88` already declares 0.2.1), so 0.1.0 / 0.2.0 cannot be tagged with
     certainty. 0.3.0 is the first tag.
@@ -152,3 +159,29 @@ other repositories and must be changed there, not in this core.
     - an agreed choice of the foreign curve (OIS, or implied from FX swaps).
 34. **OTC FX forwards and swaps.** Their P&L is paid at `T` and needs discounting
     on the RUB curve. This is a separate settlement style, not the futures model.
+35. *(downstream, done in market-data-store PR #5)* **market-data-store core pin.** It
+    pinned `>=0.8.0,<0.9`; the PR widens it to `<1.0`, regenerates the lock and moves off
+    the `clean_price_pct_to_dirty_amount` alias. Its `price_cashflows`/`solve_z_spread`
+    calls without `settlement_date` still warn; moving them is a behaviour change for the
+    store's owner before core 1.0.
+36. **MOEX golden gaps (0.15.0).** `tests/test_moex_goldens.py` records two differences:
+    - **USD bond RU000A0JXTS9 (board TQOD).** MOEX accrues 30/360 (116 of 180 days:
+      2738.89); core's split accrual counts actual days (2740.44). A day-count field on
+      the coupon leg would close this. It matters only for non-RUB bonds (package 3).
+    - **Short put bond RU000A0JS4Z7.** MOEX gives 9.51 % to the offer at
+      `PREVWAPRICE` 107.93; core gives 9.30–9.39 % on the same flows. Durations agree.
+      Find MOEX's method for bonds under a year to the offer (simple yield? offer-date
+      lag?) before relying on core yields for such bonds.
+    - **Coverage.** The golden set should grow to about 12 bonds on fixed EOD dates once
+      the hub archives EOD ISS bond snapshots.
+37. **RUONIA OIS exchange spec (`rub_ruonia_ois_moex_v2`, audit F08).**
+    - **What is known.** Only a summary survives in this checkout: TOM start, modified
+      following, ACT/ACT with a stub, +1 business-day payment lag. The fixed-leg
+      frequency, float compounding (lookback or lockout) and the stub side are not stated.
+    - **What is missing.** The MOEX methodology files (`fs.moex.com/files/26130`,
+      `27002`) and NFA standard terms could not be fetched from the build environment.
+    - **To do.** With the text: add spot and payment lags and stub handling to the
+      bootstrap's par-rate leg. New convention fields must stay out of existing curve
+      identities. Then register the spec and test par repricing on the hub's ratescalcs
+      snapshot (17 tenors, `ois_quotes`).
+

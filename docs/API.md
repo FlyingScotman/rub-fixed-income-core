@@ -1,4 +1,4 @@
-# API reference (0.3.1)
+# API reference (0.16.0)
 
 Everything below is importable from `rub_fixed_income`. Units: decimal rates/spreads unless
 the name ends in `_bp` (basis points) or `_pct` (percent); amounts in RUB per bond; clean
@@ -37,7 +37,7 @@ All convention objects are frozen and hashable.
 
 - `EventKey(event_date, ordinal)`, `CashEvent(key, amount_rub_per_bond, event_id)`, `BondCashflow(payment_date, amount)`.
 - `clean_price_pct_to_dirty_rub(clean_pct, current_nominal_rub, accrued_interest_rub) -> float`; `dirty_rub_to_clean_price_pct(...)`. Raise for non-positive nominal or negative AI; **(0.3.1)** also for clean/dirty price ≤ 0, dirty ≤ AI (implied clean ≤ 0), non-finite/`bool` input, overflowing result.
-- `clean_price_pct_to_dirty_amount(...)` — alias.
+- `clean_price_pct_to_dirty_amount(...)` — alias. **Deprecated (0.12.0)**: use `clean_price_pct_to_dirty_rub`.
 
 ## Discount curves
 
@@ -60,11 +60,11 @@ All convention objects are frozen and hashable.
   "not bracketed" (0.3.0)**.
 - `bond_duration(*, annual_yield, settlement_date, cashflows, compounding_frequency=1, day_count_basis=365.0, convention=None) -> DurationResult(macaulay_years, modified_years, present_value)`
   Raises: non-finite yield **(0.3.0)**, base `1 + y/m <= 0`, no positive PV, non-finite/`bool` flows and overflowing PV or duration **(0.3.1)**.
-- `price_cashflows(cashflows, curve, *, spread=0.0, compounding_frequency=1, settlement_date=None, convention: ZSpreadConvention | None = None) -> float`
+- `price_cashflows(cashflows, curve, *, spread=0.0, compounding_frequency=1, settlement_date=None, convention: ZSpreadConvention | None = None) -> float` — **deprecated without `settlement_date` (0.12.0)**.
   Raises: non-finite spread/cash flows **(0.3.0)**, settlement before curve date, rate outside compounding domain, `bool` flows and overflowing result **(0.3.1)**. Signed flows netting to 0 return `0.0`.
 - `solve_z_spread(cashflows, dirty_price, curve, *, compounding_frequency=1, settlement_date=None, convention=None) -> float`
   Raises: empty flows, non-finite/≤0 price **(0.3.0)**, non-finite flows **(0.3.0)**, no flow after settlement **(0.3.0)**, settlement before curve date, conflicting `compounding_frequency` + `convention`, "Z-spread root is not bracketed" (bracket −95%…500%), non-finite objective mid-solve **(0.3.0)**; `RuntimeError` "did not converge".
-- `solve_continuous_z_spread(cashflows, dirty_price, curve, *, settlement_date=None) -> float` — continuous Z over settlement-forward DFs; bracket ±500%.
+- `solve_continuous_z_spread(cashflows, dirty_price, curve, *, settlement_date=None) -> float` — continuous Z over settlement-forward DFs; bracket ±500%. **Deprecated (0.12.0)**: use `solve_z_spread` with a continuous `ZSpreadConvention` and `settlement_date`.
 
 ## Effective yield and financing (`bond`)
 
@@ -75,7 +75,7 @@ All convention objects are frozen and hashable.
 ## Snapshot analytics (`analytics`)
 
 - Inputs: `BondTermsV1(issue_id, current_nominal_rub, maturity_date, horizon, horizon_date, accrual_period_start, accrual_period_end, coupon_amount_rub, terms_hash)`, `MarketObservationV1(clean_price_pct_of_current_nominal, settlement_date, selected_price_basis, market_hash)`, `CurveSnapshotV1(curve_world_instance_id, discount_curve, curve_hash)`, `ValuationContext(valuation_date, settlement_date)`, `CalculationPolicy(money_quantum=Decimal("0.01"), spread_lower_bp=-5000, spread_upper_bp=5000, root_tolerance=1e-13)` (+ `.validate()` **(new)**).
-- `analyze_bond(terms, schedule, market, curve, context, policy) -> BondAnalyticsResultV1 | CalculationFailure` — frozen V1 conventions (continuous Z). **(0.3.0)**: invalid policy → `INVALID_UNITS`; AI 0 on coupon date.
+- `analyze_bond(terms, schedule, market, curve, context, policy) -> BondAnalyticsResultV1 | CalculationFailure` — frozen V1 conventions (continuous Z). **Deprecated (0.12.0)**: use `analyze_bond_v2`. **(0.3.0)**: invalid policy → `INVALID_UNITS`; AI 0 on coupon date.
 - `analyze_bond_v2(..., *, yield_convention=None, z_spread_convention=None) -> BondAnalyticsResultV2 | CalculationFailure` **(new)** — default annual Z; result adds `yield_convention`, `z_spread_convention`.
 - `V1_YIELD_CONVENTION`, `V1_Z_SPREAD_CONVENTION` **(new)** constants.
 - Result units: `accrued_interest_rub`, `dirty_price_rub_per_bond` (RUB per bond), `yield_pct` (%), durations (years), `z_spread_bp` (bp), `repricing_error_rub_per_bond`.
@@ -108,6 +108,77 @@ All convention objects are frozen and hashable.
 `FxFuturesSecondOrderRisk`, `FX_FUTURES_RISK_MODEL_VERSION` and
 `FX_FUTURES_SECOND_ORDER_MODEL_VERSION`. Prices are in RUB per `price_quote_units`
 foreign units. Money is signed RUB of variation margin. See [FX futures](fx-futures.md).
+
+## Foundations (0.9.0)
+
+| Name | Description |
+| --- | --- |
+| `BusinessCalendar(holidays, working_days, version, valid_from=None, valid_to=None)` | Bounded calendars raise `CalendarRangeError` outside `[valid_from, valid_to]`. `.is_bounded`, `.covers(d)`, `.require_covered(d)`. Sets are frozen on construction. |
+| `calendar_identity(calendar) -> (version, fingerprint)` | What to record in results. |
+| `canonical_json_bytes(value)`, `canonical_sha256(value)` | Now in `rub_fixed_income.canonical` (still importable from `analytics`). Enums, sets, nested dataclasses and date keys have canonical forms. |
+| `to_dict(value)`, `from_dict(cls, data)` | Strict JSON-ready round trip of core dataclasses; `from_dict` re-runs validation. |
+| `CoreRejection` and `UnsupportedProduct`, `MissingMarketData`, `CalendarRangeError`, `UnknownCurveSpec`, `InvalidTerms` | Typed rejections with a stable `.code`; all subclass `ValueError`. |
+| `DiscountCurve.flat_continuous_rate` | Rate of a `DiscountCurve.flat` curve, `None` for node curves. |
+
+## Domain model (0.10.0)
+
+| Name | Description |
+| --- | --- |
+| `Cashflow.split(payment_date, *, coupon, principal, accrual_start, accrual_end, kind)` | A `BondCashflow` with the coupon/principal split; accepted wherever `BondCashflow` is. |
+| `CashflowKind` | `COUPON`, `AMORTIZATION`, `MATURITY`, `OFFER_REDEMPTION`. |
+| `accrued_interest(cashflows, settlement, *, quantum=Decimal("0.01"))` | Accrued from the split; `quantum=None` returns the raw value. |
+| `Instrument(instrument_id, product, currency, initial_face, coupon_leg, principal_leg, calendar_id, offers=(), settlement_lag_days=1, isin=None, issuer_id=None)` | `.cashflows(after=, horizon=, offer=)`, `.outstanding_face(on)`, `.horizon(policy, settlement)`, `.accrued(settlement)`, `.maturity_date`, `.is_perpetual`. |
+| `ProductType`, `FixedCouponLeg`, `CouponPeriod`, `FloatingCouponLeg`, `PrincipalLeg`, `Redemption`, `Offer`, `OfferKind` | Instrument terms. |
+| `MarketSnapshot(snapshot_id, business_date, known_at, curves, calendars, fixings, fx, quotes, evidence)` | `.curve(id)`, `.calendar(id)`, `.fixing(id)`, `.fx_rate(ccy)`, `.quote(instrument_id)`; missing keys raise `MissingMarketData`. |
+| `CurveEntry`, `CalendarEntry`, `FixingEntry`, `FxRate`, `BondPriceObservation`, `SnapshotEvidence` | Snapshot entries. |
+| `Position(position_id, instrument_id, quantity, book, accounting_category, currency, recovery_rate=None)` | `AccountingCategory`: `TRADING`, `HTM`, `REPO`. |
+
+## KBD, curve specs, factors and portfolio valuation (0.11.0)
+
+| Name | Description |
+| --- | --- |
+| `ZcycParameters(trade_date, b1, b2, b3, t1, g)` | One MOEX KBD publication (`b*`, `g` in bp, `t1` in years). |
+| `kbd_zero_rate_bp(params, t)`, `kbd_effective_yield(params, t)` | Continuous zero rate (bp) and effective annual yield (decimal) at `t` years. |
+| `kbd_discount_curve(params, curve_date=None, *, horizon_years=30)` | Materialised `DiscountCurve` (ACT/365F), within 0.005 bp of the formula. |
+| `g_spread_bp(params, bond_effective_yield, tenor_years)` | Bond yield minus KBD yield at an explicit tenor (MOEX: duration), in bp. |
+| `CurveSpec`, `CurveKind`, `CURVE_SPECS`, `get_curve_spec(spec_id)` | Versioned registry; unknown IDs raise `UnknownCurveSpec`. |
+| `ir_factor(curve_id, bucket)`, `CS_FACTOR`, `fx_factor(ccy)`, `fx_basis_factor(ccy)` | Desk factor keys. |
+| `FactorRisk(factors, first_order, hessian, difference, bump_bp, has_second_order)` | `HessianEntry(i, j, value)` upper triangle; `.first_order_by_factor()`, `.hessian_by_factor()`. |
+| `bond_factor_risk(risk, curve_id, second_order=None)`, `fx_futures_factor_risk(risk, rub_curve_id, foreign_curve_id, second_order=None)` | Convert engine results. |
+| `ValuationPolicy(discount_curve_id, spread_kind, spread_convention, horizon, curve_overrides, include_second_order, bump_bp)` | Valuation choices; part of the job identity. |
+| `value_portfolio(*, run_id, as_of, snapshot, instruments, positions, policy, scenarios=(), time_budget_seconds=None, should_cancel=None, curve_cache=None)` | `PortfolioRiskResult` with `PositionValuation`s, `PortfolioCoverage` (coded `Rejection`s), `PortfolioScenarioResult`s, `CurveUse`, `CalendarUse`, `FactorTotal`s. |
+| `portfolio_result_to_json`, `portfolio_result_from_json`, `verify_portfolio_result` | Contract `rub-portfolio-risk-result.v2`. |
+
+## Caller-held curves (0.13.0)
+
+| Name | Description |
+| --- | --- |
+| `PrebuiltCurve(request, shifts, curve)` | A bootstrapped OIS curve for a `CurveBootstrapRequest` with 11 bucket shifts (bp). `.request_id` and `.curve_key` are canonical SHA-256 strings for the backend's store; `to_dict`/`from_dict` serialise it. |
+| `ShockedCurveCache.export()` | Every cached base and shocked curve as `PrebuiltCurve`s, ordered by `curve_key`. |
+| `ShockedCurveCache.seed(entries)` | Adds caller-held curves; each must reprice its (shocked) quotes within 1e-7 bp and match the request's date, convention and model, otherwise `InvalidTerms` and nothing is added. Returns the number added; `.seeded` counts them. |
+| `value_portfolio(..., curve_cache=cache)` | Reuses `cache` (seeded or kept in memory across calls). Results are byte-identical with or without it. |
+
+`benchmarks/portfolio_bench.py --positions 2000` measures ms per position (KBD and OIS;
+first order, Hessian, scenarios, seeded). CI runs it on windows-latest / Python 3.11 and
+writes the table to the job summary (informational, never gating).
+
+## Horizon valuation (0.14.0)
+
+| Name | Description |
+| --- | --- |
+| `horizon_valuation(instrument, curve, calendar, *, horizon_date, spread_bp=None, dirty_price_rub=None, spread_convention=None, redemption_horizon="maturity", curve_cache=None)` | `HorizonValuation` per bond: `pv_start_rub`, `pv_forward_rub` (today's forwards realised), `pv_rolled_rub` (curve shape held), coupons and principal received in `(S0, S1]`, accrued and nominal at both settlements, `carry_rub`, `rolldown_rub`, `horizon_pnl_rub`. Exactly one of `spread_bp` / `dirty_price_rub`. Fixed-coupon bonds; others raise `UnsupportedProduct`. |
+| `explain_horizon_pnl(instrument, start_curve, end_curve, calendar, *, start_spread_bp \| start_dirty_price_rub, end_spread_bp \| end_dirty_price_rub, ...)` | `HorizonPnlExplain`: `carry + rolldown + rates + spread + residual == total` (full revaluation change to the end curve's date). |
+| `roll_curve(curve, horizon_date)` | The curve moved forward with its shape in calendar days unchanged. |
+| `horizon_portfolio(*, snapshot, instruments, positions, policy, horizon_date, curve_cache=None)` | `PortfolioHorizonResult`: `PositionHorizon` rows (signed RUB, per-bond detail), coverage with the same rejection codes as `value_portfolio`, covered carry / rolldown / horizon P&L and a total when coverage is complete. |
+
+## Tenors (0.16.0)
+
+| Name | Description |
+| --- | --- |
+| `parse_tenor(code) -> Tenor` | `ON`, `TN`, `SN`, `<n>D/W/M/Y` (case-insensitive); anything else raises `InvalidTerms`. |
+| `add_tenor(start, tenor)` | Unadjusted end of a `D/W/M/Y` tenor (month ends clamp). |
+| `resolve_tenor(trade_date, tenor, calendar, *, spot_lag_days=1, business_day_convention=MODIFIED_FOLLOWING) -> TenorDates` | `effective_date`, `unadjusted_end`, `end_date`. A bounded calendar raises `CalendarRangeError` outside its range. |
+| `ois_quotes(trade_date, [(tenor, rate), ...], calendar, *, spot_lag_days=1, business_day_convention=...)` | `OisQuote`s with resolved maturities, sorted; duplicate tenors or maturities raise. |
 
 ## Fixed-RUB risk extensions (0.5.0)
 

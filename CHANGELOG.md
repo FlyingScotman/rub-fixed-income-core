@@ -1,5 +1,240 @@
 # Changelog
 
+## 0.16.0 — tenor resolver
+
+Roadmap item 0.5, part. New API only.
+
+- `tenors.py` adds:
+  - `parse_tenor` and `Tenor`;
+  - `add_tenor`;
+  - `resolve_tenor(trade_date, tenor, calendar, *, spot_lag_days=1, business_day_convention=MODIFIED_FOLLOWING)`,
+    which returns `TenorDates` and handles `ON`, `TN`, `SN` and `<n>D/W/M/Y`;
+  - `ois_quotes`, which turns `(tenor, rate)` pairs into sorted `OisQuote`s with
+    resolved maturities.
+
+  The backend can therefore pass the hub's tenor codes and a calendar instead of
+  hand-made maturities.
+- KEYRATE swap dates now come from `resolve_tenor`. A test checks that they are
+  identical to the previous private helper on 40 trade dates × 11 tenors. Overnight codes
+  stay rejected there.
+- Not in this release: the exchange-conformant `rub_ruonia_ois_moex_v2` spec and spot /
+  payment lags in the OIS bootstrap. The MOEX and NFA specification pages are
+  unreachable from the build environment, and the audit summary leaves the fixed-leg
+  frequency and float compounding open, so nothing was built on guessed conventions
+  (BACKLOG #37).
+
+## 0.15.0 — golden tests against MOEX-published bond analytics
+
+Roadmap item 0.10. Tests and evidence only; no library code changes.
+
+- `tests/fixtures/moex_bonds/` holds MOEX ISS bond data for 16 October 2026
+  (settlement 19 October), copied from the hub at `c7a9d44` with its provenance.
+- `tests/test_moex_goldens.py` builds instruments from the exchange's bondization data,
+  as a backend adapter would, and checks:
+  - **Accrued interest:** `ACCRUEDINT` to the kopeck for 7 bonds. They include an OFZ-PD,
+    corporates with and without a maturity, an amortizer on its amortised face, a fixed
+    bond, an OFZ-PK with a known current coupon, and a CNY bond in its own currency.
+  - **OFZ 26238 yield:** the effective yield at `WAPRICE`, `LAST` and `PREVWAPRICE`
+    (previous settlement), each within 0.5 bp of MOEX's 0.01 % rounding.
+  - **OFZ 26238 duration:** `DURATION` within one day.
+  - **Put bond:** duration to the offer within one day.
+  - **End to end:** `value_portfolio` on the KBD curve of the same morning reproduces the
+    OFZ 26238 accrued, yield and duration.
+- Two known gaps are recorded by tests rather than hidden (BACKLOG #36):
+  - 30/360 accrual on a USD bond (MOEX 2738.89, core 2740.44);
+  - yield to offer on a short put bond (MOEX 9.51 %, core about 9.3–9.4 %).
+- Roadmap status records the Windows CI benchmark for 0.13.0 (2k positions):
+  - OIS with Hessian 11.8 ms per position cold and 9.9 ms seeded;
+  - KBD with Hessian 11.0 ms.
+
+## 0.14.0 — horizon valuation: carry, rolldown and P&L explain
+
+Roadmap item 0.8. New API only; nothing existing changes.
+
+- `horizon_valuation` carries a fixed-coupon bond from the curve date to a horizon
+  business date with the Z-spread held. The spread is given or calibrated to the start
+  dirty price. The result separates:
+  - **carry**: today's forwards are realised;
+  - **rolldown**: the curve keeps its shape in calendar days (`roll_curve`);
+  - coupons and principal received in `(S0, S1]` (amortization included);
+  - accrued interest and outstanding nominal at both settlements.
+
+  With `redemption_horizon="confirmed_put"` a put bond is valued to the offer
+  (yield-to-offer).
+- `explain_horizon_pnl` splits the full revaluation change to an end curve and spread
+  into carry, rolldown, rates, spread and a cross-term residual. The parts sum exactly to
+  the total.
+- `horizon_portfolio` applies this to a book. Positions resolve as in `value_portfolio`
+  (same checks, curve, calendar, quote, accrued and rejection codes). Results are signed
+  RUB per position; totals are given only when coverage is complete.
+- Tests cover:
+  - analytical carry of a zero-coupon bond on a flat curve, and no rolldown there;
+  - a coupon and an amortization inside the horizon;
+  - positive rolldown on an upward-sloping curve;
+  - the put horizon and calibration from dirty price;
+  - exact reconciliation and a second-order residual;
+  - portfolio resolution identical to `value_portfolio`.
+
+## 0.13.0 — caller-held curves and the 2k-position benchmark
+
+Roadmap item 0.7 (completed). No identifier or number changes: every pinned hash and
+fixture still matches, and results are byte-identical with or without the new caches.
+
+- **Caller-held curves.** `PrebuiltCurve(request, shifts, curve)` with stable string keys
+  `request_id` / `curve_key`; `ShockedCurveCache.export()` and `.seed(entries)`; and
+  `value_portfolio(..., curve_cache=...)`. The backend can persist the base and shocked
+  OIS curves of one job and seed the next with them. `seed` accepts a curve only if it
+  reprices its (shocked) quotes within 1e-7 bp and matches the request's date,
+  convention and model. Otherwise it raises `InvalidTerms` and adds nothing.
+- **Speed without changing numbers.** Every position on a curve now shares one
+  validated snapshot of it (for immutable inputs), so the per-curve caches below are
+  shared too:
+  - the canonical identity of a curve (a 1,100-node KBD curve was re-hashed for every
+    position);
+  - bucket weights and base discount factors of zero-rate shocks;
+  - one shared view per shock vector;
+  - a bounded discount-factor memo per curve.
+
+  The shocked-curve cache skips rehashing the job's request. All of these caches live
+  outside the dataclass fields and stay out of equality, hashing and pickles.
+- **Benchmark.** `benchmarks/portfolio_bench.py` values a synthetic book of distinct
+  bonds (bullets, amortizers, confirmed puts, 1–15Y) on KBD and on 17 RUONIA OIS quotes.
+  At 2,000 positions on Linux / Python 3.11, in ms per position:
+
+  | Curve | First order | Hessian | Hessian + 5 scenarios | Seeded cache |
+  |---|---|---|---|---|
+  | KBD | 3.2 | 9.3 | 9.6 | — |
+  | OIS | 2.3 | 10.0 | 10.3 | 8.1 |
+
+  Before 0.13.0 at 200 positions: KBD 9.1 / 30.4, OIS 5.4 / 31.3 ms per position.
+  A non-gating CI job runs the benchmark on windows-latest / Python 3.11 and posts the
+  table to the job summary.
+- mypy now also checks `benchmarks/`.
+
+## 0.12.0 — API consolidation (deprecations) and documentation
+
+Roadmap item 0.9. No behaviour or identifier changes: every deprecated call returns
+exactly what it returned before and only adds a `DeprecationWarning` at the caller's line
+(hidden by default outside `__main__` and test runners). Removal is planned for 1.0.
+
+- Deprecated: `analyze_bond` (V1, continuous Z; use `analyze_bond_v2`),
+  `solve_continuous_z_spread`, `price_cashflows` and `solve_z_spread` without
+  `settlement_date`, the `clean_price_pct_to_dirty_amount` alias, and
+  `public_schedule.bind_market_data_store_schedule` (the retired market-data-store payload;
+  the backend adapter builds an `Instrument` instead, ADR-003).
+- The test suite turns this library's deprecation warnings into errors; tests that pin
+  legacy behaviour say so explicitly, and `tests/test_deprecations.py` checks every warning.
+- Private risk helpers shared by `risk` and `fx_futures` (and `local_worker`) moved to
+  `_risk_common.py`; nothing imports private names from `risk` any more. Public names
+  (`RISK_BUCKETS`, `RISK_PILLARS`, `ShockedCurveCache`, `key_rate_weights`, ...) are still
+  importable from `rub_fixed_income.risk`. `ShockedCurveCache.__module__` is now
+  `rub_fixed_income._risk_common`.
+- Docs: API reference, architecture module map and data flow, consumer migration table,
+  backlog and roadmap status refreshed for 0.9.0–0.12.0.
+
+## 0.11.0 — KBD curve, curve-spec registry, desk factors, portfolio valuation
+
+Roadmap items 0.6, a minimal 0.5 and §2 (factor vocabulary, coverage codes): the
+core side of the M1 vertical slice (an OFZ book on the KBD curve).
+
+- **KBD / G-curve** (`kbd.py`): `ZcycParameters`, `kbd_zero_rate_bp`,
+  `kbd_effective_yield`, `g_spread_bp` and `kbd_discount_curve`. It reproduces MOEX's
+  published standard yields within 0.01 bp on archived publications
+  (`tests/fixtures/kbd/`, copied from the hub's fixtures). The materialised curve
+  (daily nodes to 2Y, weekly to 5Y, monthly to 30Y) is within 0.005 bp of the formula
+  on every day to 30Y, so Z-spread, bucket risk, the Hessian and scenarios work on it
+  unchanged. Model `moex-kbd-gcurve-v1`.
+- **Curve-spec registry** (`curve_specs.py`): `CurveSpec`, `CURVE_SPECS`,
+  `get_curve_spec` (raises `UnknownCurveSpec`). Registered: `rub_ofz_kbd_v1`,
+  `rub_ruonia_ois_legacy_v1` (today's bootstrap, named exactly) and
+  `rub_key_rate_swap_v1`. The exchange-conformant `rub_ruonia_ois_moex_v2` follows later.
+- **Desk factors** (`factors.py`): `ir_factor` (`IR|<curve>|<bucket>`), `CS`,
+  `fx_factor` (`FX|<ccy>`), `fx_basis_factor`; `FactorRisk` with a sparse upper-triangle
+  Hessian; `bond_factor_risk` and `fx_futures_factor_risk`. First order and Hessian are
+  central with the same bump (DEC08).
+- **Portfolio valuation** (`portfolio.py`): `value_portfolio(run_id, as_of, snapshot,
+  instruments, positions, policy, scenarios)` over the 0.10.0 domain model. It values
+  fixed-coupon RUB bonds (bullet, amortizing, confirmed put) on a KBD curve, a prebuilt
+  curve or OIS quotes, with settlement from the instrument's calendar. Each position
+  gets PV, prices, accrued, Z-spread, effective yield, Macaulay duration, G-spread on
+  KBD, desk-factor risk and JTD. Everything else is a coded `Rejection` in coverage
+  (`UNSUPPORTED_PRODUCT`, `MISSING_MARKET_DATA`, `CALENDAR_OUT_OF_RANGE`,
+  `UNKNOWN_CURVE_SPEC`, `INVALID_TERMS`, `CALCULATION_FAILED`, `CANCELLED`,
+  `TIME_BUDGET_EXCEEDED`). Results carry the curves and calendar identities used and
+  covered factor totals, and are hash-verified as `rub-portfolio-risk-result.v2`
+  (`portfolio_result_to_json` / `_from_json` / `verify_portfolio_result`).
+  `run_local_risk` and the v1 contract are unchanged.
+- `CurveEntry.curve` may also hold `ZcycParameters`; the valuation builds it once.
+- `DiscountCurve.discount_factor` finds the node interval by bisection over cached log
+  discount factors instead of a linear scan. Results are bit-identical (same values,
+  same interval); dense curves such as KBD become cheap to read.
+- Indicative speed (Linux, Python 3.11, 200 positions on KBD): 9 ms per position with
+  first-order risk, 29 ms with the Hessian. The 2k-position benchmark on Windows is
+  roadmap item 0.7.
+
+## 0.10.0 — domain model and the coupon/principal split
+
+Roadmap package 0, items 0.2 and 0.3. Additive: existing entry points, results and
+identifiers are unchanged.
+
+- **`Cashflow`** (`cashflows.py`): a `BondCashflow` split into `coupon` and
+  `principal`, with the coupon's `accrual_start`/`accrual_end` and a
+  `CashflowKind` (`COUPON`, `AMORTIZATION`, `MATURITY`, `OFFER_REDEMPTION`). Build it
+  with `Cashflow.split(...)`; `amount` is always `coupon + principal`. Because it is a
+  `BondCashflow`, every pricing and risk entry point accepts it and gives the same
+  numbers and identifiers as the totals.
+- **`accrued_interest(cashflows, settlement)`**: linear accrued interest from the
+  split, rounded half-up to 0.01 (same formula as `analytics.accrued_interest_rub`).
+- **Domain types** (`domain.py`):
+  - `Instrument` (terms only): `ProductType`, currency, initial face, a
+    `FixedCouponLeg` of known `CouponPeriod`s or a `FloatingCouponLeg` (rule,
+    periods, fixing ID), a `PrincipalLeg` of `Redemption`s, `Offer`s, calendar ID and
+    settlement lag. `cashflows(after, horizon, offer)`, `outstanding_face(on)`,
+    `horizon("maturity" | "confirmed_put", settlement)`, `accrued(settlement)`.
+  - `MarketSnapshot`, shared by all positions: `CurveEntry` (curve ID + curve-spec
+    ID), `CalendarEntry`, `FixingEntry`, `FxRate`, `BondPriceObservation`,
+    `SnapshotEvidence`, `snapshot_id`, `known_at`. Lookups raise `MissingMarketData`.
+  - `Position`: signed quantity, book, `AccountingCategory`, currency, recovery.
+  - All validate on construction (typed `InvalidTerms`) and round-trip through
+    `to_dict`/`from_dict`.
+- `SnapshotEvidence` moved from `local_worker` to `domain`; `local_worker` re-exports it.
+
+## 0.9.0 — foundations: calendars, canonical hashing, serialization, typed rejections
+
+Roadmap package 0, items 0.1 and 0.4, and part of 0.9. Every identifier that
+hashed before is byte-identical (pinned in `tests/test_hash_stability.py`).
+
+- **Calendars with a covered range.** `BusinessCalendar` gains `valid_from` and
+  `valid_to` (both or neither). A bounded calendar raises `CalendarRangeError` for
+  any date outside the range instead of assuming Mon–Fri; settlement, schedules
+  and date adjustment inherit this. Unbounded calendars behave as before.
+  - `calendar_fingerprint` includes the range only for bounded calendars, so
+    existing fingerprints and every identifier built on them are unchanged.
+  - New `calendar_identity(calendar) -> (version, fingerprint)` for results.
+  - Holidays and working days are frozen on construction. A caller's mutable set
+    can no longer change a calendar after it is built.
+  - New validation: a non-empty `version`, dates only, no date that is both a
+    holiday and a working day, overrides inside the range.
+- **Canonical hashing** moved to `rub_fixed_income.canonical`.
+  `rub_fixed_income.analytics.canonical_json_bytes` / `canonical_sha256` remain
+  importable. Values that used to raise `TypeError` now have canonical forms:
+  enums as their value, sets as sorted lists, dataclasses nested in mappings or
+  sequences, and date or enum mapping keys.
+- **Serialization.** New `to_dict(value)` / `from_dict(cls, data)` for core's own
+  dataclasses (strict field sets, enums by value, ISO dates, UTC-aware
+  timestamps, frozensets, Decimal strings, unions resolved by shape). The local
+  worker's result decoder now uses it; the v1 result fixture round-trips byte for
+  byte. `ScheduleConvention.to_dict()` (the provenance summary) is unchanged.
+- **Typed rejections** in `rub_fixed_income.errors`: `CoreRejection` with a stable
+  `code`, and `UnsupportedProduct`, `MissingMarketData`, `CalendarRangeError`,
+  `UnknownCurveSpec`, `InvalidTerms`. All are `ValueError` subclasses.
+- `DiscountCurve.flat_continuous_rate` is public; `risk.py` no longer reads the
+  private field. The dead `analytics._price_at_yield` is removed.
+- Tooling: CI on Windows and Ubuntu with Python 3.11; `uv run mypy` passes on the
+  package and tests; the QR probe test is no longer shipped in the sdist.
+- **Version pin:** market-data-store pins `>=0.8.0,<0.9`. Its editable install keeps
+  running, but its next `uv lock` needs the pin widened (BACKLOG #35).
+
 ## 0.8.1 — FX futures rate risk
 
 - New `rub_fixed_income.fx_futures`: `FxFuturesContract`, `FxFuturesRiskRequest`,

@@ -1,6 +1,6 @@
 # System context: where this library fits
 
-As of 16 October 2026 (library 0.8.1). rub-fixed-income-core is the **calculation core** of the Trading Desk Monitor, a RUB fixed-income desk analytics system.
+As of 16 October 2026 (library 0.12.0; written at 0.8.1). rub-fixed-income-core is the **calculation core** of the Trading Desk Monitor, a RUB fixed-income desk analytics system.
 
 The full system architecture lives in the sibling repository **trading_desk_monitor**, folder `docs/architecture/`. With the usual side-by-side checkout it is at [`../../trading_desk_monitor/docs/architecture/README.md`](../../trading_desk_monitor/docs/architecture/README.md). Read its README first: it holds the component map, the interface catalogue and the reading order. These relative links resolve only in the local checkout, not on GitHub.
 
@@ -19,7 +19,7 @@ Decisions are in `trading_desk_monitor/docs/architecture/adr/`.
 | Rule | Source |
 |---|---|
 | Core is pure: no network, files, database or global market state. It accepts typed domain objects only | ADR-003 |
-| Core never parses market-data-hub payloads and never imports hub code. The backend adapter maps the hub's wire format to core types. `public_schedule.bind_market_data_store_schedule` targets the retired market-data-store and is to be deprecated | ADR-003, 02 §1 |
+| Core never parses market-data-hub payloads and never imports hub code. The backend adapter maps the hub's wire format to core types. `public_schedule.bind_market_data_store_schedule` targets the retired market-data-store and is deprecated since 0.12.0 | ADR-003, 02 §1 |
 | Core owns the domain model: `Instrument` (coupon/principal legs, floater formula, offers), `MarketSnapshot` (curves by ID, fixings, FX, calendars, evidence), `Position`, with `to_dict`/`from_dict` for its own types | 02 §4, [PRODUCT_ROADMAP](PRODUCT_ROADMAP.md) package 0 |
 | Core owns the **curve-spec registry**, keyed by core spec IDs (for example `rub_ofz_kbd_v1`, `rub_ruonia_ois_moex_v2`). The backend maps hub `dataset` codes to these IDs | ADR-004, 02 §4 |
 | Core contains the math for curve builds and floater projection. The backend orchestrates them and owns the persistent curve cache. Core reuses shocked curves within one call and accepts prebuilt curves | ADR-004 |

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 from itertools import pairwise
 from typing import Literal
 
@@ -11,6 +11,7 @@ import numpy as np
 from .conventions import DayCount
 from .dates import BusinessCalendar, add_months
 from .discount import DiscountCurve
+from .tenors import parse_tenor, resolve_tenor
 
 MODEL_VERSION = "krs-pillar-forward-average-v1"
 CONVENTION_ID = "moex-irs-keyrate-tom-modfol-actactisda-v1"
@@ -196,25 +197,6 @@ def _year_fraction_act_act_isda(start: date, end: date) -> float:
     return DayCount.ACT_ACT_ISDA.year_fraction(start, end)
 
 
-def _add_tenor(value: date, tenor: str) -> date:
-    normalized = tenor.strip().upper()
-    if len(normalized) < 2 or not normalized[:-1].isdigit():
-        raise ValueError(f"unsupported tenor: {tenor}")
-    amount = int(normalized[:-1])
-    unit = normalized[-1]
-    if amount <= 0:
-        raise ValueError("tenor amount must be positive")
-    if unit == "D":
-        return value + timedelta(days=amount)
-    if unit == "W":
-        return value + timedelta(weeks=amount)
-    if unit == "M":
-        return add_months(value, amount)
-    if unit == "Y":
-        return add_months(value, amount * 12)
-    raise ValueError(f"unsupported tenor: {tenor}")
-
-
 def _unadjusted_schedule(start: date, maturity: date, months: int) -> tuple[date, ...]:
     if maturity <= start:
         raise ValueError("maturity must be after effective date")
@@ -265,10 +247,10 @@ def _periods(
 def _swap_dates(
     trade_date: date, tenor: str, calendar: BusinessCalendar
 ) -> tuple[date, date, date]:
-    effective_date = calendar.add_business_days(trade_date, 1)
-    unadjusted_maturity = _add_tenor(effective_date, tenor)
-    maturity_date = calendar.modified_following(unadjusted_maturity)
-    return effective_date, unadjusted_maturity, maturity_date
+    if parse_tenor(tenor).unit in ("ON", "TN", "SN"):
+        raise ValueError(f"unsupported tenor: {tenor}")
+    dates = resolve_tenor(trade_date, tenor, calendar, spot_lag_days=1)
+    return dates.effective_date, dates.unadjusted_end, dates.end_date
 
 
 def price_key_rate_swap(request: KeyRateSwapPricingRequest) -> KeyRateSwapPricingResult:

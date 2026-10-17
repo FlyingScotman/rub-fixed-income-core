@@ -1,23 +1,45 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import math
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 from itertools import pairwise
-from typing import Any, Literal, cast
+from typing import Literal
 
+from ._deprecation import deprecated
 from ._money import finite_money
 from ._solver import bisect
 from .bond import YieldRequest, solve_effective_annual_yield
+from .canonical import canonical_json_bytes, canonical_sha256
 from .cashflows import BondCashflow, clean_price_pct_to_dirty_rub
 from .compatibility import _spread_price, bond_duration, solve_nominal_annual_yield
 from .conventions import CONTINUOUS, YieldConvention, ZSpreadConvention
 from .dates import year_fraction
 from .discount import DiscountCurve
+
+# canonical_json_bytes and canonical_sha256 moved to .canonical in 0.9.0; consumers still
+# import them from here.
+__all__ = [
+    "V1_YIELD_CONVENTION",
+    "V1_Z_SPREAD_CONVENTION",
+    "BondAnalyticsResultV1",
+    "BondAnalyticsResultV2",
+    "BondTermsV1",
+    "CalculationFailure",
+    "CalculationPolicy",
+    "CurveSnapshotV1",
+    "MarketObservationV1",
+    "ValuationContext",
+    "accrued_interest_rub",
+    "analyze_bond",
+    "analyze_bond_v2",
+    "canonical_json_bytes",
+    "canonical_sha256",
+    "result_hash_projection",
+    "verify_result_sha256",
+]
 
 # analyze_bond (V1) always reports a continuous ACT/365F Z-spread; this is frozen for
 # hash/reproducibility compatibility. analyze_bond_v2 makes the convention an input.
@@ -157,33 +179,6 @@ _RESULT_FIELDS_V2 = frozenset(BondAnalyticsResultV2.__dataclass_fields__)
 _AnyResult = BondAnalyticsResultV1 | BondAnalyticsResultV2
 
 
-def _canonical_value(value: object) -> object:
-    if isinstance(value, date):
-        return value.isoformat()
-    if isinstance(value, Decimal):
-        return format(value, "f")
-    if isinstance(value, float):
-        if not math.isfinite(value):
-            raise ValueError("canonical JSON forbids non-finite numbers")
-        return value
-    if isinstance(value, dict):
-        return {key: _canonical_value(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_canonical_value(item) for item in value]
-    return value
-
-
-def canonical_json_bytes(value: object) -> bytes:
-    raw = asdict(cast(Any, value)) if hasattr(value, "__dataclass_fields__") else value
-    return json.dumps(
-        _canonical_value(raw), sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode("utf-8")
-
-
-def canonical_sha256(value: object) -> str:
-    return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
-
-
 def result_hash_projection(
     result: BondAnalyticsResultV1 | BondAnalyticsResultV2 | Mapping[str, object],
 ) -> dict[str, object]:
@@ -228,15 +223,6 @@ def accrued_interest_rub(terms: BondTermsV1, settlement_date: date) -> float:
     if elapsed == period:
         return 0.0
     return finite_money(terms.coupon_amount_rub * elapsed / period, "accrued interest result")
-
-
-def _price_at_yield(cashflows: tuple[BondCashflow, ...], settlement: date, rate: float) -> float:
-    return float(
-        sum(
-            cashflow.amount / (1.0 + rate) ** year_fraction(settlement, cashflow.payment_date)
-            for cashflow in cashflows
-        )
-    )
 
 
 def _durations(
@@ -364,6 +350,7 @@ def analyze_bond(
     stored V1 result hashes stay reproducible. Use :func:`analyze_bond_v2` to choose the
     Z-spread convention (desk default annual) and to record it in the result.
     """
+    deprecated("analyze_bond (V1, continuous Z-spread)", "use analyze_bond_v2")
     try:
         prepared = _prepare(
             terms_snapshot,

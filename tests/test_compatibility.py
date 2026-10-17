@@ -13,6 +13,10 @@ from rub_fixed_income import (
 )
 from rub_fixed_income.dates import year_fraction
 
+# These tests pin the behaviour of APIs deprecated in 0.12.0 (kept until 1.0);
+# tests/test_deprecations.py checks that each one warns.
+pytestmark = pytest.mark.filterwarnings("ignore:rub_fixed_income:DeprecationWarning")
+
 
 def test_continuous_z_spread_reprices_cashflows_against_discount_factors() -> None:
     settlement = date(2026, 8, 28)

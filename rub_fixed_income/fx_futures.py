@@ -15,13 +15,9 @@ from datetime import date
 from typing import Literal
 
 from ._money import finite_money, positive_money
-from .analytics import canonical_sha256
-from .conventions import DayCount
-from .discount import CurveBootstrapRequest, DiscountCurve, DiscountFactorCurve
-from .risk import (
+from ._risk_common import (
     _ZERO_SHOCK,
     RISK_BUCKETS,
-    BucketRisk,
     ShockedCurveCache,
     _base_curve,
     _central_derivatives,
@@ -31,6 +27,10 @@ from .risk import (
     _shock_curve,
     _snapshot_curve,
 )
+from .canonical import canonical_sha256
+from .conventions import DayCount
+from .discount import CurveBootstrapRequest, DiscountCurve, DiscountFactorCurve
+from .risk import BucketRisk
 
 FX_FUTURES_RISK_MODEL_VERSION = "rub-fx-futures-parity-risk-v1"
 FX_FUTURES_SECOND_ORDER_MODEL_VERSION = "rub-fx-futures-parity-second-order-v1"

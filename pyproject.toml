@@ -1,6 +1,6 @@
 [project]
 name = "rub-fixed-income-core"
-version = "0.8.1"
+version = "0.16.0"
 description = "Deterministic RUB fixed-income dates, cash-flow, financing, yield, discount-curve, and KRS projection math"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -30,17 +30,27 @@ include = [
     "/rub_fixed_income",
     "/tests",
 ]
-exclude = ["**/__pycache__", "**/*.pyc", "/dist"]
+exclude = [
+    "**/__pycache__",
+    "**/*.pyc",
+    "/dist",
+    # Needs tools/, which is not shipped; it tests a proprietary-stack probe.
+    "/tests/test_qr_bond_reconciliation_probe.py",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# A test that exercises a deprecated API must say so (pytest.warns or a module mark).
+filterwarnings = ["error:rub_fixed_income:DeprecationWarning"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py311"
 
 [tool.mypy]
-files = ["rub_fixed_income", "tests"]
+files = ["rub_fixed_income", "tests", "benchmarks"]
+# The QR reconciliation probe test drives an untyped proprietary-stack script (BACKLOG #16).
+exclude = ["tests/test_qr_bond_reconciliation_probe\\.py$"]
 python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true

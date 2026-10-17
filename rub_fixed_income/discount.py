@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import math
+from bisect import bisect_left
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Protocol, SupportsInt, cast
+from typing import Any, Protocol, SupportsInt, cast
 
 from ._solver import bisect
 from .conventions import Compounding, CurveConvention, generate_schedule
@@ -31,6 +32,15 @@ class OisQuote:
     par_rate: float
 
 
+_DF_MEMO_SIZE = 4096
+
+
+def _fields_only_state(self: Any) -> dict[str, object]:
+    """Pickle state without the lazily built caches kept beside the fields."""
+    names = self.__dataclass_fields__
+    return {k: v for k, v in self.__dict__.items() if k in names}
+
+
 @dataclass(frozen=True)
 class DiscountCurve:
     curve_date: date
@@ -38,6 +48,8 @@ class DiscountCurve:
     model_version: str = "ois-logdf-v1"
     _flat_continuous_rate: float | None = None
     convention: CurveConvention = field(default_factory=CurveConvention)
+
+    __getstate__ = _fields_only_state
 
     def __post_init__(self) -> None:
         previous = self.curve_date
@@ -66,6 +78,18 @@ class DiscountCurve:
             CurveConvention() if convention is None else convention,
         )
 
+    def _log_nodes(self) -> tuple[tuple[date, ...], tuple[float, ...]]:
+        # Lazily cached outside the dataclass fields (equality, hashing and asdict
+        # ignore it). The same math.log values as a linear scan: results are identical.
+        cached = self.__dict__.get("_log_node_cache")
+        if cached is None:
+            cached = (
+                tuple(node_date for node_date, _ in self.nodes),
+                tuple(math.log(df) for _, df in self.nodes),
+            )
+            object.__setattr__(self, "_log_node_cache", cached)
+        return cast(tuple[tuple[date, ...], tuple[float, ...]], cached)
+
     def _time(self, start: date, end: date) -> float:
         return self.convention.time_day_count.year_fraction(start, end)
 
@@ -73,7 +97,28 @@ class DiscountCurve:
     def valuation_date(self) -> date:
         return self.curve_date
 
+    @property
+    def flat_continuous_rate(self) -> float | None:
+        """The continuous rate of a ``DiscountCurve.flat`` curve, ``None`` for a node curve."""
+        return self._flat_continuous_rate
+
     def discount_factor(self, target: date) -> float:
+        # Shared shocked curves are read at the same payment dates by every position;
+        # a bounded per-curve memo (outside the fields) returns the identical float.
+        memo = self.__dict__.get("_df_memo")
+        if memo is not None:
+            cached = memo.get(target)
+            if cached is not None:
+                return cast(float, cached)
+        value = self._discount_factor(target)
+        if memo is None:
+            memo = {}
+            object.__setattr__(self, "_df_memo", memo)
+        if len(memo) < _DF_MEMO_SIZE:
+            memo[target] = value
+        return value
+
+    def _discount_factor(self, target: date) -> float:
         if target < self.curve_date:
             raise ValueError("cannot discount before curve date")
         if target == self.curve_date:
@@ -82,15 +127,16 @@ class DiscountCurve:
             return math.exp(-self._flat_continuous_rate * self._time(self.curve_date, target))
         if not self.nodes:
             raise ValueError("discount curve has no nodes")
-        left_date = self.curve_date
-        left_log_df = 0.0
-        for right_date, right_df in self.nodes:
-            right_log_df = math.log(right_df)
-            if target <= right_date:
-                weight = (target - left_date).days / (right_date - left_date).days
-                return math.exp(left_log_df + weight * (right_log_df - left_log_df))
-            left_date = right_date
-            left_log_df = right_log_df
+        dates, log_dfs = self._log_nodes()
+        index = bisect_left(dates, target)
+        if index < len(dates):
+            right_date, right_log_df = dates[index], log_dfs[index]
+            if index == 0:
+                left_date, left_log_df = self.curve_date, 0.0
+            else:
+                left_date, left_log_df = dates[index - 1], log_dfs[index - 1]
+            weight = (target - left_date).days / (right_date - left_date).days
+            return math.exp(left_log_df + weight * (right_log_df - left_log_df))
         if len(self.nodes) == 1:
             prior_date, prior_log_df = self.curve_date, 0.0
         else:
@@ -158,6 +204,8 @@ class CurveBootstrapRequest:
     curve_date: date
     quotes: tuple[OisQuote, ...]
     convention: CurveConvention = field(default_factory=CurveConvention)
+
+    __getstate__ = _fields_only_state
 
 
 def _dynamic_bracket(

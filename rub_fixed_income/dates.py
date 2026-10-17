@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from calendar import monthrange
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+
+from .errors import CalendarRangeError
 
 
 def year_fraction(start: date, end: date) -> float:
@@ -30,13 +32,62 @@ def annual_schedule(start: date, maturity: date) -> tuple[date, ...]:
 
 @dataclass(frozen=True)
 class BusinessCalendar:
-    """Calendar arithmetic over explicit holiday and working-weekend overrides."""
+    """Calendar arithmetic over explicit holiday and working-weekend overrides.
+
+    ``valid_from``/``valid_to`` give the covered date range (both or neither). A
+    bounded calendar raises ``CalendarRangeError`` for any date outside it instead of
+    assuming Mon-Fri. An unbounded calendar keeps the pre-0.9.0 behaviour: weekdays
+    are business days unless listed as holidays. Holidays and working days are frozen
+    on construction, so a caller's mutable set cannot change the calendar later.
+    """
 
     holidays: frozenset[date] = field(default_factory=frozenset)
     working_days: frozenset[date] = field(default_factory=frozenset)
     version: str = "weekends-only"
+    valid_from: date | None = None
+    valid_to: date | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "holidays", frozenset(self.holidays))
+        object.__setattr__(self, "working_days", frozenset(self.working_days))
+        if not isinstance(self.version, str) or not self.version:
+            raise ValueError("calendar version must be a non-empty string")
+        for day in self.holidays | self.working_days:
+            if not isinstance(day, date) or isinstance(day, datetime):
+                raise TypeError("calendar overrides must be dates")
+        if self.holidays & self.working_days:
+            raise ValueError("a date cannot be both a holiday and a working day")
+        if (self.valid_from is None) != (self.valid_to is None):
+            raise ValueError("valid_from and valid_to must be given together")
+        if self.valid_from is not None and self.valid_to is not None:
+            if self.valid_to < self.valid_from:
+                raise ValueError("valid_to must not precede valid_from")
+            outside = [
+                day
+                for day in self.holidays | self.working_days
+                if not self.valid_from <= day <= self.valid_to
+            ]
+            if outside:
+                raise ValueError("calendar overrides must lie inside the covered range")
+
+    @property
+    def is_bounded(self) -> bool:
+        return self.valid_from is not None
+
+    def covers(self, value: date) -> bool:
+        if self.valid_from is None or self.valid_to is None:
+            return True
+        return self.valid_from <= value <= self.valid_to
+
+    def require_covered(self, value: date) -> None:
+        if not self.covers(value):
+            raise CalendarRangeError(
+                f"{value.isoformat()} is outside calendar {self.version} "
+                f"({self.valid_from}..{self.valid_to})"
+            )
 
     def is_business_day(self, value: date) -> bool:
+        self.require_covered(value)
         if value in self.working_days:
             return True
         return value.weekday() < 5 and value not in self.holidays
@@ -44,6 +95,7 @@ class BusinessCalendar:
     def add_business_days(self, value: date, count: int) -> date:
         if count < 0:
             raise ValueError("negative business-day lags are not supported")
+        self.require_covered(value)
         current = value
         added = 0
         while added < count:

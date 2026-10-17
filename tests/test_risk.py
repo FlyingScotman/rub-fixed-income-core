@@ -362,6 +362,7 @@ def test_mutable_input_collections_are_copied() -> None:
 def test_calendar_snapshot_cannot_change_after_calibration() -> None:
     holidays: set[date] = set()
     calendar = BusinessCalendar(holidays=holidays)  # type: ignore[arg-type]
+    assert isinstance(calendar.holidays, frozenset)
     convention = CurveConvention(fixed_leg_schedule=ScheduleConvention(calendar=calendar))
     source = CurveBootstrapRequest(
         START,
@@ -376,7 +377,13 @@ def test_calendar_snapshot_cannot_change_after_calibration() -> None:
     holidays.add(date(2026, 1, 1))
     after = e.reprice(BondScenario.parallel(100))
     assert after == before
-    assert engine(curve=source).base_id != e.base_id
+    # Since 0.9.0 the calendar freezes its sets: the caller's set cannot leak in.
+    assert engine(curve=source).base_id == e.base_id
+    changed = replace(calendar, holidays=frozenset({date(2026, 1, 1)}))
+    other = replace(
+        source, convention=CurveConvention(fixed_leg_schedule=ScheduleConvention(calendar=changed))
+    )
+    assert engine(curve=other).base_id != e.base_id
 
 
 @pytest.mark.parametrize("days,index", [(1, 0), (365 * 25, 10)])

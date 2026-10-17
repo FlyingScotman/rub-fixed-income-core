@@ -7,6 +7,10 @@ from test_local_worker import END, START, run, snapshot
 
 from rub_fixed_income.public_schedule import bind_market_data_store_schedule
 
+# These tests pin the behaviour of APIs deprecated in 0.12.0 (kept until 1.0);
+# tests/test_deprecations.py checks that each one warns.
+pytestmark = pytest.mark.filterwarnings("ignore:rub_fixed_income:DeprecationWarning")
+
 
 def payload() -> dict[str, object]:
     return {

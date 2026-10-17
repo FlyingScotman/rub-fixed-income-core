@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import date
 from math import exp, isfinite
 
+from ._deprecation import deprecated
 from ._money import finite_money
 from ._solver import bisect
 from .cashflows import BondCashflow, clean_price_pct_to_dirty_rub
@@ -171,6 +172,7 @@ def bond_duration(
 def clean_price_pct_to_dirty_amount(
     clean_price_pct: float, current_nominal: float, accrued_interest_amount: float
 ) -> float:
+    deprecated("clean_price_pct_to_dirty_amount", "use clean_price_pct_to_dirty_rub")
     return clean_price_pct_to_dirty_rub(clean_price_pct, current_nominal, accrued_interest_amount)
 
 
@@ -254,6 +256,10 @@ def price_cashflows(
     counts at face and earlier flows are ignored. With ``settlement_date``: flows on or
     before settlement are dropped and the value is expressed at settlement.
     """
+    if settlement_date is None:
+        deprecated(
+            "price_cashflows without settlement_date (curve-date valuation)", "pass settlement_date"
+        )
     if not isfinite(spread):
         raise ValueError("spread must be finite")
     resolved = _resolve_spread_convention(compounding_frequency, convention)
@@ -320,6 +326,10 @@ def solve_continuous_z_spread(
     settlement_date: date | None = None,
 ) -> float:
     """Continuous Z-spread over settlement-forward DFs: PV = sum CF DF(t)/DF(s) e^(-z tau)."""
+    deprecated(
+        "solve_continuous_z_spread",
+        "use solve_z_spread(..., convention=ZSpreadConvention(compounding=CONTINUOUS))",
+    )
     settlement = _settlement(curve, settlement_date)
     if not isfinite(dirty_price) or dirty_price <= 0.0:
         raise ValueError("dirty price must be positive and finite")
@@ -354,6 +364,10 @@ def solve_z_spread(
     bond at settlement (DF(t)/DF(settlement), time from settlement, flows on or before
     settlement dropped); it is equivalent to rebasing the curve to settlement manually.
     """
+    if settlement_date is None:
+        deprecated(
+            "solve_z_spread without settlement_date (curve-date valuation)", "pass settlement_date"
+        )
     resolved = _resolve_spread_convention(compounding_frequency, convention)
     flows = tuple(
         (payment_date, finite_money(amount, "cashflow amounts"))

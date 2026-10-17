@@ -32,3 +32,7 @@ cookies*.json
 *.zip
 *.bak
 *.bak-*
+
+# Local evidence folders (multi-GB SQLite and cached sources); keep outside git
+audit/
+implementation/

@@ -42,6 +42,13 @@ Identifiers include `calendar.version` **and** `calendar_fingerprint(calendar)` 
 holiday/working-day sets), so two calendars with the same label but different content are
 distinguishable in provenance.
 
+**Covered range (0.9.0).** `BusinessCalendar(..., valid_from, valid_to)` declares the dates
+the calendar actually knows. Outside that range every business-day query raises
+`CalendarRangeError`; it is never assumed Mon–Fri. The hub publishes the range with each
+calendar version, and MOEX weekend trading sessions are **not** business days. For a bounded
+calendar the fingerprint also covers the range. `calendar_identity(calendar)` returns
+`(version, fingerprint)` for recording in results.
+
 ## Schedules
 
 - Legacy `dates.annual_schedule(start, end)`: forward annual roll from `start`, unadjusted,
@@ -125,6 +132,14 @@ The continuous and annual spreads differ materially (OFZ 26238 probe: annual 139
 coupon; MOEX convention). `analyze_bond` rounds AI half-up to `CalculationPolicy.money_quantum`
 (default 0.01 RUB).
 
+### Accrued interest from split cashflows (0.10.0)
+
+`accrued_interest(cashflows, settlement)` and `Instrument.accrued(settlement)` use the
+coupon whose `[accrual_start, accrual_end)` contains the settlement date:
+`coupon * elapsed_days / period_days`, rounded half-up to 0.01 per bond. Settlement on the
+period end gives 0. A settlement before the first accrual period is rejected
+(`InvalidTerms`); one after the last coupon gives 0.
+
 ## `analyze_bond` conventions
 
 - `analyze_bond` (V1, frozen): yield = effective annual ACT/365F; Z = **continuous** ACT/365F
@@ -134,6 +149,62 @@ coupon; MOEX convention). `analyze_bond` rounds AI half-up to `CalculationPolicy
   annual ACT/365F, default Z **annual** ACT/365F; the result carries `yield_convention` and
   `z_spread_convention` identifiers and its own hash. Reproduce V1 spreads with
   `z_spread_convention=ZSpreadConvention(compounding=CONTINUOUS)`.
+
+## KBD (MOEX G-curve) (0.11.0)
+
+`G(t) = B1 + B2·L + B3·(L − e^(−t/T1)) + Σ G_i·exp(−((t − a_i)/b_i)²)`, `L = T1/t·(1 − e^(−t/T1))`,
+`a_1 = 0`, `a_2 = 0.6`, `a_(i+1) = a_i + 0.6·1.6^(i−1)`, `b_1 = 0.6`, `b_(i+1) = 1.6·b_i`.
+`G` is a continuously compounded zero rate in bp; MOEX publishes `exp(G/10⁴) − 1`. Time `t`
+is ACT/365F years from the trade date. The discount curve is `DF(t) = exp(−G(t)/10⁴·t)` on
+the node grid, log-linear between nodes, flat-forward beyond 30Y. G-spread is the bond's
+effective annual yield minus the KBD yield at an explicit tenor (the portfolio uses the
+Macaulay duration at that yield).
+
+## Desk risk factors (0.11.0)
+
+`IR|<curve_id>|<bucket>` (1 bp at one of the 11 bucket pillars), `CS` (1 bp of own credit or
+OFZ spread), `FX|<ccy>` (1 % against RUB) and `FXBASIS|<ccy>` (1 bp of a futures basis).
+Portfolio results report first order and the sparse upper-triangle Hessian from central
+differences with the same bump (DEC08). Signs: DV01 is PV(+1 bp) − PV(0), negative for a
+long bond.
+
+## Tenor codes (0.16.0)
+
+`resolve_tenor` maps a market tenor code to dates on a business calendar:
+
+- **Spot.** The spot date is `spot_lag_days` business days after the trade date. TOM is 1.
+- **`<n>D/W/M/Y` tenors** run from spot by calendar days, weeks or months; month ends
+  clamp. The end date is then adjusted with the business-day convention (default
+  modified following).
+- **Overnight codes:**
+  - `ON` runs from the trade date to the next business day;
+  - `TN` runs from T+1 to T+2;
+  - `SN` runs from spot to the next business day.
+
+KEYRATE swaps resolve their dates through it, unchanged. RUONIA OIS quotes still enter
+the bootstrap as maturities (`ois_quotes` builds them). The bootstrap has no spot or
+payment lag until the exchange specification is confirmed (BACKLOG #37).
+
+## Horizon valuation: carry and rolldown (0.14.0)
+
+Start at settlement `S0` of business date `d0`; horizon at settlement `S1` of `d1` (the
+instrument's settlement lag in its calendar). The Z-spread is held.
+
+- **Received:** coupons and principal paid in `(S0, S1]`, as cash (no reinvestment).
+- **Carry** = `PV(S1 | today's curve read forward from S1) + received - PV(S0)`: the return
+  if today's forwards are realised. For a zero-coupon bond on a flat continuous curve
+  with a continuous spread it is `PV(S0) * (exp((r + s) * h) - 1)`, `h` in ACT/365F.
+- **Rolldown** = `PV(S1 | rolled curve) - PV(S1 | forwards)`. The rolled curve keeps
+  today's shape in calendar days: `DF_rolled(d1 + k) / DF_rolled(d1) = DF(d0 + k) / DF(d0)`.
+  It is zero on a flat curve and positive for a long bond on an upward-sloping curve.
+- **Explain** to an end curve (dated `d1`) and end spread `s1`:
+  - `rates = V(end curve, s0) - V(rolled, s0)`;
+  - `spread = V(rolled, s1) - V(rolled, s0)`;
+  - `residual` is the cross term.
+
+  The parts sum exactly to `V(end, s1) + received - PV(S0)`.
+- **Put bonds:** `redemption_horizon="confirmed_put"` values to the first confirmed put
+  (yield-to-offer), as the desk quotes them.
 
 ## Financed-bond accumulation
 

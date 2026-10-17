@@ -20,6 +20,11 @@ from rub_fixed_income import (
 )
 from rub_fixed_income.analytics import accrued_interest_rub
 
+# These tests pin the behaviour of APIs deprecated in 0.12.0 (kept until 1.0);
+# tests/test_deprecations.py checks that each one warns.
+pytestmark = pytest.mark.filterwarnings("ignore:rub_fixed_income:DeprecationWarning")
+
+
 Conversion = Callable[[float, float, float], float]
 
 BAD = [float("nan"), float("inf"), float("-inf"), True]
@@ -48,6 +53,7 @@ def test_clean_dirty_helpers_reject_each_nonfinite_or_boolean_input(
 def test_unit_price_and_nominal_are_strictly_positive(
     convert: Conversion, index: int, invalid: float
 ) -> None:
+
     args: list[float] = [100, 1000, 10]
     args[index] = invalid
     with pytest.raises(ValueError, match="positive"):

@@ -116,14 +116,23 @@ def adjust_date(value: date, convention: BusinessDayConvention, calendar: Busine
 
 
 def calendar_fingerprint(calendar: BusinessCalendar) -> str:
-    """Stable content hash of a calendar's explicit overrides (independent of its label)."""
-    payload = "|".join(
-        [
-            ",".join(sorted(day.isoformat() for day in calendar.holidays)),
-            ",".join(sorted(day.isoformat() for day in calendar.working_days)),
-        ]
-    )
-    return hashlib.sha256(payload.encode("ascii")).hexdigest()[:12]
+    """Stable content hash of a calendar's overrides and covered range (not its label).
+
+    The range enters the hash only when the calendar is bounded, so unbounded
+    calendars keep their pre-0.9.0 fingerprints.
+    """
+    parts = [
+        ",".join(sorted(day.isoformat() for day in calendar.holidays)),
+        ",".join(sorted(day.isoformat() for day in calendar.working_days)),
+    ]
+    if calendar.valid_from is not None and calendar.valid_to is not None:
+        parts.append(f"{calendar.valid_from.isoformat()}..{calendar.valid_to.isoformat()}")
+    return hashlib.sha256("|".join(parts).encode("ascii")).hexdigest()[:12]
+
+
+def calendar_identity(calendar: BusinessCalendar) -> tuple[str, str]:
+    """``(version, fingerprint)`` to record in results computed with ``calendar``."""
+    return calendar.version, calendar_fingerprint(calendar)
 
 
 @dataclass(frozen=True)

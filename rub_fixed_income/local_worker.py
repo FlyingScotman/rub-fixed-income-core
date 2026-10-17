@@ -9,19 +9,20 @@ from __future__ import annotations
 import json
 import math
 import time
-import types
 from collections.abc import Callable, Mapping
 from copy import deepcopy
-from dataclasses import asdict, dataclass, fields, is_dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime
-from typing import Any, Literal, Union, cast, get_args, get_origin, get_type_hints
+from typing import Literal, cast
 
 from ._money import finite_money
+from ._risk_common import _curve_identity
 from ._version import __version__
-from .analytics import canonical_json_bytes, canonical_sha256
+from .canonical import canonical_json_bytes, canonical_sha256
 from .cashflows import BondCashflow
 from .conventions import ZSpreadConvention
 from .discount import CurveBootstrapRequest, DiscountCurve
+from .domain import SnapshotEvidence as SnapshotEvidence  # noqa: PLC0414 (moved; re-exported)
 from .local_risk import (
     CurveRiskBasis,
     FixedRubBondInput,
@@ -35,8 +36,8 @@ from .risk import (
     BondScenario,
     BondSecondOrderRisk,
     ShockedCurveCache,
-    _curve_identity,
 )
+from .serialization import decode
 
 CoverageStatus = Literal["complete", "partial", "failed"]
 Interruption = Literal["cancelled", "time_budget_exceeded"]
@@ -57,23 +58,6 @@ def _text(value: str, name: str) -> None:
 def _aware(value: datetime) -> None:
     if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("timestamps must have explicit UTC offsets")
-
-
-@dataclass(frozen=True)
-class SnapshotEvidence:
-    snapshot_id: str
-    source_id: str
-    observed_at: datetime
-    known_at: datetime
-    valid_until: datetime
-
-    def validate(self, as_of: datetime) -> None:
-        _text(self.snapshot_id, "snapshot_id")
-        _text(self.source_id, "source_id")
-        for value in (self.observed_at, self.known_at, self.valid_until):
-            _aware(value)
-        if not self.observed_at <= self.known_at <= as_of <= self.valid_until:
-            raise ValueError("snapshot is stale, future-known or has inconsistent timestamps")
 
 
 @dataclass(frozen=True)
@@ -497,47 +481,4 @@ def local_risk_result_from_json(data: bytes | str) -> LocalRiskRunResult:
         raise ValueError("not a local risk result object with a supported schema_version")
     if not verify_local_risk_result(raw):
         raise ValueError("local risk result_sha256 does not verify")
-    return cast(LocalRiskRunResult, _decode(LocalRiskRunResult, raw, "result"))
-
-
-def _decode(kind: Any, value: object, path: str) -> object:
-    origin = get_origin(kind)
-    if origin is Union or origin is types.UnionType:
-        options = get_args(kind)
-        if value is None and type(None) in options:
-            return None
-        (inner,) = (option for option in options if option is not type(None))
-        return _decode(inner, value, path)
-    if origin is Literal:
-        if value not in get_args(kind):
-            raise ValueError(f"{path}: unexpected value {value!r}")
-        return value
-    if origin is tuple:
-        if not isinstance(value, list):
-            raise ValueError(f"{path}: expected a list")
-        item_kind = get_args(kind)[0]
-        return tuple(_decode(item_kind, item, f"{path}[{i}]") for i, item in enumerate(value))
-    if isinstance(kind, type) and is_dataclass(kind):
-        if not isinstance(value, dict):
-            raise ValueError(f"{path}: expected an object")
-        hints = get_type_hints(kind)
-        names = {f.name for f in fields(kind)}
-        if value.keys() != names:
-            raise ValueError(f"{path}: fields do not match {kind.__name__}")
-        decoded = {name: _decode(hints[name], value[name], f"{path}.{name}") for name in names}
-        return kind(**decoded)
-    if kind is datetime:
-        if not isinstance(value, str):
-            raise ValueError(f"{path}: expected an ISO timestamp")
-        parsed = datetime.fromisoformat(value)
-        _aware(parsed)
-        return parsed
-    if kind is float:
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise ValueError(f"{path}: expected a number")
-        return value
-    if kind in (int, str):
-        if isinstance(value, bool) or not isinstance(value, kind):
-            raise ValueError(f"{path}: expected {kind.__name__}")
-        return value
-    raise TypeError(f"{path}: unsupported result field type {kind!r}")
+    return cast(LocalRiskRunResult, decode(LocalRiskRunResult, raw, "result"))
