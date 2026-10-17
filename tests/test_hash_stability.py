@@ -24,7 +24,10 @@ from rub_fixed_income import (
     local_risk,
     local_worker,
     portfolio,
+    portfolio_result_from_json,
     portfolio_result_to_json,
+    verify_portfolio_result,
+    verify_portfolio_result_v3,
 )
 from rub_fixed_income.analytics import (
     BondAnalyticsResultV1,
@@ -149,6 +152,14 @@ def _at_version(value: object, version: str) -> object:
     return value
 
 
+# Hashes of results recomputed from floats are pinned on Linux, where they were checked
+# against a clean 0.26.0 run: the C maths library differs between operating systems in
+# the last bit (Windows gives other result hashes for the same inputs). Elsewhere the
+# results are checked for schema, hash consistency and a byte-exact round trip; the
+# frozen fixtures are platform-independent.
+_PINNED_PLATFORM = sys.platform.startswith("linux")
+
+
 def _pin_version(monkeypatch: pytest.MonkeyPatch, version: str) -> None:
     monkeypatch.setattr(portfolio, "__version__", version)
     monkeypatch.setattr(local_risk, "__version__", version)
@@ -178,6 +189,10 @@ def test_bond_only_portfolio_results_keep_their_0_26_v2_hashes(
     for name, result in books.items():
         data = portfolio_result_to_json(result)
         assert result.schema_version == "rub-portfolio-risk-result.v2", name
+        assert verify_portfolio_result(result), name
+        assert portfolio_result_to_json(portfolio_result_from_json(data)) == data, name
+        if not _PINNED_PLATFORM:
+            continue
         assert (result.job_id, result.result_sha256, hashlib.sha256(data).hexdigest()) == (
             pinned[name]
         ), name
@@ -189,6 +204,11 @@ def test_portfolio_v3_result_is_pinned(monkeypatch: pytest.MonkeyPatch) -> None:
     _pin_version(monkeypatch, "0.27.0")
     result = pinned_v3_result()
     assert result.schema_version == "rub-portfolio-risk-result.v3"
+    assert verify_portfolio_result_v3(result)
+    data = portfolio_result_to_json(result)
+    assert portfolio_result_to_json(portfolio_result_from_json(data)) == data
+    if not _PINNED_PLATFORM:
+        return
     assert (result.job_id, result.result_sha256) == (
         PINNED["portfolio_v3_job_id"],
         PINNED["portfolio_v3_result"],

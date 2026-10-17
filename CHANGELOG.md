@@ -5,7 +5,9 @@
 Portfolio integration of packages 2, 4, 5, 6, 7 and 8. A book with any derivative
 position returns `rub-portfolio-risk-result.v3`; a bond-only book still returns v2 with
 the bytes, `job_id` and hashes of 0.26.0 (pinned, and checked against a clean 0.26.0
-checkout on Python 3.11 and 3.13). See `docs/portfolio-v3.md`.
+checkout on Python 3.11 and 3.13 on Linux; on Windows the C maths library changes the
+last bit, so there the tests check schema, hash consistency and a byte-exact round trip).
+See `docs/portfolio-v3.md`.
 
 ### Added
 
