@@ -22,7 +22,9 @@ unless stated. New in 0.3.0 is marked **(new)**; changed behaviour is marked **(
 | `generate_schedule(start, end, convention) -> tuple[date, ...]` | Adjusted payment dates in `(start, end]`, no adjusted-maturity stub. Raises if `end <= start` or adjusted dates collide. |
 | `YieldConvention(compounding=ANNUAL, day_count=ACT_365_FIXED)` | Rejects `CONTINUOUS`. `.identifier` e.g. `yield:annual:ACT/365F`, `.to_dict()`. |
 | `ZSpreadConvention(compounding=ANNUAL, day_count=ACT_365_FIXED)` | `.identifier` e.g. `zspread:annual:ACT/365F`, `.to_dict()`. |
-| `CurveConvention(time_day_count=ACT_365_FIXED, interpolation="log-linear-df", extrapolation="flat-forward", fixed_leg_schedule=None, fixed_leg_day_count=ACT_365_FIXED)` | `.identifier`. Only the listed interpolation/extrapolation are accepted. |
+| `CurveConvention(time_day_count=ACT_365_FIXED, interpolation="log-linear-df", extrapolation="flat-forward", fixed_leg_schedule=None, fixed_leg_day_count=ACT_365_FIXED, ois_swap=None)` | `.identifier`. Only the listed interpolation/extrapolation are accepted. `ois_swap` (0.22.0) reads quotes as spot-starting swaps; the fixed-leg fields must then stay at their defaults. While `None` it is left out of `.identifier`, canonical bytes and `to_dict`, so existing identities are unchanged. |
+| `OisSwapConvention(calendar, spot_lag_business_days=1, payment_lag_business_days=1, business_day_convention=MODIFIED_FOLLOWING, single_period_max_months=12, frequency_months=12, stub="short_initial", fixed_day_count=ACT_ACT_ISDA, float_day_count=ACT_ACT_ISDA, float_index="RUB-RUONIA-OIS-COMPOUND")` (0.22.0) | MOEX OIS RUONIA quote convention. `.periods(effective, unadjusted_end, end) -> tuple[OisSwapPeriod, ...]`, `.float_amount_scale(start, end)` (`Act / d × float DCF`, NFA 8.4(б)), `.identifier`. Raises for negative lags, non-positive months, other stubs or indices. |
+| `OisSwapPeriod(start, end, payment)` (0.22.0) | One accrual period `[start, end)` paid on `payment`. |
 
 All convention objects are frozen and hashable.
 
@@ -46,11 +48,14 @@ All convention objects are frozen and hashable.
   - `.zero_rate(d, periods_per_year=1)` — int ≥ 1 or `Compounding` (incl. `CONTINUOUS`).
   - `.forward_rate(start, end)` — annual compounding over `τ(start, end)`.
   - `.par_rate(maturity)` / `.par_ois_rate(maturity)`; `.fixed_leg_schedule(maturity)` **(new)**.
-  - `.max_repricing_error_bp(quotes)`.
+  - `.max_repricing_error_bp(quotes)` — uses `.quote_par_rate`.
+  - `.quote_par_rate(quote)` (0.22.0) — `.par_rate(quote.maturity)` for the legacy convention; with `convention.ois_swap` the par rate of the spot-starting swap of the quote's tenor traded on `curve_date`.
+  - `.ois_swap_par_rate(periods)` (0.22.0) — par fixed rate of a swap with these `OisSwapPeriod`s; raises `ValueError` without `convention.ois_swap`.
   - `DiscountCurve.flat(curve_date, continuous_rate, *, convention=None)` — raises for non-finite rate.
 - `OisQuote(tenor, maturity, par_rate)`.
 - `CurveBootstrapRequest(curve_date, quotes, convention=CurveConvention())` **(0.3.0: `convention`)**.
-- `bootstrap_discount_curve(request) -> DiscountCurve` — raises for empty / non-increasing / non-finite quotes, unbracketed forward; `RuntimeError` if repricing > 1e-7 bp.
+- `bootstrap_discount_curve(request) -> DiscountCurve` — raises for empty / non-increasing / non-finite quotes, unbracketed forward; `RuntimeError` if repricing > 1e-7 bp. With `convention.ois_swap` (0.22.0) each quote must be a `D/W/M/Y` tenor whose resolved end is its maturity (`InvalidTerms` otherwise).
+- `ois_quote_periods(trade_date, quote, convention) -> tuple[OisSwapPeriod, ...]` (0.22.0) — periods of the spot-starting swap behind `quote` (tenor resolved with `resolve_tenor`).
 
 ## Yield, duration, spreads (`compatibility`)
 
@@ -181,7 +186,8 @@ Seasoned RUONIA OIS and key-rate swaps; see [swaps](swaps.md).
 | `kbd_zero_rate_bp(params, t)`, `kbd_effective_yield(params, t)` | Continuous zero rate (bp) and effective annual yield (decimal) at `t` years. |
 | `kbd_discount_curve(params, curve_date=None, *, horizon_years=30)` | Materialised `DiscountCurve` (ACT/365F), within 0.005 bp of the formula. |
 | `g_spread_bp(params, bond_effective_yield, tenor_years)` | Bond yield minus KBD yield at an explicit tenor (MOEX: duration), in bp. |
-| `CurveSpec`, `CurveKind`, `CURVE_SPECS`, `get_curve_spec(spec_id)` | Versioned registry; unknown IDs raise `UnknownCurveSpec`. |
+| `CurveSpec`, `CurveKind`, `CURVE_SPECS`, `get_curve_spec(spec_id)` | Versioned registry; unknown IDs raise `UnknownCurveSpec`. (0.22.0) `rub_ruonia_ois_moex_v2` registered; `CurveSpec` gains `float_leg_day_count`, `stub`, `calendars`, `sources` (default empty). |
+| `ois_curve_convention(spec_id, calendar=None) -> CurveConvention` (0.22.0) | The convention of an OIS bootstrap spec: `CurveConvention()` for `rub_ruonia_ois_legacy_v1` (no calendar), the MOEX OIS RUONIA `ois_swap` on the caller's calendar for `rub_ruonia_ois_moex_v2`. `value_portfolio` rejects (`INVALID_TERMS`) an OIS curve whose convention does not match its spec. |
 | `ir_factor(curve_id, bucket)`, `CS_FACTOR`, `fx_factor(ccy)`, `fx_basis_factor(ccy)` | Desk factor keys. |
 | `FactorRisk(factors, first_order, hessian, difference, bump_bp, has_second_order)` | `HessianEntry(i, j, value)` upper triangle; `.first_order_by_factor()`, `.hessian_by_factor()`. |
 | `bond_factor_risk(risk, curve_id, second_order=None)`, `fx_futures_factor_risk(risk, rub_curve_id, foreign_curve_id, second_order=None)` | Convert engine results. |

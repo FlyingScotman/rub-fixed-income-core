@@ -8,8 +8,15 @@ from datetime import date
 from typing import Any, Protocol, SupportsInt, cast
 
 from ._solver import bisect
-from .conventions import Compounding, CurveConvention, generate_schedule
+from .conventions import (
+    Compounding,
+    CurveConvention,
+    OisSwapConvention,
+    OisSwapPeriod,
+    generate_schedule,
+)
 from .dates import annual_schedule
+from .errors import InvalidTerms
 
 
 class _CompoundingLike(Protocol):
@@ -165,6 +172,41 @@ class DiscountCurve:
     def par_ois_rate(self, maturity: date) -> float:
         return self.par_rate(maturity)
 
+    def ois_swap_par_rate(self, periods: Iterable[OisSwapPeriod]) -> float:
+        """Par fixed rate of the swap with these periods under ``convention.ois_swap``.
+
+        ``sum(fixed DCF x DF(pay)) x rate = sum((DF(s) / DF(e) - 1) x scale x DF(pay))``,
+        with the floating ``scale`` of :meth:`OisSwapConvention.float_amount_scale`.
+        """
+        ois = self._require_ois_swap()
+        annuity = 0.0
+        floating = 0.0
+        for period in periods:
+            pay = self.discount_factor(period.payment)
+            annuity += ois.fixed_day_count.year_fraction(period.start, period.end) * pay
+            growth = self.discount_factor(period.start) / self.discount_factor(period.end)
+            floating += (growth - 1.0) * ois.float_amount_scale(period.start, period.end) * pay
+        if annuity <= 0.0:
+            raise ValueError("OIS swap has no fixed-leg annuity")
+        return floating / annuity
+
+    def quote_par_rate(self, quote: OisQuote) -> float:
+        """Model par rate of ``quote`` under this curve's quote convention.
+
+        Legacy convention: :meth:`par_rate` at the quote maturity. With
+        ``convention.ois_swap``: the spot-starting swap of the quote's tenor traded on
+        the curve date, whose adjusted end must be the quote maturity.
+        """
+        if self.convention.ois_swap is None:
+            return self.par_rate(quote.maturity)
+        return self.ois_swap_par_rate(ois_quote_periods(self.curve_date, quote, self.convention))
+
+    def _require_ois_swap(self) -> OisSwapConvention:
+        ois = self.convention.ois_swap
+        if ois is None:
+            raise ValueError("curve convention has no ois_swap quote convention")
+        return ois
+
     def zero_rate(self, target: date, periods_per_year: object = 1) -> float:
         """Zero rate from curve date; ``periods_per_year`` is an int or a Compounding.
 
@@ -195,7 +237,7 @@ class DiscountCurve:
         return float((self.discount_factor(start) / self.discount_factor(end)) ** (1.0 / tau) - 1.0)
 
     def max_repricing_error_bp(self, quotes: Iterable[OisQuote]) -> float:
-        errors = [abs(self.par_rate(q.maturity) - q.par_rate) * 10_000.0 for q in quotes]
+        errors = [abs(self.quote_par_rate(q) - q.par_rate) * 10_000.0 for q in quotes]
         return max(errors, default=0.0)
 
 
@@ -206,6 +248,16 @@ class CurveBootstrapRequest:
     convention: CurveConvention = field(default_factory=CurveConvention)
 
     __getstate__ = _fields_only_state
+
+
+def _check_quotes(curve_date: date, ordered: list[OisQuote]) -> None:
+    previous = curve_date
+    for quote in ordered:
+        if not math.isfinite(quote.par_rate):
+            raise ValueError(f"OIS par rate must be finite for {quote.tenor}")
+        if quote.maturity <= previous:
+            raise ValueError("OIS maturities must be unique and increasing")
+        previous = quote.maturity
 
 
 def _dynamic_bracket(
@@ -224,10 +276,94 @@ def _dynamic_bracket(
     raise ValueError("OIS bootstrap root is not bracketed within the supported numerical domain")
 
 
+def ois_quote_periods(
+    trade_date: date, quote: OisQuote, convention: CurveConvention
+) -> tuple[OisSwapPeriod, ...]:
+    """Periods of the spot-starting swap behind ``quote`` under ``convention.ois_swap``.
+
+    The tenor resolves with :func:`rub_fixed_income.tenors.resolve_tenor` (spot lag and
+    business-day convention of the swap convention); its adjusted end must equal
+    ``quote.maturity``. Overnight codes (``ON``, ``TN``, ``SN``) are not swap tenors.
+    """
+    from .tenors import parse_tenor, resolve_tenor  # tenors imports this module
+
+    ois = convention.ois_swap
+    if ois is None:
+        raise ValueError("curve convention has no ois_swap quote convention")
+    if parse_tenor(quote.tenor).unit in ("ON", "TN", "SN"):
+        raise InvalidTerms(f"{quote.tenor} is not a spot-starting OIS tenor")
+    dates = resolve_tenor(
+        trade_date,
+        quote.tenor,
+        ois.calendar,
+        spot_lag_days=ois.spot_lag_business_days,
+        business_day_convention=ois.business_day_convention,
+    )
+    if dates.end_date != quote.maturity:
+        raise InvalidTerms(
+            f"OIS quote {quote.tenor} matures on {quote.maturity.isoformat()}, but the tenor "
+            f"resolves to {dates.end_date.isoformat()}"
+        )
+    return ois.periods(dates.effective_date, dates.unadjusted_end, dates.end_date)
+
+
+# Coupled spot-OIS bootstrap: a quote's last payment (end + payment lag) lies past its
+# node, so solving a later node moves an earlier quote slightly; repeat the sequential
+# solve with the other nodes held until every quote reprices within this tolerance.
+_SPOT_OIS_TOLERANCE_BP = 1e-9
+_SPOT_OIS_MAX_PASSES = 50
+
+
+def _bootstrap_spot_ois(request: CurveBootstrapRequest, ordered: list[OisQuote]) -> DiscountCurve:
+    convention = request.convention
+    legs = [ois_quote_periods(request.curve_date, quote, convention) for quote in ordered]
+    nodes: list[tuple[date, float]] = []
+
+    def solve(index: int, later: tuple[tuple[date, float], ...]) -> tuple[date, float]:
+        quote, periods = ordered[index], legs[index]
+        earlier = tuple(nodes[:index])
+        previous_date, previous_df = earlier[-1] if earlier else (request.curve_date, 1.0)
+        interval = convention.time_day_count.year_fraction(previous_date, quote.maturity)
+
+        def error(forward: float) -> float:
+            exponent = max(-700.0, min(700.0, -forward * interval))
+            node = (quote.maturity, previous_df * math.exp(exponent))
+            candidate = DiscountCurve(
+                request.curve_date, earlier + (node,) + later, convention=convention
+            )
+            return candidate.ois_swap_par_rate(periods) - quote.par_rate
+
+        lower, upper = _dynamic_bracket(error)
+        root = bisect(error, lower, upper, tolerance=1e-14, label="OIS bootstrap").root
+        return quote.maturity, previous_df * math.exp(-root * interval)
+
+    for index in range(len(ordered)):
+        nodes.append(solve(index, ()))
+    for _ in range(_SPOT_OIS_MAX_PASSES):
+        curve = DiscountCurve(request.curve_date, tuple(nodes), convention=convention)
+        if curve.max_repricing_error_bp(ordered) <= _SPOT_OIS_TOLERANCE_BP:
+            return curve
+        for index in range(len(ordered)):
+            nodes[index] = solve(index, tuple(nodes[index + 1 :]))
+    raise RuntimeError("spot-starting OIS bootstrap did not converge")
+
+
 def bootstrap_discount_curve(request: CurveBootstrapRequest) -> DiscountCurve:
+    """Exact par bootstrap of log-linear discount factors on the quote maturities.
+
+    With the legacy convention (``convention.ois_swap is None``) the numbers are those
+    of every release since 0.2.1. With ``ois_swap`` each quote is the spot-starting swap
+    of its tenor on the curve date (spot and payment lags, adjusted periods, stubs).
+    """
     ordered = sorted(request.quotes, key=lambda item: item.maturity)
     if not ordered:
         raise ValueError("at least one OIS quote is required")
+    if request.convention.ois_swap is not None:
+        _check_quotes(request.curve_date, ordered)
+        curve = _bootstrap_spot_ois(request, ordered)
+        if curve.max_repricing_error_bp(ordered) > 1e-7:
+            raise RuntimeError("bootstrapped OIS curve failed exact repricing")
+        return curve
     nodes: list[tuple[date, float]] = []
     for quote in ordered:
         if not math.isfinite(quote.par_rate):

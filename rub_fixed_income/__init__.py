@@ -96,6 +96,8 @@ from .conventions import (
     Compounding,
     CurveConvention,
     DayCount,
+    OisSwapConvention,
+    OisSwapPeriod,
     ScheduleConvention,
     SettlementConvention,
     YieldConvention,
@@ -110,9 +112,16 @@ from .curve_specs import (
     CurveKind,
     CurveSpec,
     get_curve_spec,
+    ois_curve_convention,
 )
 from .dates import BusinessCalendar
-from .discount import CurveBootstrapRequest, DiscountCurve, OisQuote, bootstrap_discount_curve
+from .discount import (
+    CurveBootstrapRequest,
+    DiscountCurve,
+    OisQuote,
+    bootstrap_discount_curve,
+    ois_quote_periods,
+)
 from .domain import (
     AccountingCategory,
     AccrualBasis,
@@ -467,6 +476,8 @@ __all__ = [
     "Offer",
     "OfferKind",
     "OisQuote",
+    "OisSwapConvention",
+    "OisSwapPeriod",
     "PortfolioCoverage",
     "PortfolioHorizonResult",
     "PortfolioRiskResult",
@@ -564,6 +575,8 @@ __all__ = [
     "kbd_zero_rate_bp",
     "key_rate_weights",
     "lookup_trade_metric",
+    "ois_curve_convention",
+    "ois_quote_periods",
     "ois_quotes",
     "parse_tenor",
     "portfolio_result_from_json",

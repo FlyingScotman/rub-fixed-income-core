@@ -84,6 +84,9 @@ from the curve date (default, unchanged numbers); or a `ScheduleConvention` → 
 stub-free `generate_schedule`. Sequential: each new node's DF is solved via a constant
 continuous forward from the previous node; result must reprice all quotes within 1e-7 bp.
 
+With `CurveConvention(ois_swap=...)` the quotes are spot-starting swaps instead; see
+[RUONIA OIS, exchange specification](#ruonia-ois-exchange-specification-rub_ruonia_ois_moex_v2).
+
 ## Yield
 
 `solve_nominal_annual_yield`: `P_dirty = Σ CF_i / (1 + y/m)^(m·t_i)`, `t_i` from settlement.
@@ -238,9 +241,70 @@ long bond.
   - `TN` runs from T+1 to T+2;
   - `SN` runs from spot to the next business day.
 
-KEYRATE swaps resolve their dates through it, unchanged. RUONIA OIS quotes still enter
-the bootstrap as maturities (`ois_quotes` builds them). The bootstrap has no spot or
-payment lag until the exchange specification is confirmed (BACKLOG #37).
+KEYRATE swaps resolve their dates through it, unchanged. RUONIA OIS quotes enter the
+bootstrap as maturities (`ois_quotes` builds them). The legacy convention has no spot or
+payment lag; `rub_ruonia_ois_moex_v2` (below) resolves each quote's tenor again and
+checks it against the maturity.
+
+## RUONIA OIS, exchange specification (`rub_ruonia_ois_moex_v2`)
+
+`ois_curve_convention("rub_ruonia_ois_moex_v2", calendar)` gives
+`CurveConvention(ois_swap=OisSwapConvention(calendar))`. Each quote is the par fixed rate
+of the MOEX standard OIS RUONIA traded on the curve date `T`.
+
+**Sources** (retrieved 2026-10-17; URLs and SHA-256 in
+[`docs/sources/ruonia_ois_moex_v2/README.md`](sources/ruonia_ois_moex_v2/README.md); the
+documents are not redistributed):
+
+1. MOEX, «Методика формирования ценовых кривых СПФИ», version of 25 December 2024,
+   <https://www.moex.com/ru/documents/27002>. Clause (2) lists the RUB-OIS-RUONIA tenors
+   (1W 2W 1M 2M 3M 6M 9M 1Y 2Y…10Y, 17 in all); Appendix 1 «Описание спецификаций»,
+   column «OIS RUONIA», states the swap terms quoted below. The document calls itself
+   informational («носит ознакомительный характер»).
+2. NFA (СРО НФА), «Изменения № 1 в Стандартные условия срочных сделок на процентные ставки
+   и сделок свопцион 2011 г.», published 17 August 2021, clause 8.4(б)
+   «RUB-RUONIA-OIS-COMPOUND» (the index formula), and the 2011 Standard Terms themselves:
+   2.2 (interest periods: start inclusive, end exclusive), 7.2 and 7.3(а) (fixed and
+   floating amounts = notional × rate × day-count fraction), 7.4(е) (Фактическое/
+   Фактическое = Act/Act ISDA), 7.8(д) added by the 2021 amendments (a lookback applies
+   only if the parties agree one).
+
+| Term (MOEX Appendix 1, OIS RUONIA) | Text | Core |
+| --- | --- | --- |
+| Дата сделки / Начало | T+0 / Дата сделки + TOM | `spot_lag_business_days=1` |
+| Окончание | Начало + Срок | `resolve_tenor` from spot |
+| Конвенция (начало, окончание, периоды) | MODFOL | `MODIFIED_FOLLOWING` on start, end and roll dates |
+| Календарь рабочих дней | SPFI, MOSCOW, RUONIA | one caller-built joint `BusinessCalendar` |
+| Процентный период (fixed and floating) | ≤1Y – в конце срока; >1Y – ежегодно | one period up to 12 months, else 12M periods |
+| Конвенция Stub | Short Initial | roll back from the unadjusted end; stub first |
+| Конвенция дней (fixed and floating) | Act/Act (ISDA) | `DayCount.ACT_ACT_ISDA` |
+| Смещение для Даты платежа (both legs) | +1B | payment = adjusted period end + 1 business day |
+| Индекс ставки | RUONIA-OIS-COMPOUND | NFA 8.4(б) formula below |
+| Смещение фиксинга / Сдвиг (Lookback/Shift) | 0B / не указан | none |
+| Спред, Доп. платеж, Ставка первого периода | не указан | none |
+
+**Par rate.** Periods `[s_i, e_i)` paid on `p_i`:
+`K · Σ α_i · DF(p_i) = Σ (DF(s_i)/DF(e_i) − 1) · (Act_i / d_i) · β_i · DF(p_i)`, with `α_i`,
+`β_i` the Act/Act ISDA fractions of the fixed and floating periods, `d_i` the calendar days
+of the period and `Act_i` = 366 if any day of `[s_i, e_i)` falls in a leap year, else 365.
+This is NFA 8.4(б): the index is `(Π(1 + RUONIA_i · n_i / Act) − 1) · Act / d`, and the
+compounded overnight growth over a period is `DF(s)/DF(e)` on a single curve. Inside one
+calendar year `(Act/d) · β = 1`; across a leap-year boundary it is not (for example
+1.00219 for 19.10.2028–19.10.2029). The 0.0001 % rounding of the index applies to settled
+fixings, not to projections.
+
+**Bootstrap.** Nodes stay at the quote maturities (log-linear DF, flat-forward
+extrapolation, ACT/365F curve time, as the legacy spec). A quote's last payment is a
+business day after its node, so the sequential solve is repeated with the other nodes
+held until every quote reprices within 1e-9 bp (then the usual 1e-7 bp check).
+
+**Not covered by the texts above** (not implemented as conventions): the NCC
+specification «Спецификация внебиржевых договоров «Процентный своп»», which governs the
+cleared contracts, was not reachable (NCC hosts refused by the build proxy); its
+RUONIA-OIS-COMPOUND formula is assumed to be the NFA one only through the shared index
+name. The joint SPFI/MOSCOW/RUONIA holiday list is the caller's. Live RUB-OIS-RUONIA
+values (`/iss/sdfi/curves/RUB-OIS-RUONIA`) are for ISS subscribers only, so the tests use
+synthetic quotes.
 
 ## FX forwards, swaps and value dates (package 4)
 

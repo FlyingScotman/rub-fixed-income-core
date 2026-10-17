@@ -144,6 +144,10 @@ def test_spec_conventions_agree_with_the_registry() -> None:
     assert (KRS.float_leg.frequency_months, KRS.fixed_leg.single_period_up_to_months) == (3, 12)
     assert KRS.rate_day_count is None
     with pytest.raises(UnknownCurveSpec):
+        swap_convention("rub_ruonia_ois_moex_v3")
+    # The exchange spec is registered for the bootstrap, but its swap side (NFA
+    # RUB-RUONIA-OIS-COMPOUND with the leap-year Act rule) is not modelled by swaps yet.
+    with pytest.raises(UnsupportedProduct):
         swap_convention("rub_ruonia_ois_moex_v2")
     with pytest.raises(UnsupportedProduct):
         swap_convention("rub_ofz_kbd_v1")

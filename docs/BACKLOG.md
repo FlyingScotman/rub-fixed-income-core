@@ -177,7 +177,7 @@ other repositories and must be changed there, not in this core.
     - **Coverage.** 18 bonds on the 2026-10-15 EOD (`tests/test_moex_eod_goldens.py`).
       The backend adapter must choose the leg type by board: `FixedCouponLeg` for OFZ,
       `RateAccrualCouponLeg` with the bondization `valueprc` for corporates.
-37. **RUONIA OIS exchange spec (`rub_ruonia_ois_moex_v2`, audit F08).**
+37. *(done in 0.22.0 from the MOEX methodology and NFA terms; follow-ups #59–#61)* **RUONIA OIS exchange spec (`rub_ruonia_ois_moex_v2`, audit F08).**
     - **What is known.** Only a summary survives in this checkout: TOM start, modified
       following, ACT/ACT with a stub, +1 business-day payment lag. The fixed-leg
       frequency, float compounding (lookback or lockout) and the stub side are not stated.
@@ -282,4 +282,23 @@ other repositories and must be changed there, not in this core.
     stubs, amortizing or accreting notionals, compounded spreads, caps and floors.
 58. **Seasoned-swap golden.** No public golden exists; reconcile against a bank system
     (QR / Calypso) on frozen inputs when the desk can share one (with #10).
+
+## MOEX RUONIA OIS spec — 0.22.0
+
+59. **NCC contract specification.** NCC's «Спецификация внебиржевых договоров
+    «Процентный своп»» governs cleared contracts; `nationalclearingcentre.ru` and
+    `nkcbank.ru` are refused by the proxy. Core uses NFA's `RUB-RUONIA-OIS-COMPOUND`
+    (`Act` = 366 if any day is in a leap year) on the strength of the index name. If NCC
+    annualises differently, only periods crossing a leap-year boundary change (factor
+    1.00219 for 19.10.2028–19.10.2029).
+60. **Live par repricing of v2.** ISS publishes `/iss/sdfi/curves/RUB-OIS-RUONIA`, but its
+    values are for subscribers only, and the hub's ratescalcs snapshot is not in this
+    checkout. With either, add a raw fixture and test exact par repricing of the 17
+    tenors; compare with `RUB-DSC-CSARUB` for MOEX's own curve construction. The backend
+    builds the joint SPFI / MOSCOW / RUONIA calendar from official holiday lists.
+61. **The swap side of v2.** `swaps.swap_convention("rub_ruonia_ois_moex_v2")` raises
+    `UnsupportedProduct`: the swap float leg does not yet apply the NFA leap-year `Act`
+    rule. Build seasoned v2 legs from `OisSwapConvention.periods` and
+    `float_amount_scale`, then derive the convention. v2 bootstraps cost about four times
+    the legacy one (coupled refinement passes; see #12).
 

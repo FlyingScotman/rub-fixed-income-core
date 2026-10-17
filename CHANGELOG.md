@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.22.0 — the MOEX RUONIA OIS spec
+
+Roadmap item 0.5, audit F08, BACKLOG #37. The legacy spec `rub_ruonia_ois_legacy_v1`, the
+default bootstrap, every curve identity, number and pinned hash are unchanged.
+
+- **`rub_ruonia_ois_moex_v2`** is registered from primary texts retrieved on 2026-10-17
+  (sources and SHA-256 in `docs/sources/ruonia_ois_moex_v2/README.md`; the documents are
+  not stored):
+  - MOEX «Методика формирования ценовых кривых СПФИ» (25 December 2024), Appendix 1,
+    column "OIS RUONIA" (https://www.moex.com/ru/documents/27002);
+  - NFA amendments No. 1 (17 August 2021) to the 2011 interest-rate standard terms,
+    8.4(б), `RUB-RUONIA-OIS-COMPOUND`, with the 2011 terms 2.2, 7.2–7.3 and 7.4(е).
+
+  Each quote is the par rate of the standard swap traded on the curve date: start TOM,
+  end start + tenor; modified following on the caller's joint SPFI / MOSCOW / RUONIA
+  calendar; a single period up to 1Y, annual periods beyond, short initial stub;
+  Act/Act ISDA on both legs, both paid one business day after each period end; floating
+  leg compounded RUONIA with no fixing offset or lookback, annualised by NFA's `Act / d`
+  (`Act` = 366 if any day of the period falls in a leap year).
+- **`CurveConvention(ois_swap=OisSwapConvention(calendar, ...))`**: an optional quote
+  convention for the bootstrap's par-rate leg (spot lag, payment lag, business-day
+  convention, single-period limit, frequency, stub, day counts, index).
+  `ois_curve_convention(spec_id, calendar=None)` builds the convention of a registered OIS
+  spec. While `ois_swap` is `None` it is left out of the identifier, canonical bytes and
+  `to_dict` (`OMIT_IF_DEFAULT`).
+- **Bootstrap.** With `ois_swap`, each quote's tenor is resolved with `resolve_tenor` and
+  must land on the quote maturity (`InvalidTerms` otherwise, and for `ON`/`TN`/`SN`).
+  Nodes stay at the maturities; because a quote's last payment falls a business day
+  after its node, the sequential solve repeats until every quote reprices within
+  1e-9 bp. A 17-tenor curve takes about 85 ms, against 20 ms for the legacy bootstrap.
+- New API: `OisSwapConvention`, `OisSwapPeriod`, `ois_quote_periods`,
+  `DiscountCurve.quote_par_rate` (now used by `max_repricing_error_bp`; legacy numbers
+  identical), `DiscountCurve.ois_swap_par_rate`, `ois_curve_convention`, and `CurveSpec`
+  fields `float_leg_day_count`, `stub`, `calendars`, `sources` (empty by default).
+- `value_portfolio` rejects (`INVALID_TERMS`) an OIS curve whose convention does not match
+  its spec.
+- Tests (`tests/test_ruonia_ois_moex_v2.py`, 10): periods, payment lag over a holiday, the
+  short initial stub, MODFOL month ends, the leap-year `Act` rule, exact repricing of the
+  17 MOEX tenors with an independent par computation for 1W and 3Y, unchanged legacy
+  bytes, round trip, rejections, `value_portfolio` on v2 with seeded shocked curves
+  byte-identical to a cold run. `swaps.swap_convention` does not yet derive a swap
+  convention from v2 (BACKLOG #61).
+
 ## 0.21.0 — seasoned interest-rate swaps
 
 Package 2 (core part). New module `rub_fixed_income.swaps` (`docs/swaps.md`); no existing

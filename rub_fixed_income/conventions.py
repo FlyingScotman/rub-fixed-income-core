@@ -17,6 +17,7 @@ from enum import Enum
 from itertools import pairwise
 from typing import Literal
 
+from .canonical import OMIT_IF_DEFAULT
 from .dates import BusinessCalendar, add_months
 
 
@@ -273,6 +274,136 @@ class ZSpreadConvention:
 
 
 @dataclass(frozen=True)
+class OisSwapPeriod:
+    """One accrual period of a spot-starting OIS: ``[start, end)``, paid on ``payment``."""
+
+    start: date
+    end: date
+    payment: date
+
+
+def _ruonia_ois_compound_act(start: date, end: date) -> int:
+    # NFA 8.4(б): "Act" is 365, or 366 if any part of the period falls in a leap year.
+    # The period runs from start (inclusive) to end (exclusive), standard terms 2.2.
+    last_day = end - timedelta(days=1)
+    return 366 if any(isleap(year) for year in range(start.year, last_day.year + 1)) else 365
+
+
+@dataclass(frozen=True)
+class OisSwapConvention:
+    """Quote conventions of a spot-starting overnight-index swap (RUONIA OIS).
+
+    Used by ``CurveConvention(ois_swap=...)``: each ``OisQuote`` is then the par fixed
+    rate of a swap traded on the curve date, resolved from its tenor code. Every value
+    below is stated in the source texts for the MOEX OIS RUONIA standard swap (see
+    ``docs/CONVENTIONS.md``, "RUONIA OIS, exchange specification"):
+
+    - ``spot_lag_business_days``: start = trade date + TOM (1 business day);
+    - end = start + tenor; start, end and period dates adjusted with
+      ``business_day_convention`` (MODFOL) on ``calendar``;
+    - a single period when the tenor is at most ``single_period_max_months`` (1Y),
+      otherwise periods of ``frequency_months`` (annual), rolled back from the
+      unadjusted end so any stub is a short initial one (``stub="short_initial"``);
+    - each period's fixed and floating amounts are paid ``payment_lag_business_days``
+      (+1B) after its adjusted end;
+    - fixed amount = notional x rate x ``fixed_day_count`` (Act/Act ISDA);
+    - floating amount = notional x ``RUB-RUONIA-OIS-COMPOUND`` x ``float_day_count``
+      (Act/Act ISDA), where the index is ``(prod(1 + RUONIA_i n_i / Act) - 1) x Act / d``
+      (NFA, 8.4(б)), with no fixing offset and no lookback or observation shift.
+
+    Under a single curve the compounded overnight growth over a period is
+    ``DF(start) / DF(end)``, so the floating amount is
+    ``(DF(start) / DF(end) - 1) x Act / d x float_day_count(start, end)``. The rounding of
+    the index to 0.0001 % (NFA 8.4(б)) applies to settled fixings and is not applied to
+    projected ones.
+
+    ``calendar`` is the joint business-day calendar the caller builds from official
+    sources (MOEX names SPFI, MOSCOW and RUONIA); core holds no holiday list.
+    """
+
+    calendar: BusinessCalendar
+    spot_lag_business_days: int = 1
+    payment_lag_business_days: int = 1
+    business_day_convention: BusinessDayConvention = BusinessDayConvention.MODIFIED_FOLLOWING
+    single_period_max_months: int = 12
+    frequency_months: int = 12
+    stub: Literal["short_initial"] = "short_initial"
+    fixed_day_count: DayCount = DayCount.ACT_ACT_ISDA
+    float_day_count: DayCount = DayCount.ACT_ACT_ISDA
+    float_index: Literal["RUB-RUONIA-OIS-COMPOUND"] = "RUB-RUONIA-OIS-COMPOUND"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.calendar, BusinessCalendar):
+            raise TypeError("OIS swap calendar must be a BusinessCalendar")
+        for name in ("spot_lag_business_days", "payment_lag_business_days"):
+            lag = getattr(self, name)
+            if isinstance(lag, bool) or not isinstance(lag, int) or lag < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+        for name in ("single_period_max_months", "frequency_months"):
+            months = getattr(self, name)
+            if isinstance(months, bool) or not isinstance(months, int) or months < 1:
+                raise ValueError(f"{name} must be a positive integer")
+        if self.stub != "short_initial":
+            raise ValueError("only a short initial stub is supported")
+        if self.float_index != "RUB-RUONIA-OIS-COMPOUND":
+            raise ValueError("only RUB-RUONIA-OIS-COMPOUND is supported")
+
+    @property
+    def identifier(self) -> str:
+        return (
+            f"ois:T+{self.spot_lag_business_days}:pay+{self.payment_lag_business_days}B:"
+            f"{self.business_day_convention.value}:single<={self.single_period_max_months}M:"
+            f"{self.frequency_months}M:{self.stub}:fixed={self.fixed_day_count.value}:"
+            f"float={self.float_index}:{self.float_day_count.value}:"
+            f"{self.calendar.version}@{calendar_fingerprint(self.calendar)}"
+        )
+
+    def periods(
+        self, effective: date, unadjusted_end: date, end: date
+    ) -> tuple[OisSwapPeriod, ...]:
+        """Accrual periods from ``effective`` to the adjusted ``end``.
+
+        ``unadjusted_end`` (start + tenor before adjustment) anchors the backward roll,
+        so period ends are ``unadjusted_end - k x frequency``, each adjusted.
+        """
+        if end <= effective or unadjusted_end <= effective:
+            raise ValueError("OIS swap end must be after its effective date")
+        boundaries = [effective]
+        if unadjusted_end > add_months(effective, self.single_period_max_months):
+            rolls: list[date] = []
+            count = 1
+            while True:
+                roll = add_months(unadjusted_end, -self.frequency_months * count)
+                if roll <= effective:
+                    break
+                rolls.append(roll)
+                count += 1
+            for roll in reversed(rolls):
+                adjusted = adjust_date(roll, self.business_day_convention, self.calendar)
+                if effective < adjusted < end:
+                    boundaries.append(adjusted)
+        boundaries.append(end)
+        if any(left >= right for left, right in pairwise(boundaries)):
+            raise ValueError("adjusted OIS period dates must be strictly increasing")
+        return tuple(
+            OisSwapPeriod(
+                start,
+                stop,
+                self.calendar.add_business_days(stop, self.payment_lag_business_days),
+            )
+            for start, stop in pairwise(boundaries)
+        )
+
+    def float_amount_scale(self, start: date, end: date) -> float:
+        """Floating amount per unit of compounded growth minus one: ``Act / d x DCF``."""
+        days = (end - start).days
+        if days <= 0:
+            raise ValueError("OIS period must be positive")
+        act = _ruonia_ois_compound_act(start, end)
+        return act / days * self.float_day_count.year_fraction(start, end)
+
+
+@dataclass(frozen=True)
 class CurveConvention:
     """Discount-curve conventions.
 
@@ -282,6 +413,11 @@ class CurveConvention:
     supported and are recorded for provenance. ``fixed_leg_schedule=None`` selects the legacy
     OIS fixed-leg schedule (annual forward roll from curve date, unadjusted, short end stub);
     pass a :class:`ScheduleConvention` for an adjusted stub-free schedule.
+
+    ``ois_swap`` (default ``None``: the legacy par leg above) reads OIS quotes as
+    spot-starting swaps with payment lags and stubs (:class:`OisSwapConvention`); the
+    fixed-leg fields above must then keep their defaults. It is left out of canonical
+    bytes while ``None``, so existing curve identities are unchanged.
     """
 
     time_day_count: DayCount = DayCount.ACT_365_FIXED
@@ -289,12 +425,24 @@ class CurveConvention:
     extrapolation: Literal["flat-forward"] = "flat-forward"
     fixed_leg_schedule: ScheduleConvention | None = None
     fixed_leg_day_count: DayCount = DayCount.ACT_365_FIXED
+    ois_swap: OisSwapConvention | None = field(default=None, metadata=OMIT_IF_DEFAULT)
 
     def __post_init__(self) -> None:
         if self.interpolation != "log-linear-df":
             raise ValueError("only log-linear-df interpolation is supported")
         if self.extrapolation != "flat-forward":
             raise ValueError("only flat-forward extrapolation is supported")
+        if self.ois_swap is not None:
+            if not isinstance(self.ois_swap, OisSwapConvention):
+                raise TypeError("ois_swap must be an OisSwapConvention")
+            if (
+                self.fixed_leg_schedule is not None
+                or self.fixed_leg_day_count is not DayCount.ACT_365_FIXED
+            ):
+                raise ValueError(
+                    "ois_swap sets the fixed leg; leave fixed_leg_schedule and "
+                    "fixed_leg_day_count at their defaults"
+                )
 
     @property
     def identifier(self) -> str:
@@ -303,7 +451,10 @@ class CurveConvention:
             if self.fixed_leg_schedule is None
             else self.fixed_leg_schedule.identifier
         )
-        return (
+        prefix = (
             f"curve:time={self.time_day_count.value}:interp={self.interpolation}:"
-            f"extrap={self.extrapolation}:fixed={fixed}:{self.fixed_leg_day_count.value}"
+            f"extrap={self.extrapolation}:"
         )
+        if self.ois_swap is not None:
+            return prefix + self.ois_swap.identifier
+        return f"{prefix}fixed={fixed}:{self.fixed_leg_day_count.value}"

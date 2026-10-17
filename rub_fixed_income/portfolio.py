@@ -33,11 +33,12 @@ from .compatibility import bond_duration
 from .conventions import (
     ANNUAL,
     DEFAULT_YIELD_CONVENTION,
+    CurveConvention,
     YieldConvention,
     ZSpreadConvention,
     calendar_fingerprint,
 )
-from .curve_specs import CurveKind, get_curve_spec
+from .curve_specs import CurveKind, get_curve_spec, ois_curve_convention
 from .dates import BusinessCalendar
 from .discount import CurveBootstrapRequest, DiscountCurve
 from .domain import (
@@ -356,6 +357,8 @@ def _build_curve(entry: CurveEntry, business_date: date) -> _BuiltCurve:
             return _BuiltCurve(entry, source, None, KBD_MODEL_VERSION, spec.currency)
         raise InvalidTerms(f"curve {entry.curve_id} does not match spec {spec.spec_id}")
     if spec.kind is CurveKind.OIS_BOOTSTRAP:
+        if isinstance(source, (CurveBootstrapRequest, DiscountCurve)):
+            _check_ois_spec_convention(entry.curve_id, spec.spec_id, source.convention)
         if isinstance(source, CurveBootstrapRequest):
             if source.convention.fixed_leg_schedule is not None:
                 raise InvalidTerms(
@@ -378,6 +381,17 @@ def _build_curve(entry: CurveEntry, business_date: date) -> _BuiltCurve:
             return _BuiltCurve(entry, source, None, spec.model_version, spec.currency)
         raise InvalidTerms(f"curve {entry.curve_id} does not match spec {spec.spec_id}")
     raise InvalidTerms(f"spec {spec.spec_id} is not a bond discount curve")
+
+
+def _check_ois_spec_convention(curve_id: str, spec_id: str, convention: CurveConvention) -> None:
+    """A spot-OIS convention belongs to ``rub_ruonia_ois_moex_v2`` and nothing else."""
+    ois = convention.ois_swap
+    if spec_id == "rub_ruonia_ois_legacy_v1":
+        if ois is not None:
+            raise InvalidTerms(f"curve {curve_id}: {spec_id} has no spot-starting OIS convention")
+        return
+    if ois is None or convention != ois_curve_convention(spec_id, ois.calendar):
+        raise InvalidTerms(f"curve {curve_id}: convention does not match spec {spec_id}")
 
 
 def _coverage(expected: Sequence[Position], rejections: list[Rejection]) -> PortfolioCoverage:

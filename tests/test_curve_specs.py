@@ -18,6 +18,7 @@ def test_registered_specs() -> None:
     assert set(CURVE_SPECS) == {
         "rub_ofz_kbd_v1",
         "rub_ruonia_ois_legacy_v1",
+        "rub_ruonia_ois_moex_v2",
         "rub_key_rate_swap_v1",
         "cny_discount_factors_v1",
         "usd_discount_factors_v1",
@@ -28,13 +29,16 @@ def test_registered_specs() -> None:
     assert get_curve_spec("rub_key_rate_swap_v1").model_version == CONVENTION_ID
     legacy = get_curve_spec("rub_ruonia_ois_legacy_v1")
     assert legacy.spot_lag_business_days == 0 and legacy.payment_lag_business_days == 0
+    moex = get_curve_spec("rub_ruonia_ois_moex_v2")
+    assert moex.kind is CurveKind.OIS_BOOTSTRAP
+    assert moex.spot_lag_business_days == 1 and moex.payment_lag_business_days == 1
     for spec_id, spec in CURVE_SPECS.items():
         assert spec.spec_id == spec_id
 
 
 def test_unknown_spec_is_a_typed_rejection() -> None:
-    with pytest.raises(UnknownCurveSpec, match="rub_ruonia_ois_moex_v2"):
-        get_curve_spec("rub_ruonia_ois_moex_v2")
+    with pytest.raises(UnknownCurveSpec, match="rub_ruonia_ois_moex_v3"):
+        get_curve_spec("rub_ruonia_ois_moex_v3")
     with pytest.raises(TypeError):
         CURVE_SPECS["x"] = CURVE_SPECS["rub_ofz_kbd_v1"]  # type: ignore[index]
 
