@@ -4,7 +4,7 @@
 
 Written against core v0.6.0 (HEAD `454a78c`, 16 October 2026), then reconciled with **0.8.1** and updated release by release from 0.9.0.
 
-## Status after 0.7.0–0.19.0
+## Status after 0.7.0–0.20.0
 
 | Release | Delivered | Roadmap item | Remaining |
 |---|---|---|---|
@@ -22,6 +22,7 @@ Written against core v0.6.0 (HEAD `454a78c`, 16 October 2026), then reconciled w
 | 0.17.0 | `RateAccrualCouponLeg`, `RateCouponPeriod`, `AccrualBasis` (rate ACT/365 for MOEX corporates, ACT/360, 30/360); EOD goldens for 18 bonds on 2026-10-15 from ISS: `ACCINT` to the kopeck, yield and duration to maturity, put bonds' `YIELDTOOFFER` and per-trade `EFFECTIVEYIELD` / `GSPREADBP`; BACKLOG #36 resolved | 0.10 (golden bonds completed) | Yield time basis of non-RUB bonds (BACKLOG #38, package 3); the bridge and fixing tests from the untracked `implementation/` folder are still not in this checkout |
 | 0.18.0 | Non-RUB bonds (CNY, USD, EUR) in `value_portfolio` on caller-built foreign discount curves (`*_discount_factors_v1`), RUB valuation at the snapshot FX rate, `FX\|ccy` delta = PV_ccy × FX / 100 with FX × rates and FX × spread cross terms, FX scenarios, typed coverage; yield time basis as an issue term (`Instrument.yield_convention`) with 11 USD MOEX goldens (BACKLOG #38 resolved) | Package 3 (core part) | Bootstrapped foreign curve specs (SOFR / €STR / CNY conventions, BACKLOG #40); non-RUB horizon and local worker (#41); per-curve scenario shocks (#43) |
 | 0.19.0 | `fx_forwards`: outstanding FX forwards and FX swap legs by covered parity, P&L at the value date discounted on RUB; value dates on a joint calendar; implied foreign curve from swap points, outrights or futures; RUB and foreign KRD, basis01, exact FX delta, exact scenarios, 24-factor Hessian with FX × rates cross terms; MOEX `SRATE_CNY_ON` and CNY/RUB value-date goldens; 2k benchmark ≤ 2.5 ms/position | Package 4 (core part); covered-parity acceptance met for the overnight CNY/RUB swap | Portfolio integration (BACKLOG #45); points-fixed RUB risk (#46); per-day SRATE golden (#47); CETS term-swap goldens (#48); USD/EUR pairs, NDFs, end-of-month rule (#49) |
+| 0.20.0 | `callables` (yield to call / worst, price to worst, explicit exercise assumptions, extension risk), perpetuals to an explicit call, `pass_through` (deterministic constant CPR, WAL, CPR sensitivity), `value_assumed_portfolio` / `horizon_assumed_portfolio` with recorded assumptions; MOEX `CALLOPTIONYIELD` / `CALLOPTIONDURATION` and perpetual-yield goldens | Package 9: callables, perpetuals, MBS/ABS (core part) | Native assumption fields in `value_portfolio` (BACKLOG #50); non-par calls in the portfolio (#51); OAS (#52); prepayment models beyond constant CPR and a CPR factor (#53) |
 
 The sections below keep the original 0.6.0 baseline for traceability. Where they conflict with this table, **this table is current**.
 

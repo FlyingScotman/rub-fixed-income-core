@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.20.0 — callables, perpetuals and constant-CPR pass-throughs
+
+Package 9, callables and MBS/ABS (core part). New modules only: `value_portfolio`,
+`horizon_portfolio`, every result contract, serialized instrument and pinned hash are
+unchanged, and callables and perpetuals passed to `value_portfolio` are still rejected.
+
+- **`callables`.** Explicit exercise assumptions with a recorded identifier:
+  `ExerciseAssumption.to_maturity()` (default, today's behaviour), `.to_call(date)`,
+  `.to_worst()`, each with optional explicit `assumed_coupons` for coupon resets. The
+  call schedule is the existing `Offer(kind=CALL, price_pct=...)`.
+  - `call_analysis`, `yield_to_call`, `yield_to_maturity`, `yield_to_worst` (with the
+    worst date) and `price_to_worst`, on the instrument's yield convention;
+  - `extension_risk`: duration to maturity minus duration to call, and the value change
+    if the call is skipped;
+  - `resolve_exercise` and `exercised_instrument`: the plain bond an assumption implies,
+    under the same ID. Coupons must be known up to the redemption date, which must be a
+    coupon date, otherwise `InvalidTerms`; core never extrapolates coupons.
+  - The exercise is fixed for risk: `to_worst` is resolved once at the quoted price and
+    held through bumps, scenarios and the Hessian.
+- **Perpetuals** are priced to a named call (`to_call`); reset coupons are explicit or
+  the call is rejected; `to_maturity` and `to_worst` are `UnsupportedProduct`.
+  `perpetual_current_yield` reproduces MOEX's perpetual yield (coupon rate / price).
+- **OAS is rejected** with a typed reason (`option_adjusted_spread`): core has no
+  short-rate model.
+- **`pass_through`.** Amortizing pass-through MBS/ABS under a deterministic constant CPR
+  (`PassThroughTerms`, `PassThroughPeriod`, `PrepaymentAssumption`): monthly prepayment
+  `1 − (1 − CPR)^(1/payments_per_year)`, scheduled principal scaled by the surviving
+  balance, optional clean-up call; `project_pass_through`, `weighted_average_life`,
+  `pass_through_analytics` (prepayment-adjusted yield, WAL, durations), `cpr_sensitivity`
+  (PV and WAL per 1 pp CPR at a held Z-spread), `pass_through_instrument`.
+- **`assumed_portfolio`.** `value_assumed_portfolio` and `horizon_assumed_portfolio`
+  value a book whose callables, perpetuals and pass-throughs carry assumptions
+  (`AssumptionPolicy`, `InstrumentAssumption`) through the unchanged portfolio
+  functions. `AssumedPortfolioResult` records each `AssumptionUse` (identifier, resolved
+  date, WAL, hashes of the given and valued terms), coverage over all positions and its
+  own hash (`verify_assumed_result`). New rejection code `MISSING_ASSUMPTION`
+  (`MissingAssumption`). Only par calls are accepted on this path.
+- **MOEX findings and goldens** (`tests/test_moex_call_goldens.py`, fixtures in
+  `tests/fixtures/moex_calls/`, 2026-10-15):
+  - of 156 TQCB call bonds, 7 carry `CALLOPTIONDATE`; for each traded one
+    `YIELDATWAP == CALLOPTIONYIELD` and `DURATION == CALLOPTIONDURATION`. MOEX yields to
+    the call once the call date is set, to maturity otherwise;
+  - RU000A1087A7 and the ABS RU000A10AST0 match `CALLOPTIONYIELD`, `YIELDCLOSE` and
+    `CALLOPTIONDURATION` within 0.5 bp and a day, directly and through
+    `value_assumed_portfolio`; RU000A10B7W1 to maturity still matches;
+  - perpetual yields of RU000A0ZZE87 and RU000A1034P7 (MOEX publishes no duration).
+  No MBS golden: ISS does not publish the CPR behind issuers' projected amortizations.
+- Benchmark (`benchmarks/assumptions_bench.py`, 2k positions on the KBD, half callables
+  to worst, a quarter perpetuals, a quarter 5-year monthly pass-throughs at 15 % CPR):
+  1.2 ms per position to prepare, 5.2 ms first order, 13.9 ms with the Hessian.
+- Docs: `docs/callables.md`, sections in `docs/API.md`, `docs/CONVENTIONS.md`,
+  `docs/risk.md`.
+
 ## 0.19.0 — OTC FX forwards and FX swaps
 
 Package 4 (core part) and BACKLOG #34. New module `rub_fixed_income.fx_forwards`; FX

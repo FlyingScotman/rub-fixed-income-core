@@ -181,3 +181,14 @@ value is `FX · PV_ccy`, the FX factor is added analytically:
 `FX delta = PV_ccy · FX / 100`, cross terms `dV/dx_i / 100`, no FX gamma (see
 `CONVENTIONS.md`). The tests check this against an independent USD-only engine converted
 afterwards and against central differences of exact rates-and-FX scenarios.
+
+## Callables, perpetuals and pass-throughs (package 9b)
+
+Risk of a callable or perpetual is the risk of the **exercised bond** under an explicit
+assumption (`docs/callables.md`): `to_worst` resolves the date at the base price and the
+date is then held through every bump, scenario and the Hessian (no switching, no option
+value; OAS is rejected). A pass-through's rate risk holds its CPR fixed; CPR risk is the
+separate `cpr_sensitivity` (central difference per 1 pp of CPR, forward at CPR below the
+bump) and is not a desk factor. Extension risk is reported by `extension_risk`
+(duration to maturity minus duration to the call, and the value change if the call is
+skipped at the yield to call).

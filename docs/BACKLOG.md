@@ -241,3 +241,27 @@ other repositories and must be changed there, not in this core.
 49. **USD/RUB, EUR/RUB, NDFs, end-of-month rule.** Spot lag and USD calendar from
     confirmations (OTC only since 2024); NDF fixing source and lag, and freezing a
     published fixing; the end-of-month rule for FX tenors.
+
+## Callables, perpetuals, pass-throughs — 0.20.0
+
+50. **Native exercise assumptions in `value_portfolio`.** With `OMIT_IF_DEFAULT` the
+    assumption can live in the portfolio itself: optional per-instrument assumptions on
+    `ValuationPolicy`, `PositionValuation.exercise_assumption`, a `"call"` value of
+    `horizon` (and `local_risk`'s `"issuer_call"` label), all omitted at their defaults.
+    Today `value_assumed_portfolio` wraps the portfolio, and an exercised bond reads
+    `horizon = "maturity"` with `horizon_date` = the call date.
+51. **Non-par calls in the portfolio.** `exercised_instrument` rejects calls away from
+    100 % (redemptions must sum to the face); redeem at a price as offers already do.
+52. **OAS / option value.** Needs a stated short-rate model (e.g. Hull-White on the KBD
+    or OIS curve) and a lattice; until then rejected. `to_worst` does not switch the
+    exercise date under bumps (yield-to-worst risk, by design).
+53. **Prepayment models and goldens.** Rate-dependent or seasoned prepayment (PSA-style)
+    beyond constant CPR, a `CPR` desk factor in the result contract, a yield convention
+    on `PassThroughTerms`, and DOM.RF mortgage-bond goldens (ISS does not publish the
+    CPR behind projected amortizations; SFO TB-11 coupons imply a schedule ISS lacks).
+54. *(downstream)* **Adapter guidance for calls.** A MOEX call is a bondization `offers`
+    row with a real date; its `price` is % of the initial face. An ABS may list the call
+    redemption as an amortization on the call date and zero at legal maturity: the
+    adapter moves the remaining face to legal maturity and adds the call. Coupons after
+    the call are often unset: omit them (to-maturity is then rejected) or pass resets.
+

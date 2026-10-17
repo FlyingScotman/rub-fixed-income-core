@@ -226,3 +226,37 @@ quote and non-RUB bonds in `horizon_portfolio` are `UNSUPPORTED_PRODUCT`. All ne
 are omitted from the canonical JSON while at their defaults (`canonical.OMIT_IF_DEFAULT`),
 so RUB-only results, policies, scenarios and instruments keep their bytes and hashes.
 See `CONVENTIONS.md` (Non-RUB bonds and FX) and `risk.md`.
+
+## Callables, perpetuals and pass-throughs (package 9b)
+
+Details and formulas: [callables.md](callables.md).
+
+| Name | Description |
+| --- | --- |
+| `ExerciseAssumption(kind, call_date=None, assumed_coupons=())`; `.to_maturity()`, `.to_call(date, assumed_coupons=())`, `.to_worst(assumed_coupons=())`, `.identifier` | Explicit exercise assumption; `assumed_coupons` are reset coupons after the known periods. `"option_adjusted"` raises `UnsupportedProduct`. |
+| `call_schedule(instrument)` | The `OfferKind.CALL` offers, by date (`price_pct` of the face outstanding). |
+| `redemption_scenarios(instrument, settlement, *, assumed_coupons=())` | `RedemptionScenario` per call after settlement and maturity, with their `Cashflow`s; raises `InvalidTerms` when coupons to a date are unknown, have a gap or the date is mid-period. |
+| `call_analysis(instrument, settlement, dirty_price_rub, *, assumed_coupons=())` | `CallAnalysis`: `ScenarioYield` per scenario (effective yield on the instrument's `yield_convention`, Macaulay and modified duration, `yield_convention` identifier), `yield_to_maturity`, `worst`. |
+| `yield_to_call(..., call_date)`, `yield_to_maturity(...)`, `yield_to_worst(...)` | One `ScenarioYield`. Perpetuals: no maturity, no worst (`UnsupportedProduct`). |
+| `price_to_worst(instrument, settlement, effective_yield, *, assumed_coupons=())` | `PriceToWorst`: lowest dirty price over the scenarios at the yield, accrued, clean %, the date. Inverse of `yield_to_worst`. |
+| `extension_risk(instrument, settlement, dirty_price_rub, call_date, ...)` | `ExtensionRisk`: yields and durations to the call and to maturity, `duration_extension_years`, `pv_change_if_extended_rub`. |
+| `resolve_exercise(instrument, settlement, assumption, *, dirty_price_rub=None)` | `ResolvedExercise` (exercise, date, price, `identifier`); `to_worst` needs the price. |
+| `exercised_instrument(instrument, resolved)` | `ExercisedBond(instrument, resolved, source_sha256)`: the deterministic fixed bond; par calls only (`UnsupportedProduct` otherwise). |
+| `perpetual_current_yield(coupon_rate, clean_price_pct)` | MOEX's published perpetual yield (coupon over clean price). |
+| `option_adjusted_spread(...)` | Always raises `UnsupportedProduct` (no short-rate model). |
+| `PassThroughTerms(instrument_id, currency, original_face, current_face, coupon_rate, accrual_basis, periods, payments_per_year, calendar_id, settlement_lag_days=1, cleanup_call_fraction=None, isin=None, issuer_id=None)`, `PassThroughPeriod(accrual_start, accrual_end, payment_date, scheduled_principal=0.0)` | Pool terms from the current state; periods contiguous; the last pays the remainder. |
+| `PrepaymentAssumption(cpr, exercise_cleanup_call=False)` | Constant annual CPR in `[0, 1)`; `.smm(payments_per_year)`, `.identifier`. |
+| `project_pass_through(terms, assumption)` | `PassThroughProjection`: `rows` (`PassThroughRow`: balances, coupon, scheduled, prepaid, clean-up principal), `cashflows`, `smm`. |
+| `weighted_average_life(cashflows, settlement)` | Principal-weighted ACT/365F years. |
+| `pass_through_analytics(terms, assumption, settlement, *, dirty_price_rub)` | `PassThroughAnalytics`: prepayment-adjusted effective yield, WAL, durations. |
+| `cpr_sensitivity(terms, assumption, settlement, curve, *, spread_bp \| dirty_price_rub, spread_convention=None, cpr_bump=0.01, curve_cache=None)` | `CprSensitivity`: PV and WAL at `CPR`, `CPR ± bump`, `dpv_per_cpr_pct_rub`, `difference` (central / forward). |
+| `pass_through_instrument(terms, assumption)` | The projected flows as a fixed bond (`initial_face` = current face, rate accrual). |
+| `AssumptionPolicy(default_exercise=None, overrides=())`, `InstrumentAssumption(instrument_id, exercise=None, prepayment=None)` | Per-instrument assumptions; `default_exercise` for callables without an override. |
+| `prepare_assumed_book(*, snapshot, instruments, policy, pass_throughs=())` | `AssumedBook(instruments, uses)`: exercised / projected bonds and the `AssumptionUse` records. |
+| `value_assumed_portfolio(*, run_id, as_of, snapshot, instruments, positions, policy, assumptions, pass_throughs=(), scenarios=(), ...)` | `AssumedPortfolioResult`: the unchanged v2 `portfolio`, `assumptions`, merged `coverage`, `status`, totals, `result_sha256`; `verify_assumed_result`. |
+| `horizon_assumed_portfolio(*, snapshot, instruments, positions, policy, assumptions, horizon_date, pass_throughs=(), curve_cache=None)` | `AssumedHorizonResult`: `horizon_portfolio` over the assumed book with merged coverage. |
+| `AssumptionUse` | `instrument_id`, `kind` (callable / perpetual / pass_through), `assumption` identifier, `status`, `code`, `message`, `settlement_date`, `exercise`, `redemption_date`, `wal_years`, `source_sha256`, `valued_sha256`. |
+| `MissingAssumption` (`MISSING_ASSUMPTION`) | A pass-through without a CPR. |
+| `CALL_MODEL_VERSION`, `PREPAYMENT_MODEL_VERSION`, `ASSUMED_BOOK_MODEL_VERSION` | `rub-call-exercise-v1`, `rub-constant-cpr-v1`, `rub-assumed-book-v1`. |
+
+`value_portfolio` itself is unchanged and still rejects callables and perpetuals.

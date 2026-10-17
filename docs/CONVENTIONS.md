@@ -289,6 +289,27 @@ instrument's settlement lag in its calendar). The Z-spread is held.
 - **Put bonds:** `redemption_horizon="confirmed_put"` values to the first confirmed put
   (yield-to-offer), as the desk quotes them.
 
+## Callables, perpetuals and pass-throughs (package 9b)
+
+- **Call schedule:** `Offer(kind=CALL)` dates; `price_pct` is % of the face outstanding
+  just before the date. Discrete dates only.
+- **Exercise assumption** (explicit, recorded): `to_maturity` (default; MOEX's
+  treatment without a set call date), `to_call(date)` (MOEX's `CALLOPTIONYIELD` when the
+  call date is set), `to_worst` (lowest yield at the quoted price; ties to the earliest
+  date; resolved once, then held under risk).
+- **Yields** are effective annual on the instrument's `yield_convention` (default
+  ACT/365F); durations Macaulay and modified at that yield.
+- **Coupons** must be known to the redemption date, which must be a coupon date; reset
+  coupons are explicit `assumed_coupons`, never extrapolated.
+- **Perpetuals** are priced to a named call; MOEX publishes their current yield
+  (coupon rate / clean price).
+- **Pass-throughs:** constant annual CPR, `SMM = 1 - (1 - CPR)^(1/payments_per_year)`;
+  scheduled principal scaled by actual over scheduled balance; prepayment on the balance
+  after scheduled principal; coupon `B * rate * days / year` (unrounded) on the period-start
+  balance; WAL principal-weighted in ACT/365F years from settlement.
+
+Formulas and rejections: [callables.md](callables.md).
+
 ## Financed-bond accumulation
 
 `constant_daily_accumulation_periods(start, horizon, boundaries, r)`: factor per period
