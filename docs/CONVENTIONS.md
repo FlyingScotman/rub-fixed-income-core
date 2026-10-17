@@ -427,6 +427,29 @@ From the Minfin terms (order No. 80n of 22.05.2015) as restated by the Bank of R
 
 Formulas and rejections: [callables.md](callables.md).
 
+## Credit default swaps (package 8)
+
+ISDA CDS Standard Model; details in [cds.md](cds.md). All conventions are fields of
+`CdsConvention` (no defaults); `CdsConvention.isda_standard(calendar)` is the standard
+contract: premiums quarterly on 20 Mar/Jun/Sep/Dec rolled back from the unadjusted
+maturity, adjusted following, ACT/360, last accrual period including the maturity date;
+step-in T+1 calendar day; cash settlement T+3 business days; standard accrual start the
+latest adjusted IMM date on or before step-in (full first coupon, accrued rebated);
+accrual on default as in the Standard Model code (half-day bias); hazard time ACT/365F.
+
+- Hazard piecewise constant; survival and discount factors log-linear in days between
+  the merged node dates; protection from the start of the step-in day to the end of the
+  maturity day; survival for a premium observed the day before its accrual end.
+- Clean upfront (buyer pays at cash settlement, per unit notional)
+  `U = ((1 - R) Prot - c A)/DF_cs + c α_acc`; par spread `(1 - R) Prot / (A - α_acc DF_cs)`.
+- Quoted spread → upfront uses one flat hazard (the market convention); a curve uses
+  one hazard per quote.
+- Recovery is always an input; there is no default recovery.
+- Risk: quotes held and hazard rebootstrapped under every shock; `CS` = every quoted spread
+  +1 bp; IR buckets on the discount curve; recovery01 per 0.01, central.
+- JTD = `side · N · ((1 - R) - c α_acc) - pv`, the bond rule's "value after minus value
+  before" (DEC07): a protection seller loses on default like a bondholder.
+
 ## Financed-bond accumulation
 
 `constant_daily_accumulation_periods(start, horizon, boundaries, r)`: factor per period

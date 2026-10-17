@@ -153,6 +153,36 @@ Seasoned RUONIA OIS and key-rate swaps; see [swaps](swaps.md).
 
 `benchmarks/swap_bench.py --positions 2000` times 1000 OIS and 1000 KRS positions.
 
+## Credit default swaps (package 8)
+
+Module `rub_fixed_income.cds`; see [CDS](cds.md). ISDA Standard Model; money in the
+contract currency, signed by side (a protection seller is long credit). Every convention
+and the recovery are explicit.
+
+| Name | Description |
+| --- | --- |
+| `CdsConvention(calendar, payment_frequency_months, business_day_convention, accrual_day_count, step_in_days, cash_settlement_days, accrual_on_default, hazard_day_count)`, `.isda_standard(calendar)`, `.identifier` | No defaults; `isda_standard` = quarterly IMM, following, ACT/360, step-in T+1, cash T+3 bd, ISDA accrual on default, ACT/365F hazard. ACT/ACT raises `UnsupportedProduct`. |
+| `AccrualOnDefault` | `NONE`, `EXACT`, `ISDA_HALF_DAY_BIAS` (the Standard Model code). |
+| `CdsSide` | `BUYER`, `SELLER`; `.sign` (+1 / −1). |
+| `previous_imm_date(d)`, `standard_cds_maturity(trade, tenor_months, *, roll)` | `roll` `"quarterly"` or `"semiannual"` (ISDA rule from 20 Dec 2015). |
+| `cds_trade_dates(trade, convention, *, maturity_date) -> CdsTradeDates` | Step-in, cash settlement, standard accrual start (latest adjusted IMM date on or before step-in, before maturity). |
+| `cds_premium_schedule(accrual_start, maturity, convention) -> tuple[CdsPremiumPeriod, ...]` | `accrual_start`, exclusive `accrual_end` (last = maturity + 1), `payment_date`, `year_fraction`. |
+| `HazardCurve(curve_date, nodes, day_count=ACT_365_FIXED)`, `.flat(curve_date, h)` | Piecewise-constant hazard, flat beyond the last node; `.survival_probability(d)`, `.log_survival(d)`, `.hazard_rate(d)`, `.node_dates`, `.hazard_rates`. Negative rates raise `InvalidTerms`. |
+| `CdsSpreadQuote(maturity, par_spread)`, `CdsUpfrontQuote(maturity, coupon, upfront)` | Par spread (clean upfront 0); clean upfront per unit notional the buyer pays at cash settlement. |
+| `CdsCurveRequest(valuation_date, quotes, recovery_rate, convention)` | Standard contracts traded on the valuation date; recovery in `[0, 1)`, mandatory. |
+| `bootstrap_hazard_curve(request, discount_curve) -> HazardCurve` | One hazard per quote; reprices every quote within 1e-12; negative hazard raises `InvalidTerms`. |
+| `flat_hazard_from_spread`, `flat_hazard_from_upfront`, `upfront_from_spread`, `spread_from_upfront`, `cds_par_spread` | Quote conversions (keyword `valuation_date`, `maturity_date`, `recovery_rate`, `discount_curve`, `convention`). |
+| `CdsContract(contract_id, reference_entity, currency, side, notional, coupon, accrual_start_date, maturity_date, convention)` | Terms; invalid terms raise `InvalidTerms`. |
+| `value_cds(contract, *, valuation_date, discount_curve, hazard_curve, recovery_rate) -> CdsValuation` | Legs, accrued premium, dirty `pv`, `clean_pv`, `cash_settlement_amount`, `par_spread`, `risky_annuity`, `points_upfront`. Matured contracts raise `InvalidTerms`. |
+| `CdsRiskRequest(contract, valuation_date, discount_curve, credit_curve)` | Discount: `DiscountCurve` or `CurveBootstrapRequest` (dated on the valuation date); credit: a `CdsCurveRequest`. |
+| `CdsRiskEngine(request, curve_cache=ShockedCurveCache(), credit_cache=CdsCurveCache())` | `.valuation`, `.hazard_curve`, `.base_pv`, `.base_id`; `.risk(bump_bp=1, recovery_bump=0.01, difference="central") -> CdsRiskResult` (`buckets`, `dv01`, `parallel_dv01`, `cs01`, `quote_buckets`, `recovery01`); `.reprice(CdsScenario) -> CdsScenarioResult`; `.second_order(bump_bp=1) -> CdsSecondOrderRisk` (11 buckets + `CS`); `.jump_to_default(*, recovery_rate) -> CdsDefaultResult`. Quotes are held under every shock. |
+| `CdsScenario(curve_shifts_bp, spread_shift_bp=0, recovery_shift=0)`, `.parallel(curve_bp=0, *, spread_shift_bp=0, recovery_shift=0)` | Absolute bp shifts; recovery shift as a decimal. |
+| `CdsCurveCache(max_entries=65536)` | Shocked hazard curves shared across a job's positions (about 330 per reference entity with the Hessian). |
+| `cds_factor_risk(risk, discount_curve_id, second_order=None) -> FactorRisk` | `IR\|<curve_id>\|<bucket>` and `CS`; central only. |
+| `CDS_MODEL_VERSION`, `CDS_RISK_MODEL_VERSION`, `CDS_SECOND_ORDER_MODEL_VERSION` | Model versions recorded in results. |
+
+`benchmarks/cds_bench.py --positions 2000` times a synthetic CDS book.
+
 ## Foundations (0.9.0)
 
 | Name | Description |

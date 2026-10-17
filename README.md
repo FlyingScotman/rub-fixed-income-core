@@ -30,6 +30,7 @@ linear guardrail; they do not call the exact solver.
 - [Swaps](docs/swaps.md) — seasoned RUONIA OIS and key-rate swaps
 - [Callables](docs/callables.md) — exercise assumptions, perpetuals and constant-CPR pass-throughs
 - [Linkers](docs/linkers.md) — OFZ-IN indexation, real-curve valuation and the `REAL` factor
+- [CDS](docs/cds.md) — ISDA Standard Model single-name CDS: hazard bootstrap, CS01, JTD
 - [Backlog](docs/BACKLOG.md) — remaining fixes and downstream migrations
 - [Changelog](CHANGELOG.md)
 

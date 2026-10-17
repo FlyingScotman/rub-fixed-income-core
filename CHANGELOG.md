@@ -1,5 +1,75 @@
 # Changelog
 
+## 0.24.0 — single-name CDS
+
+Package 8 (model).
+
+Model only: no licensed CDS data source exists, so quotes, recovery and the discount
+curve come from the backend. Every existing number and pinned hash is unchanged.
+
+- **`rub_fixed_income.cds`: the ISDA CDS Standard Model.**
+  - Hazard rates are piecewise constant. Discount factors and survival are log-linear in
+    days between the merged node dates.
+  - Protection runs from the start of the step-in day to the end of the maturity day.
+  - The premium accrues ACT/360, and the last period includes the maturity date.
+  - Accrual on default follows the Standard Model code (half-day bias). `EXACT` and
+    `NONE` are explicit alternatives.
+- **Conventions.** `CdsConvention` has no defaults. `CdsConvention.isda_standard(calendar)`
+  gives the 2009 standard contract: quarterly IMM, following, ACT/360, step-in T+1,
+  cash settlement T+3 business days, ACT/365F hazard time. Recovery is mandatory
+  everywhere (DEC07).
+- **Dates.**
+  - `previous_imm_date`;
+  - `standard_cds_maturity(..., roll="quarterly" | "semiannual")`, with the ISDA 2015
+    semiannual roll;
+  - `cds_trade_dates`, which gives step-in, cash settlement and the standard full-coupon
+    accrual start;
+  - `cds_premium_schedule`.
+- **Curves and quotes.**
+  - `HazardCurve` and `bootstrap_hazard_curve` from `CdsSpreadQuote` (par spread) and
+    `CdsUpfrontQuote` (standard coupon plus clean upfront), with a stated recovery. Each
+    quote reprices within 1e-12 of notional, and negative hazards are rejected.
+  - Conversions `upfront_from_spread`, `spread_from_upfront`, `flat_hazard_from_spread`,
+    `flat_hazard_from_upfront` and `cds_par_spread`.
+- **Valuation.** `CdsContract` and `value_cds` value an outstanding contract by side.
+  `CdsValuation` holds the legs, accrued premium, dirty and clean PV, cash settlement
+  amount, par spread, risky annuity and points upfront.
+- **Risk.** `CdsRiskEngine` holds the quotes and rebootstraps the hazard curve under
+  every shock. It gives:
+  - IR DV01 on the 11 desk buckets of the discount curve, plus parallel DV01, on the
+    zero-overlay or OIS-quote basis;
+  - CS01, parallel and per quote (desk factor `CS`);
+  - `recovery01` (central, per 0.01);
+  - exact scenarios and a 12-factor central Hessian;
+  - JTD with the bond sign rule: a protection seller loses on default like a long bond,
+    and a buyer gains.
+
+  `cds_factor_risk` maps the results to `IR|curve|bucket` and `CS`. `CdsCurveCache` and
+  `ShockedCurveCache` share shocked curves across a job's positions.
+- **`_solver.illinois`.** A bracketed regula falsi with the `bisect` contract, used by
+  the hazard bootstrap. Under a shock the bracket starts around the unshocked hazards:
+  about 6 leg evaluations per quote, against about 7 from a cold bracket.
+- **External goldens.** These are ISDA Standard Model values published in QuantLib's
+  test suite (`test-suite/creditdefaultswap.cpp`):
+  - 20 Markit upfronts (trade date 21 May 2009, 1Y–10Y, 10 and 1000 bp, recovery
+    20 % and 40 %), reproduced to their ten published digits;
+  - a negative-rate EUR reconciliation record (−16070.7, accrual 1000);
+  - ten accrued-premium results from the ISDA CDS model website.
+- **Tests** (`tests/test_cds.py`, 43):
+  - the exact credit triangle at zero rates, the credit-triangle approximation, the
+    zero-hazard limit;
+  - a par contract has zero clean value, the bootstrap reprices every quote, the round
+    trips;
+  - buyer and seller mirror each other, bump convergence, buckets sum to the totals;
+  - scenarios against risk, gradient against risk, a Taylor check, JTD, identical
+    results with caches, rejections.
+- **Benchmark** (`benchmarks/cds_bench.py`, 2,000 positions on 100 entities, Linux), ms per
+  position: first order 3.9 cold / 2.4 warm on a zero curve, 4.6 / 2.9 on OIS quotes;
+  with the 12×12 Hessian 34 and 40.5, about 288 hazard rebootstraps per entity
+  (BACKLOG #70).
+- **Docs.** `docs/cds.md`; `docs/API.md`,
+  `docs/CONVENTIONS.md` and `docs/risk.md` are updated.
+
 ## 0.23.0 — OFZ-IN inflation linkers
 
 Package 9, OFZ-IN (core part). The indexation rule is Minfin order No. 80n of 22.05.2015

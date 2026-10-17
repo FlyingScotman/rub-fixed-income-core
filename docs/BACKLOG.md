@@ -325,3 +325,26 @@ other repositories and must be changed there, not in this core.
     `IndexedCouponLeg` / `IndexedPrincipalLeg`, base date = `ISSUEDATE`, and give each
     linker a real-curve override (`docs/CONSUMERS.md`).
 
+## CDS — 0.24.0
+
+66. **CDS in `value_portfolio`.** Needs a `ProductType.CDS` and a contract form (or a CDS
+    position list in the job), credit quotes keyed by reference entity in
+    `MarketSnapshot`, a recovery source with no default, the contract currency's discount
+    curve ID, a `CdsCurveCache` per job, coverage codes and result fields (side, points
+    upfront, par spread, `recovery01`, accrued premium). Non-RUB contracts can reuse
+    `fx_translated_factor_risk`; JTD adds up with bond JTD (same sign rule). Until then
+    `value_portfolio` rejects CDS as `UNSUPPORTED_PRODUCT`.
+67. **Credit factor contract.** Recovery sensitivity is reported beside the factors; a
+    desk factor (e.g. `REC|<entity>`) is a contract change. `CS` on a CDS is all of the
+    entity's quoted spreads together; per-tenor credit risk as factors needs a key such
+    as `CS|<entity>|<tenor>`.
+68. **CDS products out of scope:** index CDS (CDX / iTraxx), tranches, options, quanto
+    CDS, recovery term structures, default before step-in and the settlement lag of
+    default payments, the 60-day backstop; ACT/ACT premium day counts.
+69. **CDS golden against a bank system** or Bloomberg CDSW on frozen inputs once a data
+    source exists. Current evidence is the ISDA / Markit values published in QuantLib's
+    test suite; cdsmodel.com was not reachable.
+70. **Credit-curve export / seed.** The cold Hessian costs about 288 hazard rebootstraps
+    per entity (34–40 ms per position). Keeping a `CdsCurveCache` across jobs needs an
+    export / seed API with a repricing check, like `ShockedCurveCache.seed`.
+

@@ -204,3 +204,17 @@ continuous zero rates give `REAL|<curve_id>|<bucket>`, and the own spread over i
 (`tests/test_inflation.py`). CPI is not a bumped factor. Breakeven inflation is not
 modelled: the real curve absorbs it. Nominal `PortfolioScenario` shocks do not move
 linkers; their rows are `UNSUPPORTED_PRODUCT`.
+
+## Credit default swaps (package 8)
+
+`CdsRiskEngine` (`docs/cds.md`) reports in the same vocabulary: `IR|<curve>|<bucket>` on
+the discount curve (zero overlay or OIS quote rebootstrap, as selected by the curve
+input) and `CS` = all quoted spreads of the reference entity +1 bp. Central differences
+by default; the Hessian covers the 11 buckets and `CS` with the same bump (DEC08). Every
+shock holds the CDS quotes and rebootstraps the hazard curve, so IR DV01 is at constant
+spreads. Recovery sensitivity (`recovery01`, per 0.01, quotes held) is reported beside
+the factors, not as one.
+
+JTD follows the bond rule, value after default minus value before (DEC07):
+`side · N · ((1 - R) - c · accrued) - pv`, with the recovery an explicit argument. A
+protection seller (long credit) has negative JTD like a long bond; a buyer positive.
