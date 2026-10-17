@@ -4,7 +4,7 @@
 
 Written against core v0.6.0 (HEAD `454a78c`, 16 October 2026), then reconciled with **0.8.1** and updated release by release from 0.9.0.
 
-## Status after 0.7.0–0.20.0
+## Status after 0.7.0–0.21.0
 
 | Release | Delivered | Roadmap item | Remaining |
 |---|---|---|---|
@@ -23,6 +23,7 @@ Written against core v0.6.0 (HEAD `454a78c`, 16 October 2026), then reconciled w
 | 0.18.0 | Non-RUB bonds (CNY, USD, EUR) in `value_portfolio` on caller-built foreign discount curves (`*_discount_factors_v1`), RUB valuation at the snapshot FX rate, `FX\|ccy` delta = PV_ccy × FX / 100 with FX × rates and FX × spread cross terms, FX scenarios, typed coverage; yield time basis as an issue term (`Instrument.yield_convention`) with 11 USD MOEX goldens (BACKLOG #38 resolved) | Package 3 (core part) | Bootstrapped foreign curve specs (SOFR / €STR / CNY conventions, BACKLOG #40); non-RUB horizon and local worker (#41); per-curve scenario shocks (#43) |
 | 0.19.0 | `fx_forwards`: outstanding FX forwards and FX swap legs by covered parity, P&L at the value date discounted on RUB; value dates on a joint calendar; implied foreign curve from swap points, outrights or futures; RUB and foreign KRD, basis01, exact FX delta, exact scenarios, 24-factor Hessian with FX × rates cross terms; MOEX `SRATE_CNY_ON` and CNY/RUB value-date goldens; 2k benchmark ≤ 2.5 ms/position | Package 4 (core part); covered-parity acceptance met for the overnight CNY/RUB swap | Portfolio integration (BACKLOG #45); points-fixed RUB risk (#46); per-day SRATE golden (#47); CETS term-swap goldens (#48); USD/EUR pairs, NDFs, end-of-month rule (#49) |
 | 0.20.0 | `callables` (yield to call / worst, price to worst, explicit exercise assumptions, extension risk), perpetuals to an explicit call, `pass_through` (deterministic constant CPR, WAL, CPR sensitivity), `value_assumed_portfolio` / `horizon_assumed_portfolio` with recorded assumptions; MOEX `CALLOPTIONYIELD` / `CALLOPTIONDURATION` and perpetual-yield goldens | Package 9: callables, perpetuals, MBS/ABS (core part) | Native assumption fields in `value_portfolio` (BACKLOG #50); non-par calls in the portfolio (#51); OAS (#52); prepayment models beyond constant CPR and a CPR factor (#53) |
+| 0.21.0 | `swaps`: seasoned RUONIA OIS and key-rate swaps; explicit conventions or registered specs; known resets from point-in-time fixings; separate discount and projection curves; bucket DV01 per curve, 11/22-factor Hessian, exact scenarios, carry and rolldown; `IR\|curve\|bucket` factors; par swaps reprice the OIS and KRS quotes, seasoned PVs match an independent reconstruction | Package 2 (core part) | `value_portfolio` integration (BACKLOG #55); key-rate quote-basis risk (#56); confirmation schedules, amortizing notionals (#57); a bank-system golden (#58) |
 
 The sections below keep the original 0.6.0 baseline for traceability. Where they conflict with this table, **this table is current**.
 

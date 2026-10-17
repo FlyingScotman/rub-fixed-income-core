@@ -129,6 +129,25 @@ Money is signed RUB of PV, discounted on the RUB curve from the payment date.
 | `joint_calendar(calendars, *, version)` | Business day only if one in every calendar (FX settlement). |
 | `fx_value_date(trade_date, code, calendar, *, spot_lag_days=None, business_day_convention=MODIFIED_FOLLOWING)`, `fx_swap_value_dates(trade_date, near, far, calendar, ...)`, `FX_VALUE_DATE_CODES` | `TOD` (settlement days only), `TOM`, `SPT`, or a tenor from spot (`spot_lag_days` required). |
 
+## Interest-rate swaps (package 2)
+
+Seasoned RUONIA OIS and key-rate swaps; see [swaps](swaps.md).
+
+| Name | Description |
+| --- | --- |
+| `InterestRateSwap(swap_id, side, notional, fixed_rate, effective_date, termination_date, convention, float_spread=0.0, currency="RUB")` | Terms. `side` is `payer` (pays fixed) or `receiver`; `termination_date` is unadjusted; non-RUB raises `UnsupportedProduct`. `.from_tenor(*, swap_id, side, notional, fixed_rate, trade_date, tenor, calendar, convention, float_spread=0.0)` resolves spot start and end with `resolve_tenor`. |
+| `SwapConvention(index, averaging, fixed_leg, float_leg, rate_day_count, business_day_convention, spot_lag_days, payment_lag_days, spec_id=None)`, `SwapLegSchedule(frequency_months, roll, day_count, single_period_up_to_months=None)` | Every convention explicit. `index` `ruonia` (compounded) or `key_rate` (arithmetic); `roll` `forward`, `backward` or `legacy-annual-forward`. `.identifier`. |
+| `swap_convention(spec_id)` | Convention of `rub_key_rate_swap_v1` or `rub_ruonia_ois_legacy_v1`; other specs raise `UnknownCurveSpec` / `UnsupportedProduct`. |
+| `swap_schedule(swap, calendar) -> SwapSchedule(fixed, floating)` | `SwapPeriod(accrual_start, accrual_end, payment_date, accrual_factor)` per leg. |
+| `SwapRiskRequest(swap, calendar, discount_curve, projection_curve=None, fixings=None)` | Valuation date = discount curve date. Discount: `DiscountCurve` or `CurveBootstrapRequest`; projection: `None` (single curve), `DiscountCurve` / `CurveBootstrapRequest` (RUONIA) or `KeyRateForwardCurve` (key rate); `fixings` a `FixingHistory` of the index, required once a period has started. |
+| `SwapRiskEngine(request, curve_cache=ShockedCurveCache())` | `.valuation() -> SwapValuation` (PV, legs, accrued, clean PV, par rate, annuity, `SwapCashflow`s), `.risk(bump_bp=1, difference="central") -> SwapRiskResult` (`SwapCurveRisk` per curve role with `BucketRisk`s, KRD per notional), `.reprice(SwapScenario) -> SwapScenarioResult`, `.second_order(bump_bp=1) -> SwapSecondOrderRisk` (11 or 22 factors), `.horizon(date) -> SwapHorizonValuation`. |
+| `SwapScenario(discount_shifts_bp, projection_shifts_bp)`, `.parallel(discount_bp=0, projection_bp=0)` | Absolute bp bucket shifts per curve. |
+| `swap_factor_risk(risk, *, discount_curve_id, projection_curve_id=None, second_order=None) -> FactorRisk` | Desk factors `IR\|<curve_id>\|<bucket>`; one ID for a single curve, two distinct IDs otherwise; central only. |
+| `swap_horizon(request, *, horizon_date, curve_cache=None) -> SwapHorizonValuation` | Carry, rolldown, received flows and horizon P&L. |
+| `SWAP_MODEL_VERSION`, `SWAP_SECOND_ORDER_MODEL_VERSION`, `SWAP_HORIZON_MODEL_VERSION` | Model versions recorded in results. |
+
+`benchmarks/swap_bench.py --positions 2000` times 1000 OIS and 1000 KRS positions.
+
 ## Foundations (0.9.0)
 
 | Name | Description |

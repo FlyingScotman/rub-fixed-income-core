@@ -268,6 +268,35 @@ payment lag until the exchange specification is confirmed (BACKLOG #37).
   relative move and is exact (PV is linear in spot), and the Hessian carries FX × rates
   cross terms. An implied foreign curve has zero basis by construction.
 
+## Interest-rate swaps (package 2)
+
+`SwapConvention` holds every swap convention (or `swap_convention(spec_id)` derives it
+from a registered spec); see [swaps](swaps.md).
+
+- **Schedule.** Unadjusted roll dates `backward` from the unadjusted termination date or
+  `forward` from the effective date (month ends clamp), each adjusted with the business-day
+  convention, the termination included; `legacy-annual-forward` is `annual_schedule`.
+  `single_period_up_to_months` gives one period to short swaps (KEYRATE fixed leg up to
+  1Y). Payment = accrual end + payment lag in business days.
+- **RUONIA float**: `N * (prod(1 + r_i * tau_i) * DF_p(c) / DF_p(e) - 1 + spread * alpha)`, `tau_i` the days a fixing applies in `rate_day_count`.
+  Each day takes the latest business-day fixing on or before it (no lookback); fixings
+  observed before the valuation date are known, the rest are the projection curve's
+  compounded overnight forwards from `c` to the accrual end `e`.
+- **Key-rate float**: `N * (calendar-day average + spread) * alpha`; days before the
+  valuation date from the history, later days from the `KeyRateForwardCurve`.
+- **Spread** is added simply over the float accrual factor, not compounded.
+- **Valuation date** = the curves' date; flows paid on or before it are excluded.
+  Accrued = earned and unpaid at the valuation date.
+- **Signs.** Payer pays fixed. DV01 = central difference per curve role, positive for a
+  payer; `krd_years = -dv01 / notional * 1e4`. Key-rate projection shifts move the
+  forward key rate after the current-rate interval by the bucket hats at each day's
+  ACT/ACT ISDA time.
+
+| Spec | Swap convention |
+| --- | --- |
+| `rub_key_rate_swap_v1` | spot 1, MODFOL, ACT/ACT ISDA; fixed 12M backward, single period up to 12M; float 3M backward arithmetic; no payment lag |
+| `rub_ruonia_ois_legacy_v1` | spot 0, unadjusted, ACT/365F; both legs legacy annual; RUONIA compounded ACT/365F; no payment lag |
+
 ## Horizon valuation: carry and rolldown (0.14.0)
 
 Start at settlement `S0` of business date `d0`; horizon at settlement `S1` of `d1` (the

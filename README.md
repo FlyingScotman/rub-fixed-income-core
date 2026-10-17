@@ -26,6 +26,9 @@ linear guardrail; they do not call the exact solver.
 - [API](docs/API.md) — public functions, units, errors
 - [Consumers](docs/CONSUMERS.md) — who uses the core and how it is pinned
 - [FX futures](docs/fx-futures.md) — rate, basis and spot risk of FX futures against RUB
+- [FX forwards and swaps](docs/fx-forwards.md) — OTC FX forwards and FX swap legs by covered parity
+- [Swaps](docs/swaps.md) — seasoned RUONIA OIS and key-rate swaps
+- [Callables](docs/callables.md) — exercise assumptions, perpetuals and constant-CPR pass-throughs
 - [Backlog](docs/BACKLOG.md) — remaining fixes and downstream migrations
 - [Changelog](CHANGELOG.md)
 

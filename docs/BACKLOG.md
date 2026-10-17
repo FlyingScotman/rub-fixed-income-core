@@ -265,3 +265,21 @@ other repositories and must be changed there, not in this core.
     adapter moves the remaining face to legal maturity and adds the call. Coupons after
     the call are often unset: omit them (to-maturity is then rejected) or pass resets.
 
+## Seasoned swaps — 0.21.0
+
+55. **Swaps in `value_portfolio`.** Needs a `SwapInstrument` (`Instrument` is bond-shaped)
+    with the projection curve and fixing IDs on the instrument, not on
+    `ValuationPolicy` (the policy is part of `job_id`); key-rate projection curves in
+    `CurveEntry` (`_build_curve` rejects `KEY_RATE_SWAP` specs today); a rule for KRS
+    curves dated TOM against OIS curves dated the business date (a TOM discount curve
+    from the backend, or values at a date after the curve date); a swap row type and
+    per-curve scenario shifts, i.e. result contract `v3`. `FactorTotal` aggregation and
+    `swap_horizon` already fit.
+56. **Key-rate quote-basis risk.** Today key-rate projection risk shifts the forward key
+    rate. Add shifts of the KRS quotes with recalibration, cached per shift vector, and
+    decide whether a discount shock recalibrates the key-rate curve.
+57. **Swap terms from confirmations.** Explicit period schedules, other front and back
+    stubs, amortizing or accreting notionals, compounded spreads, caps and floors.
+58. **Seasoned-swap golden.** No public golden exists; reconcile against a bank system
+    (QR / Calypso) on frozen inputs when the desk can share one (with #10).
+

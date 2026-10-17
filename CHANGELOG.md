@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.21.0 — seasoned interest-rate swaps
+
+Package 2 (core part). New module `rub_fixed_income.swaps` (`docs/swaps.md`); no existing
+number, serialised form or pinned hash changes. Swaps are not yet in `value_portfolio`
+(BACKLOG #55).
+
+- **Terms.** `InterestRateSwap`: payer (pays fixed) or receiver, constant notional, fixed
+  rate, simple float spread, effective date and unadjusted termination date;
+  `.from_tenor` resolves the dates with `resolve_tenor`. Non-RUB raises
+  `UnsupportedProduct`.
+- **Conventions.** `SwapConvention` and `SwapLegSchedule` make every convention explicit:
+  index and averaging (RUONIA compounded, key rate arithmetic), each leg's frequency,
+  roll (`backward`, `forward`, `legacy-annual-forward`), day count and single period of
+  short swaps, the business-day convention, spot lag and payment lag.
+  `swap_convention(spec_id)` derives it from `rub_key_rate_swap_v1` (the schedule of
+  `price_key_rate_swap`, period by period) and `rub_ruonia_ois_legacy_v1` (the legacy
+  bootstrap's swaps); `swap_schedule` returns both legs' periods.
+- **Known resets** from a point-in-time `FixingHistory`. RUONIA compounds per
+  business-day segment up to the valuation date, then the projection curve's compounded
+  overnight forwards; the key rate averages calendar days, then
+  `KeyRateForwardCurve.arithmetic_average`. A started period without fixings or a
+  RUONIA gap raises `MissingMarketData`; nothing is filled.
+- **Two curves.** A discount curve (`DiscountCurve` or OIS quotes) and a projection
+  curve: `None` (single curve), a separate RUONIA curve, or a `KeyRateForwardCurve`.
+  The valuation date is the curves' date.
+- **`SwapRiskEngine`**: `valuation()` (PV, legs, accrued, clean PV, par rate, annuity,
+  cashflows by source), `risk()` (central bucket DV01 per curve role, KRD per notional,
+  payer DV01 positive), `reprice(SwapScenario)` (exact, split into discount, projection
+  and interaction P&L), `second_order()` (11 or 22 factors; the cross block uses the
+  exact bilinear form) and `horizon(date)` / `swap_horizon` (carry and rolldown).
+  `swap_factor_risk` maps to `IR|<curve_id>|<bucket>`. Key-rate projection risk shifts
+  the forward key rate after the next meeting; a discount shock does not recalibrate
+  the key-rate curve.
+- **Tests** (`tests/test_swaps.py`, 30): par OIS and KRS swaps reprice every quote within
+  `1e-12` of the notional; seasoned OIS (two curves, payment lag, spread, weekend
+  fixings) and KRS (a key-rate change inside the period) match an independent cashflow
+  reconstruction; DV01 signs, bucket sums, bump convergence, Taylor vs exact.
+- **Benchmark** (`benchmarks/swap_bench.py`, 1000 OIS + 1000 KRS, Linux, Python 3.11),
+  ms per position: OIS 1.5 first order, 8.6 / 4.7 with the Hessian cold / warm; KRS 1.9,
+  8.5 / 5.4. CI runs it on Windows next to the portfolio benchmark (informational).
+
 ## 0.20.0 — callables, perpetuals and constant-CPR pass-throughs
 
 Package 9, callables and MBS/ABS (core part). New modules only: `value_portfolio`,
