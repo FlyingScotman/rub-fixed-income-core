@@ -109,6 +109,26 @@ All convention objects are frozen and hashable.
 `FX_FUTURES_SECOND_ORDER_MODEL_VERSION`. Prices are in RUB per `price_quote_units`
 foreign units. Money is signed RUB of variation margin. See [FX futures](fx-futures.md).
 
+## FX forwards and FX swaps (package 4)
+
+Module `rub_fixed_income.fx_forwards`; see [FX forwards and swaps](fx-forwards.md).
+Money is signed RUB of PV, discounted on the RUB curve from the payment date.
+
+| Name | Description |
+| --- | --- |
+| `FxForwardLeg(value_date, notional_foreign, contract_rate, payment_date=None)` | One exchange; notional signed (+ = receive foreign), rate in RUB per `quote_units`. `payment_date` for a cash-settled leg (`None` = deliverable). `.settlement_date`. |
+| `FxForward(trade_id, currency, quote_units, leg)`, `FxSwap(trade_id, currency, quote_units, near, far)` | Outright (also an unsettled spot trade) and swap (opposite-sign legs, far later; `.swap_points`, `.far_leg_forward()`). `.legs`. Invalid terms raise `InvalidTerms`. |
+| `FxForwardRiskRequest(instrument, spot_rate, spot_value_date, rub_curve, foreign_curve, basis_bp, basis_day_count=ACT_365_FIXED)` | `basis_bp` required (0 on an implied foreign curve). Settled legs (before the curve date) raise `InvalidTerms`. |
+| `FxForwardRiskEngine(request, curve_cache=...)` | `.base_pv_rub`, `.base_id`, `.leg_valuations()`, `.risk(bump_bp=1, difference="forward"\|"central") -> FxForwardRiskResult`, `.reprice(FxFuturesScenario) -> FxForwardScenarioResult`, `.second_order(bump_bp=1) -> FxForwardSecondOrderRisk` (24 factors, spot exact). |
+| `FxForwardRiskResult`, `FxForwardBucketRisk(bucket, dv01_rub)`, `FxForwardLegValuation`, `FxForwardScenarioResult`, `FxForwardSecondOrderRisk` | Results; `FX_FORWARD_RISK_MODEL_VERSION`, `FX_FORWARD_SECOND_ORDER_MODEL_VERSION`. |
+| `fx_forward_factor_risk(risk, rub_curve_id, foreign_curve_id, second_order=None) -> FactorRisk` | `IR\|<rub>\|*`, `IR\|<foreign>\|*`, `FXBASIS\|<ccy>`, `FX\|<ccy>`; the sparse Hessian includes FX × rates terms. |
+| `fx_forward_outright(*, spot_rate, spot_value_date, value_date, rub_curve, foreign_curve, basis_bp, basis_day_count=ACT_365_FIXED)`, `fx_forward_basis_bp(*, ..., market_outright, ...)` | Covered-parity outright; basis that reprices a market outright. |
+| `cip_outright(S, start, end, *, rub_rate, foreign_rate, rub_day_count, foreign_day_count)`, `cip_implied_rub_rate(S, F, start, end, *, foreign_rate, ...)`, `cip_implied_foreign_rate(S, F, start, end, *, rub_rate, ...)` | Money-market parity with simple rates; day counts explicit. |
+| `FxSwapPointsQuote(label, near_date, far_date, points)`, `FxOutrightQuote(label, value_date, outright)` | Caller-supplied curve quotes (MOEX CETS swaps, OTC outrights, FX futures prices). |
+| `implied_outrights(spot_rate, spot_value_date, quotes)`, `implied_foreign_curve(*, rub_curve, spot_rate, spot_value_date, quotes, convention=None) -> DiscountCurve` | Outrights chained from the spot; the foreign curve that reprices every quote with zero basis (`FX_IMPLIED_CURVE_MODEL_VERSION`). Must reach the curve date. |
+| `joint_calendar(calendars, *, version)` | Business day only if one in every calendar (FX settlement). |
+| `fx_value_date(trade_date, code, calendar, *, spot_lag_days=None, business_day_convention=MODIFIED_FOLLOWING)`, `fx_swap_value_dates(trade_date, near, far, calendar, ...)`, `FX_VALUE_DATE_CODES` | `TOD` (settlement days only), `TOM`, `SPT`, or a tenor from spot (`spot_lag_days` required). |
+
 ## Foundations (0.9.0)
 
 | Name | Description |

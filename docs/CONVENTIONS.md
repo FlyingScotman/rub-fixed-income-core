@@ -195,7 +195,7 @@ Macaulay duration at that yield).
 ## Desk risk factors (0.11.0)
 
 `IR|<curve_id>|<bucket>` (1 bp at one of the 11 bucket pillars), `CS` (1 bp of own credit or
-OFZ spread), `FX|<ccy>` (1 % against RUB) and `FXBASIS|<ccy>` (1 bp of a futures basis).
+OFZ spread), `FX|<ccy>` (1 % against RUB) and `FXBASIS|<ccy>` (1 bp of an FX futures or forward basis).
 Portfolio results report first order and the sparse upper-triangle Hessian from central
 differences with the same bump (DEC08). Signs: DV01 is PV(+1 bp) − PV(0), negative for a
 long bond.
@@ -241,6 +241,32 @@ long bond.
 KEYRATE swaps resolve their dates through it, unchanged. RUONIA OIS quotes still enter
 the bootstrap as maturities (`ois_quotes` builds them). The bootstrap has no spot or
 payment lag until the exchange specification is confirmed (BACKLOG #37).
+
+## FX forwards, swaps and value dates (package 4)
+
+- **Value dates.** `TOD` = the trade date, which must be a settlement business day;
+  `TOM` and `SPT` = 1 and 2 business days later; tenors run from the spot date
+  (`spot_lag_days` explicit: 1 for MOEX `TOM` swaps) with `resolve_tenor`'s month-end
+  clamping and business-day convention, without an end-of-month rule. The calendar is
+  the pair's settlement calendar: `joint_calendar` makes a day a business day only if
+  it is one in every input calendar. CNY/RUB at MOEX settles on the Russian and
+  Chinese calendars together (TOD does not trade on Chinese holidays; TOM then settles
+  on the next joint business day).
+- **Units.** Spot, outrights, contract rates and swap points are RUB per `quote_units`
+  foreign units; notionals are signed foreign units (+ = receive foreign).
+- **Parity.** `F(T) = S · [DF_for(T)/DF_for(s)] / [DF_rub(T)/DF_rub(s)] · exp(b·τ(s, T))`,
+  `b` continuous in `basis_day_count` (default ACT/365F), `τ` signed. Money-market
+  parity (`cip_*`): `F = S·(1 + r_rub·τ_rub)/(1 + r_for·τ_for)`, simple rates, both day
+  counts explicit. MOEX's `SRATE_CNY_ON` implied RUB rate is this formula on ACT/365F
+  with no CNY rate term (established from ISS data, see
+  `tests/fixtures/moex_fx_swaps/README.md`).
+- **Settlement.** A forward leg's P&L is paid on its value date (or explicit payment
+  date) and discounted on the RUB curve: `PV = N/q · (F − K) · DF_rub(P)`. FX futures
+  margin is daily and undiscounted. Legs before the curve date have settled and are
+  rejected; legs on it are outstanding.
+- **Risk.** Buckets, shocks and signs as for bonds; the spot factor `FX|<ccy>` is a 1 %
+  relative move and is exact (PV is linear in spot), and the Hessian carries FX × rates
+  cross terms. An implied foreign curve has zero basis by construction.
 
 ## Horizon valuation: carry and rolldown (0.14.0)
 

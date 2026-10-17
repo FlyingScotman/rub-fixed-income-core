@@ -157,7 +157,7 @@ other repositories and must be changed there, not in this core.
     - positions and coverage in `run_local_risk`;
     - a new result-contract version, because v1 fixes the bond field set;
     - an agreed choice of the foreign curve (OIS, or implied from FX swaps).
-34. **OTC FX forwards and swaps.** Their P&L is paid at `T` and needs discounting
+34. *(core done in 0.19.0, `fx_forwards`; portfolio integration is #45)* **OTC FX forwards and swaps.** Their P&L is paid at `T` and needs discounting
     on the RUB curve. This is a separate settlement style, not the futures model.
 35. *(downstream, done in market-data-store PR #5)* **market-data-store core pin.** It
     pinned `>=0.8.0,<0.9`; the PR widens it to `<1.0`, regenerates the lock and moves off
@@ -220,3 +220,24 @@ other repositories and must be changed there, not in this core.
     `rub-portfolio-risk-result.v2` with optional keys, so RUB-only output is
     byte-identical; a 0.17 reader rejects a result with non-RUB rows. Bump to `v3` if the
     backend needs every result readable by older releases.
+
+## FX forwards and swaps — 0.19.0
+
+45. **FX forwards in the portfolio path** (extends #33). Needs `Instrument` terms for
+    `FX_FORWARD` / `FX_SWAP` (legs, quote units, trade ID) or a separate position type; an
+    FX spot **with its value date** in `MarketSnapshot` (`FxRate` has none); RUB and
+    foreign curve IDs, settlement calendar ID and basis (or an implied-curve policy) per
+    pair; coverage codes for settled legs and missing implied curves; factor totals shared
+    with bonds and futures (`IR|curve|bucket`, `FX|ccy`, `FXBASIS|ccy`); one shocked-curve
+    cache and implied curve per pair per job; a new result-contract version.
+46. **Points-fixed RUB risk.** On an implied foreign curve a RUB shock holds the implied
+    foreign zero rates, so the points move. A "points held" basis would rebuild the
+    implied curve under RUB shocks and needs a factor for the points.
+47. **SRATE methodology.** Confirm the indicator's spot and time window from the MOEX
+    methodology (now reachable on `fs.moex.com` with the Russian Trusted Root CA), then
+    tighten the golden from a statistical to a per-day check.
+48. **CETS term swaps.** A 1W–6M points golden needs days with trades, or MOEX's
+    indicative term rates if ISS publishes them; `PREVPRICE` is usually days old.
+49. **USD/RUB, EUR/RUB, NDFs, end-of-month rule.** Spot lag and USD calendar from
+    confirmations (OTC only since 2024); NDF fixing source and lag, and freezing a
+    published fixing; the end-of-month rule for FX tenors.

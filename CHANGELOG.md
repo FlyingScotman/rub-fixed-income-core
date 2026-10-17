@@ -1,5 +1,49 @@
 # Changelog
 
+## 0.19.0 — OTC FX forwards and FX swaps
+
+Package 4 (core part) and BACKLOG #34. New module `rub_fixed_income.fx_forwards`; FX
+futures numbers and every pinned hash are unchanged.
+
+- **Instruments.** `FxForwardLeg`, `FxForward` (also an unsettled spot trade) and `FxSwap`
+  (near and far legs of opposite sign; `swap_points`, `far_leg_forward()` once the near
+  leg has settled). Notionals are signed foreign units (+ = receive foreign), rates are
+  RUB per an explicit `quote_units`.
+- **Settlement differs from futures.** A leg pays `N/q · (F(T) − K)` on its value date, or
+  on an explicit payment date for a cash-settled leg, discounted on the RUB curve;
+  futures margin stays daily and undiscounted. `F` is the covered-parity outright of
+  `fx_futures` with a flat basis frozen under every shock. Legs dated before the curve
+  date are rejected as settled. `basis_bp` is a required input: zero is right only on an
+  implied foreign curve.
+- **Risk.** `FxForwardRiskEngine`: PV with per-leg outright and points; RUB and foreign
+  11-bucket DV01 and parallel shifts; `basis01_rub`; exact FX delta per 1 %; exact
+  scenarios with `FxFuturesScenario` (one scenario shocks both books); a 24-factor
+  Hessian (RUB, foreign, basis, spot) whose spot row is exact, which gives the FX × rates
+  cross terms. Factor pairs the trade does not read are skipped, bit-identically.
+  `fx_forward_factor_risk` maps to `IR|<curve>|<bucket>`, `FXBASIS|<ccy>` and `FX|<ccy>`.
+- **Value dates** on explicit calendars: `joint_calendar` (a business day in every
+  calendar), `fx_value_date` (`TOD` only on settlement days, `TOM`, `SPT`, tenors from an
+  explicit spot lag) and `fx_swap_value_dates`.
+- **Parity helpers:** `fx_forward_outright`, `fx_forward_basis_bp`, and money-market
+  `cip_outright`, `cip_implied_rub_rate`, `cip_implied_foreign_rate` with both day counts
+  explicit.
+- **Implied foreign curve** from caller-supplied swap points, OTC outrights or FX futures
+  prices (`FxSwapPointsQuote`, `FxOutrightQuote`, `implied_outrights`,
+  `implied_foreign_curve`). It reprices every quote exactly with zero basis and must be
+  anchored at the curve date (a TOD/TOM swap).
+- **MOEX goldens** (`tests/test_moex_fx_swap_goldens.py`, raw ISS fixtures in
+  `tests/fixtures/moex_fx_swaps/`):
+  - all 91 CNY/RUB TOD/TOM periods from 2026-06-01 to 2026-10-16, including the 8-day
+    National Day period, run on the joint Russian and Chinese calendar, and the board's
+    settlement dates match `fx_value_date`;
+  - MOEX's `SRATE_CNY_ON` implied RUB rate is ACT/365F money-market parity on its
+    published points with no CNY rate term: mean error −1.0 bp, median 3.4 bp, max 22 bp
+    against the day's TOD WAP spot. ACT/360 and a CNY rate term are rejected by the data.
+- **Benchmark** (`benchmarks/fx_forward_bench.py`, 2k CNY/RUB forwards and swaps, Linux,
+  Python 3.11), ms per position: 0.5–0.6 first order; 1.3 (RUB discount factors) and 1.8
+  (17-tenor OIS quotes) with the Hessian; 1.6 and 2.5 with five scenarios.
+- Docs: `docs/fx-forwards.md`, `docs/API.md`, `docs/CONVENTIONS.md`.
+
 ## 0.18.0 — non-RUB bonds, FX delta and the yield time basis
 
 Package 3 (core part) and BACKLOG #38. RUB-only instruments, policies, scenarios and
