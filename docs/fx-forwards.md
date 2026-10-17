@@ -237,6 +237,6 @@ shared cache. Linux x86_64, Python 3.11, ms per position:
   the fixing's value date as `value_date` and the payment date explicitly.
 - **Known fixings** of cash-settled legs after the fixing date (the leg is projected
   from parity, not from a published fixing).
-- **Portfolio integration.** `value_portfolio` and the v2 result contract cover bonds;
-  FX forwards need instrument, snapshot and coverage support there (see the release
-  notes).
+- **Portfolio carry.** `value_portfolio` takes FX forwards and swaps
+  (`FxForwardInstrument`, result contract v3, [portfolio-v3.md](portfolio-v3.md));
+  `horizon_portfolio` does not.

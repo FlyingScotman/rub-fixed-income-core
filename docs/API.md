@@ -421,7 +421,27 @@ Details and formulas: [callables.md](callables.md).
 | `value_assumed_portfolio(*, run_id, as_of, snapshot, instruments, positions, policy, assumptions, pass_throughs=(), scenarios=(), ...)` | `AssumedPortfolioResult`: the unchanged v2 `portfolio`, `assumptions`, merged `coverage`, `status`, totals, `result_sha256`; `verify_assumed_result`. |
 | `horizon_assumed_portfolio(*, snapshot, instruments, positions, policy, assumptions, horizon_date, pass_throughs=(), curve_cache=None)` | `AssumedHorizonResult`: `horizon_portfolio` over the assumed book with merged coverage. |
 | `AssumptionUse` | `instrument_id`, `kind` (callable / perpetual / pass_through), `assumption` identifier, `status`, `code`, `message`, `settlement_date`, `exercise`, `redemption_date`, `wal_years`, `source_sha256`, `valued_sha256`. |
-| `MissingAssumption` (`MISSING_ASSUMPTION`) | A pass-through without a CPR. |
+| `MissingAssumption` (`MISSING_ASSUMPTION`) | A pass-through without a CPR; an open repo without an assumed end. |
 | `CALL_MODEL_VERSION`, `PREPAYMENT_MODEL_VERSION`, `ASSUMED_BOOK_MODEL_VERSION` | `rub-call-exercise-v1`, `rub-constant-cpr-v1`, `rub-assumed-book-v1`. |
 
-`value_portfolio` itself is unchanged and still rejects callables and perpetuals.
+`value_portfolio` rejects callables and perpetuals unless `ValuationPolicy.exercise_assumptions`
+names an assumption for them (below); `MissingAssumption` now lives in `errors` (re-exported).
+
+## Derivatives in `value_portfolio`, result contract v3
+
+Reference: [portfolio-v3.md](portfolio-v3.md). Bond-only books keep `rub-portfolio-risk-result.v2`
+byte for byte; a book with a derivative position returns v3.
+
+| Name | Description |
+| --- | --- |
+| `SwapInstrument`, `FxForwardInstrument`, `XccyInstrument`, `CdsInstrument`, `FxFuturesInstrument`, `RateFuturesInstrument`, `OfzFuturesInstrument` (`OfzDeliverable(instrument_id, conversion_factor)`), `RepoInstrument` | Derivative position types (`portfolio_instruments`): the product terms plus the curve, calendar and fixing IDs they read; `.product`, `.currency`. `PortfolioInstrument` / `DerivativeInstrument` are the unions. |
+| `value_portfolio(*, ..., instruments: Sequence[PortfolioInstrument], ...)` | Any mix; IDs unique across all. Returns `PortfolioRiskResult` (v2) for bond-only books, `PortfolioRiskResultV3` otherwise. |
+| `FxSpot(currency, rub_per_unit, value_date, calendar_id, evidence_id=None)`, `FxBasis(currency, foreign_curve_id, basis_bp, day_count=ACT_365F)`, `CreditCurveEntry(reference_entity, currency, quotes, recovery_rate, convention, evidence_id=None)`, `FuturesQuote(contract_id, price, margined_price, evidence_id=None)`, `IndexFixingEntry(fixing_id, fixings)`, `RuoniaFixingsEntry(fixing_id, fixings)` | New optional `MarketSnapshot` collections `fx_spots`, `fx_bases`, `credit_curves`, `futures_quotes`, `index_fixings`, `ruonia_fixings` and `ruonia_index` (`RuoniaIndexValue`s); accessors `fx_spot`, `fx_basis`, `credit_curve`, `futures_quote`, `index_fixing`, `ruonia_fixing`, `latest_ruonia_index`. `CurveEntry.curve` also takes a `KeyRateForwardCurve` (`rub_key_rate_swap_v1`) and an `XccyCurveBootstrapRequest` (`cny_ruonia_xccy_v1`). All omitted at their defaults. |
+| `rebase_key_rate_curve(curve, business_date, *, rate_in_force)` | Re-dates a TOM-calibrated key-rate curve to the business date by extending its current-rate interval; `rate_in_force` must equal the curve's current rate. |
+| `PortfolioRiskResultV3` | v2 fields plus `swaps`, `fx_forwards`, `xccy_swaps`, `cds`, `fx_futures`, `rate_futures`, `ofz_futures`, `repos` (row types `SwapPositionValuation` … `RepoPositionValuation`), `position_models` (`PositionModel`), `hessian_totals` (`HessianTotal`), `jtd_totals` (`JtdTotal`), `jtd_total_rub`, `fx_spots`, `credit_curves` (`CreditCurveUse`); `.derivative_rows()`. |
+| `PORTFOLIO_RESULT_SCHEMA_V3`, `verify_portfolio_result_v3(result)` | `rub-portfolio-risk-result.v3` and its hash check (`verify_portfolio_result` stays v2-only). `portfolio_result_to_json` writes both versions; `portfolio_result_from_json` reads both. |
+| `PortfolioScenario(..., curve_shifts_bp=((curve_id, shifts), ...))`, `.curve_shift(curve_id, *, projection=False)`, `.named_curve_shift(curve_id)`, `.spread_shift_bp` | Per-curve shift vectors for every product (BACKLOG #43); omitted at the default. |
+| `ValuationPolicy(..., exercise_assumptions=((instrument_id, ExerciseAssumption), ...))`, `.exercise_for(instrument_id)`; `PositionValuation.exercise_assumption`, `horizon="call"` | Native exercise assumptions (BACKLOG #50); omitted at the defaults. |
+| `PRODUCT_ADAPTERS` | Position type -> valuation adapter (`portfolio_products`); the extension point for new products. |
+| `ExpiredContract` (`EXPIRED_CONTRACT`), `SettledLeg` (`SETTLED_LEG`), `UndeclaredFixingGap` (`UNDECLARED_FIXING_GAP`), `MissingBasketPrice` (`MISSING_BASKET_PRICE`) | New coded rejections (subclasses of `InvalidTerms`, `MissingFixing`, `MissingMarketData`). |
+| `swap_convention("rub_ruonia_ois_moex_v2")`; `SwapConvention(..., float_compounding="rate_day_count" \| "nfa_act")` | The v2 swap side (BACKLOG #61): NFA `RUB-RUONIA-OIS-COMPOUND`, `n_i / Act` weights and `(growth - 1) * Act / d * Act/Act ISDA`; the field is omitted at its default. |

@@ -37,7 +37,7 @@ from .callables import (
 from .canonical import canonical_sha256
 from .cashflows import clean_price_pct_to_dirty_rub
 from .domain import Instrument, MarketSnapshot, Position, ProductType
-from .errors import CoreRejection, InvalidTerms
+from .errors import CoreRejection, InvalidTerms, MissingAssumption
 from .pass_through import (
     PassThroughTerms,
     PrepaymentAssumption,
@@ -77,12 +77,6 @@ __all__ = [
 ASSUMED_BOOK_MODEL_VERSION = "rub-assumed-book-v1"
 AssumptionKind = Literal["callable", "perpetual", "pass_through"]
 CoverageStatus = Literal["complete", "partial", "failed"]
-
-
-class MissingAssumption(InvalidTerms):
-    """A pass-through has no prepayment assumption; core never picks a CPR."""
-
-    code = "MISSING_ASSUMPTION"
 
 
 @dataclass(frozen=True)

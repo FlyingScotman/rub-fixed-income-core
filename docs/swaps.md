@@ -61,10 +61,17 @@ holds every convention. Nothing is defaulted.
 | `rub_key_rate_swap_v1` | TOM start (spot lag 1), modified following, ACT/ACT ISDA. Fixed leg annual, backward, a single payment up to 1Y. Float leg quarterly, backward, arithmetic key-rate average. No payment lag. This is the schedule of `price_key_rate_swap`, period by period. |
 | `rub_ruonia_ois_legacy_v1` | Start on the curve date (spot lag 0), unadjusted, ACT/365F. Both legs use the legacy annual schedule, and RUONIA compounds on ACT/365F. No payment lag. These are the swaps whose par rates the legacy bootstrap reprices. |
 
+`rub_ruonia_ois_moex_v2` (BACKLOG #61): TOM start (spot lag 1), modified following,
+a single period up to 1Y and annual beyond rolled back from the unadjusted end (short
+initial stub), Act/Act ISDA on both legs, +1 business-day payment lag, and the NFA
+`RUB-RUONIA-OIS-COMPOUND` float leg (`float_compounding="nfa_act"`): each fixing weighs
+`n_i / Act` with `Act` = 366 if any day of the period is in a leap year, else 365, and
+the float amount is `(growth - 1) * Act / d * Act/Act ISDA`; the accrued float is the
+known index rate times Act/Act from the period start. Par swaps reprice the v2
+bootstrap's quotes (`tests/test_swaps_moex_v2.py`).
+
 Any other spec raises: `UnknownCurveSpec` for an unregistered ID,
-`UnsupportedProduct` for a non-swap spec. The exchange RUONIA OIS spec
-(`rub_ruonia_ois_moex_v2`) is not registered yet (BACKLOG #37). Until it is, pass
-the conventions from the trade confirmation as an explicit `SwapConvention`.
+`UnsupportedProduct` for a non-swap spec.
 
 `swap_schedule(swap, calendar)` returns both legs' `SwapPeriod`s
 (`accrual_start`, `accrual_end`, `payment_date`, `accrual_factor`). A bounded
@@ -255,14 +262,12 @@ informational.
 
 ## Not covered yet
 
-- **RUONIA OIS to the exchange specification** (`rub_ruonia_ois_moex_v2`): TOM
-  start, payment lag, stubs, lookback or lockout (BACKLOG #37). Swaps can
-  already carry an explicit spot and payment lag; lookback, lockout and
-  observation shift are not modelled.
+- **Lookback, lockout and observation shift** are not modelled (the v2 spec has
+  none).
 - **Key-rate quote-basis risk**: shift the KRS quotes and recalibrate, with the
   discount curve coupled. Today the risk is in shifts of the forward key rate.
 - **Other terms**: explicit confirmation schedules (instead of
   convention-generated ones), stubs other than the roll's natural one,
   amortizing notionals, compounded spreads, caps and floors.
-- **Integration with `value_portfolio` and `domain.Position`**; see the
-  package 2 release notes.
+- **Swap carry in the portfolio**: `value_portfolio` takes swaps (`SwapInstrument`,
+  [portfolio-v3.md](portfolio-v3.md)); `horizon_portfolio` does not yet.

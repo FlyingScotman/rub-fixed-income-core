@@ -87,6 +87,7 @@ def ois_request(curve_date: date = TODAY) -> CurveBootstrapRequest:
 
 LEGACY = swap_convention("rub_ruonia_ois_legacy_v1")
 KRS = swap_convention("rub_key_rate_swap_v1")
+MOEX_V2 = swap_convention("rub_ruonia_ois_moex_v2")
 
 
 def seasoned_ois_convention(payment_lag: int = 1) -> SwapConvention:
@@ -132,7 +133,7 @@ def ruonia_history(valuation: date, first: date = date(2026, 9, 1)) -> FixingHis
 
 
 def test_spec_conventions_agree_with_the_registry() -> None:
-    for convention in (LEGACY, KRS):
+    for convention in (LEGACY, KRS, MOEX_V2):
         spec = get_curve_spec(str(convention.spec_id))
         assert convention.fixed_leg.frequency_months == spec.fixed_leg_frequency_months
         assert convention.fixed_leg.day_count is spec.fixed_leg_day_count
@@ -145,10 +146,14 @@ def test_spec_conventions_agree_with_the_registry() -> None:
     assert KRS.rate_day_count is None
     with pytest.raises(UnknownCurveSpec):
         swap_convention("rub_ruonia_ois_moex_v3")
-    # The exchange spec is registered for the bootstrap, but its swap side (NFA
-    # RUB-RUONIA-OIS-COMPOUND with the leap-year Act rule) is not modelled by swaps yet.
-    with pytest.raises(UnsupportedProduct):
-        swap_convention("rub_ruonia_ois_moex_v2")
+    # The exchange spec's swap side: NFA RUB-RUONIA-OIS-COMPOUND (leap-year Act rule).
+    spec = get_curve_spec("rub_ruonia_ois_moex_v2")
+    assert MOEX_V2.float_compounding == "nfa_act" and MOEX_V2.rate_day_count is None
+    assert MOEX_V2.float_leg.day_count is spec.float_leg_day_count is DayCount.ACT_ACT_ISDA
+    assert MOEX_V2.fixed_leg.single_period_up_to_months == 12
+    assert MOEX_V2.float_leg.roll == MOEX_V2.fixed_leg.roll == "backward"
+    assert MOEX_V2.identifier.endswith(":compound=nfa_act")
+    assert ":compound=" not in LEGACY.identifier
     with pytest.raises(UnsupportedProduct):
         swap_convention("rub_ofz_kbd_v1")
 

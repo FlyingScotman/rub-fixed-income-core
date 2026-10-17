@@ -287,4 +287,6 @@ amortises better.
   no random recovery.
 - **Default timing.** No default before the step-in date or backstop look-back, and no
   settlement-date lag of the default payment. JTD is immediate, at step-in.
-- **Portfolio worker.** `value_portfolio` does not take CDS yet; see the release notes.
+- **Portfolio.** `value_portfolio` takes CDS (`CdsInstrument`, credit curves in the
+  snapshot, result contract v3, [portfolio-v3.md](portfolio-v3.md)); the local worker
+  does not.

@@ -28,7 +28,7 @@ from __future__ import annotations
 import math
 from calendar import isleap
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from itertools import pairwise
 from typing import Literal, cast
@@ -50,8 +50,14 @@ from ._risk_common import (
     _shock_curve,
     _snapshot_curve,
 )
-from .canonical import _Canonical, _precanonical, canonical_sha256
-from .conventions import BusinessDayConvention, DayCount, adjust_date, calendar_fingerprint
+from .canonical import OMIT_IF_DEFAULT, _Canonical, _precanonical, canonical_sha256
+from .conventions import (
+    BusinessDayConvention,
+    DayCount,
+    _ruonia_ois_compound_act,
+    adjust_date,
+    calendar_fingerprint,
+)
 from .curve_specs import CurveKind, get_curve_spec
 from .dates import BusinessCalendar, add_months, annual_schedule
 from .discount import CurveBootstrapRequest, DiscountCurve, DiscountFactorCurve
@@ -100,9 +106,11 @@ SwapLeg = Literal["fixed", "float"]
 FlowSource = Literal["fixed", "known", "partially_projected", "projected"]
 CurveRole = Literal["discount", "projection", "discount_and_projection"]
 ProjectionCurve = DiscountCurve | CurveBootstrapRequest | KeyRateForwardCurve
+FloatCompounding = Literal["rate_day_count", "nfa_act"]
 
 _KEY_RATE_SPEC = "rub_key_rate_swap_v1"
 _LEGACY_OIS_SPEC = "rub_ruonia_ois_legacy_v1"
+_MOEX_OIS_SPEC = "rub_ruonia_ois_moex_v2"
 _MEMO_SIZE = 4096
 
 
@@ -163,6 +171,13 @@ class SwapConvention:
     tenor in :meth:`InterestRateSwap.from_tenor`. Payments are
     ``payment_lag_days`` business days after each accrual end. ``spec_id`` records
     the registered curve spec the convention was derived from.
+
+    ``float_compounding="nfa_act"`` is NFA ``RUB-RUONIA-OIS-COMPOUND`` (amendments
+    No. 1, 2021, 8.4(б)): each fixing weighs ``n_i / Act`` with ``Act`` = 366 if any day of
+    the period is in a leap year, else 365, and the float amount is
+    ``(growth - 1) * Act / d * float day count`` (``OisSwapConvention.float_amount_scale``);
+    ``rate_day_count`` is then None. The default, ``"rate_day_count"``, weighs each fixing
+    by ``rate_day_count`` and pays ``growth - 1``; it is left out of the identity.
     """
 
     index: SwapIndex
@@ -174,8 +189,16 @@ class SwapConvention:
     spot_lag_days: int
     payment_lag_days: int
     spec_id: str | None = None
+    float_compounding: FloatCompounding = field(default="rate_day_count", metadata=OMIT_IF_DEFAULT)
 
     def __post_init__(self) -> None:
+        if self.float_compounding not in ("rate_day_count", "nfa_act"):
+            raise InvalidTerms("float_compounding must be rate_day_count or nfa_act")
+        if self.float_compounding == "nfa_act":
+            if self.averaging != "compounded":
+                raise InvalidTerms("NFA RUONIA compounding applies to compounded RUONIA swaps")
+            if self.rate_day_count is not None:
+                raise InvalidTerms("NFA RUONIA compounding takes no rate_day_count (Act rule)")
         if self.index not in ("ruonia", "key_rate"):
             raise InvalidTerms("swap index must be ruonia or key_rate")
         supported = {"ruonia": "compounded", "key_rate": "arithmetic"}
@@ -189,7 +212,11 @@ class SwapConvention:
         for leg in (self.fixed_leg, self.float_leg):
             if not isinstance(leg, SwapLegSchedule):
                 raise TypeError("swap legs need a SwapLegSchedule")
-        if self.averaging == "compounded" and not isinstance(self.rate_day_count, DayCount):
+        if (
+            self.averaging == "compounded"
+            and self.float_compounding == "rate_day_count"
+            and not isinstance(self.rate_day_count, DayCount)
+        ):
             raise InvalidTerms("compounded averaging needs a rate_day_count")
         if self.averaging == "arithmetic" and self.rate_day_count is not None:
             raise InvalidTerms("an arithmetic calendar-day average takes no rate_day_count")
@@ -208,6 +235,7 @@ class SwapConvention:
             f"float={self.float_leg.identifier}:rate={rate}:"
             f"bdc={self.business_day_convention.value}:spot={self.spot_lag_days}:"
             f"pay={self.payment_lag_days}:spec={self.spec_id or '-'}"
+            + (":compound=nfa_act" if self.float_compounding == "nfa_act" else "")
         )
 
 
@@ -220,7 +248,11 @@ def swap_convention(spec_id: str) -> SwapConvention:
     payment lag), the schedule :func:`rub_fixed_income.key_rate.price_key_rate_swap`
     prices. ``rub_ruonia_ois_legacy_v1``: the legacy OIS bootstrap's swap (start on
     the curve date, legacy annual schedule on both legs, ACT/365F, unadjusted, no
-    lags), whose par swaps the bootstrap reprices. Other specs raise.
+    lags), whose par swaps the bootstrap reprices. ``rub_ruonia_ois_moex_v2``: the MOEX
+    OIS RUONIA standard swap (TOM start, MODFOL, a single period up to 1Y and annual
+    beyond with a short initial stub, Act/Act ISDA on both legs, +1 business-day payment
+    lag, NFA ``RUB-RUONIA-OIS-COMPOUND`` float leg), whose par swaps the v2 bootstrap
+    reprices. Other specs raise.
     """
     spec = get_curve_spec(spec_id)
     if spec.kind is CurveKind.KEY_RATE_SWAP and spec.spec_id == _KEY_RATE_SPEC:
@@ -256,6 +288,32 @@ def swap_convention(spec_id: str) -> SwapConvention:
             spot_lag_days=cast(int, spec.spot_lag_business_days),
             payment_lag_days=cast(int, spec.payment_lag_business_days),
             spec_id=spec.spec_id,
+        )
+    if spec.kind is CurveKind.OIS_BOOTSTRAP and spec.spec_id == _MOEX_OIS_SPEC:
+        months = cast(int, spec.fixed_leg_frequency_months)
+        fixed = SwapLegSchedule(
+            months,
+            "backward",
+            cast(DayCount, spec.fixed_leg_day_count),
+            single_period_up_to_months=12,
+        )
+        floating = SwapLegSchedule(
+            months,
+            "backward",
+            cast(DayCount, spec.float_leg_day_count),
+            single_period_up_to_months=12,
+        )
+        return SwapConvention(
+            index="ruonia",
+            averaging="compounded",
+            fixed_leg=fixed,
+            float_leg=floating,
+            rate_day_count=None,
+            business_day_convention=BusinessDayConvention(spec.business_day_convention),
+            spot_lag_days=cast(int, spec.spot_lag_business_days),
+            payment_lag_days=cast(int, spec.payment_lag_business_days),
+            spec_id=spec.spec_id,
+            float_compounding="nfa_act",
         )
     raise UnsupportedProduct(f"curve spec {spec_id!r} does not define a swap convention")
 
@@ -640,6 +698,7 @@ class _FloatFlow:
     accrued: float
     base_average: float | None
     shift_weights: tuple[float, ...] | None
+    growth_scale: float = 1.0  # float amount per unit of compounded growth minus one
 
     @property
     def total_days(self) -> int:
@@ -667,7 +726,7 @@ def _previous_business_day(calendar: BusinessCalendar, value: date) -> date:
 
 
 def _compounded_known(
-    period: SwapPeriod, history: FixingHistory, day_count: DayCount
+    period: SwapPeriod, history: FixingHistory, day_count: DayCount | None
 ) -> tuple[float, date]:
     """Realized RUONIA growth from the period start and the date projection starts.
 
@@ -677,6 +736,8 @@ def _compounded_known(
     calendar = history.calendar
     cursor = period.accrual_start
     growth = 1.0
+    # NFA RUB-RUONIA-OIS-COMPOUND (day_count None): n_i / Act of the whole period.
+    act = _ruonia_ois_compound_act(period.accrual_start, period.accrual_end)
     while cursor < period.accrual_end:
         observation = _previous_business_day(calendar, cursor)
         if observation >= history.valuation_date:
@@ -686,7 +747,10 @@ def _compounded_known(
             rate, _ = history.rate(observation)
         except LookupError as exc:
             raise MissingMarketData(str(exc)) from None
-        growth *= 1.0 + rate * day_count.year_fraction(cursor, end)
+        weight = (
+            (end - cursor).days / act if day_count is None else day_count.year_fraction(cursor, end)
+        )
+        growth *= 1.0 + rate * weight
         cursor = end
     return growth, cursor
 
@@ -853,7 +917,9 @@ class SwapRiskEngine:
             canonical_sha256(
                 {
                     "model": SWAP_MODEL_VERSION,
-                    "swap": asdict(swap),
+                    # Canonical form of the terms (the bytes of ``asdict`` before
+                    # ``SwapConvention.float_compounding``, left out at its default).
+                    "swap": swap,
                     "convention": swap.convention.identifier,
                     "calendar": (req.calendar.version, calendar_fingerprint(req.calendar)),
                     "discount_curve_basis": self.discount_curve_basis,
@@ -916,14 +982,31 @@ class SwapRiskEngine:
             else 0.0
         )
         if convention.index == "ruonia":
+            nfa = convention.float_compounding == "nfa_act"
             growth, start = (
                 _compounded_known(
-                    period, self._history(period), cast(DayCount, convention.rate_day_count)
+                    period,
+                    self._history(period),
+                    None if nfa else cast(DayCount, convention.rate_day_count),
                 )
                 if started
                 else (1.0, period.accrual_start)
             )
+            scale = 1.0
             accrued = growth - 1.0 + spread_accrued
+            if nfa:
+                act = _ruonia_ois_compound_act(period.accrual_start, period.accrual_end)
+                total = (period.accrual_end - period.accrual_start).days
+                scale = act / total * period.accrual_factor
+                known = (start - period.accrual_start).days
+                accrued = spread_accrued + (
+                    (growth - 1.0)
+                    * act
+                    / known
+                    * float_day_count.year_fraction(period.accrual_start, start)
+                    if known
+                    else 0.0
+                )
             return _FloatFlow(
                 period,
                 growth,
@@ -934,6 +1017,7 @@ class SwapRiskEngine:
                 accrued,
                 None,
                 None,
+                scale,
             )
         known_sum, known_days = (
             _arithmetic_known(period, self._history(period)) if started else (0.0, 0)
@@ -977,7 +1061,7 @@ class SwapRiskEngine:
             if flow.projection_start < end:
                 assert view is not None
                 growth *= view.discount_factor(flow.projection_start) / view.discount_factor(end)
-            return growth - 1.0 + flow.spread_amount
+            return (growth - 1.0) * flow.growth_scale + flow.spread_amount
         if flow.base_average is None:
             average = flow.known_sum / flow.total_days
         elif flow.known_days == 0:
@@ -1349,7 +1433,7 @@ class SwapRiskEngine:
             if middle < end:
                 later = cast(DiscountFactorCurve, rolled)
                 growth *= later.discount_factor(middle) / later.discount_factor(end)
-            return growth - 1.0 + flow.spread_amount
+            return (growth - 1.0) * flow.growth_scale + flow.spread_amount
         total = flow.known_sum
         if start < middle:
             now_k = cast(KeyRateForwardCurve, today)

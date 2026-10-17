@@ -257,11 +257,13 @@ dominated by the 22 x 22 central scheme over the projected days (overnight forwa
 are memoised on the shared shocked curves, as in `floating`); a fixed or fully known
 repo reads two discount factors per shock.
 
-## Portfolio integration (not in this package)
+## Portfolio integration
 
-`value_portfolio` and `domain.py` are not changed here (result contract `v3` is a
-separate work item). What the integration needs is listed in the release notes
-(`docs/release-notes/repo.md`).
+`value_portfolio` takes repo legs as `RepoInstrument` positions (result contract v3,
+[portfolio-v3.md](portfolio-v3.md)): an open repo needs `assumed_end_date` on the
+position type, else the position is rejected `MISSING_ASSUMPTION`; an ended repo is
+`SETTLED_LEG`. The collateral reference is reported with the row and never enters PV or
+risk.
 
 ## Not covered
 

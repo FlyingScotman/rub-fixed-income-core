@@ -136,7 +136,7 @@ bound of the true futures price). No option model is stated or applied.
   `IR|<bond curve>|*`, `IR|<funding curve>|*` (distinct IDs), `CS`, `FUTBASIS|<contract_id>`.
 
 `FUTBASIS|<contract_id>` (1 bp of a calibrated futures basis) is a new factor key; the
-portfolio contract must accept it before futures enter `value_portfolio`.
+portfolio result contract v3 carries it ([portfolio-v3.md](portfolio-v3.md)).
 
 ## Validation
 
@@ -182,8 +182,9 @@ one contract should share an engine.
 
 ## Out of scope
 
-- Futures in `value_portfolio` and the local worker (needs `Instrument` / position types
-  for futures, `FUTBASIS` in the result contract and coverage codes).
+- Futures in the local worker. `value_portfolio` takes them (`RateFuturesInstrument`,
+  `OfzFuturesInstrument`, result contract v3 with `FUTBASIS`,
+  [portfolio-v3.md](portfolio-v3.md)).
 - Delivery-option value, futures convexity (stochastic rates), margin funding.
 - RUSFAR futures (`1MFR`, same specification as RUON): the RUSFAR fixing is a MOEX
   indicator; core has no RUSFAR fixings type yet.

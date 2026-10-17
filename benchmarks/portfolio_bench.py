@@ -14,9 +14,17 @@ The ``fx`` curve case (package 3) is the same book as CNY, USD and EUR bonds in 
 each on a caller-built discount curve of its currency, valued in RUB at snapshot FX
 rates with ``FX|<ccy>`` and its cross terms; its scenarios add a 10 % FX move.
 
+The ``mixed`` case (result contract v3) cycles through the positions of the mixed book
+of ``tests/portfolio_v3_book.py``: bonds, seasoned, two-curve and key-rate swaps, an FX
+forward and swap, XCCY on quotes and on discount factors, RUB and USD CDS, FX, RUON,
+RUONIA index, KEYRATE and OFZ futures, term and open repos. Every OTC trade is its own
+instrument; futures positions share their contract (one engine per contract). Its
+scenarios add per-curve shifts and FX moves.
+
 Run from the repository root::
 
     uv run python benchmarks/portfolio_bench.py --positions 2000
+    uv run python benchmarks/portfolio_bench.py --positions 2000 --cases mixed
 
 The numbers are machine-dependent; the target is <= 10 ms per position amortised
 for OIS with the Hessian at 2k positions.
@@ -29,7 +37,7 @@ import json
 import platform
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -45,16 +53,20 @@ from rub_fixed_income import (
     CurveEntry,
     DiscountCurve,
     FixedCouponLeg,
+    FxFuturesInstrument,
     FxRate,
     Instrument,
     MarketSnapshot,
     Offer,
     OfferKind,
+    OfzFuturesInstrument,
     OisQuote,
+    PortfolioInstrument,
     PortfolioScenario,
     Position,
     PrincipalLeg,
     ProductType,
+    RateFuturesInstrument,
     Redemption,
     ShockedCurveCache,
     ValuationPolicy,
@@ -65,6 +77,9 @@ from rub_fixed_income import (
 from rub_fixed_income.dates import add_months
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tests"))
+import portfolio_v3_book as mixed_book
+
 KBD_FIXTURE = ROOT / "tests" / "fixtures" / "kbd" / "zcyc_2026-10-15.json"
 BUSINESS_DATE = date(2026, 10, 15)
 AS_OF = datetime(2026, 10, 15, 16, 30, tzinfo=UTC)
@@ -188,6 +203,53 @@ def book(
     return instruments, positions, quotes
 
 
+def mixed_case(mode: str, size: int) -> Timing:
+    """The v3 mixed book, ``size`` positions cycling through its position templates."""
+    templates = mixed_book.instruments()
+    by_id = {i.instrument_id: i for i in templates}
+    shared = (FxFuturesInstrument, RateFuturesInstrument, OfzFuturesInstrument)
+    book_positions = mixed_book.positions()
+    instruments: dict[str, PortfolioInstrument] = {
+        i.instrument_id: i for i in templates if isinstance(i, Instrument)
+    }
+    instruments.update((i.instrument_id, i) for i in templates if isinstance(i, shared))
+    positions = []
+    for k in range(size):
+        template = book_positions[k % len(book_positions)]
+        source = by_id[template.instrument_id]
+        if isinstance(source, (Instrument, *shared)):
+            positions.append(replace(template, position_id=f"pos-{k:05d}"))
+            continue
+        copy = replace(source, instrument_id=f"{source.instrument_id}-{k:05d}")
+        instruments[copy.instrument_id] = copy
+        positions.append(
+            replace(template, position_id=f"pos-{k:05d}", instrument_id=copy.instrument_id)
+        )
+    policy = replace(mixed_book.POLICY, include_second_order=mode != "first")
+    scenarios = (
+        PortfolioScenario("rates+100", BondScenario.parallel(100.0)),
+        PortfolioScenario(
+            "usd+10 fx",
+            BondScenario.parallel(0.0),
+            fx_shocks_pct=(("USD", 10.0), ("CNY", 10.0)),
+            curve_shifts_bp=(("USD_DF", (50.0,) * 11),),
+        ),
+        PortfolioScenario("spread+50", BondScenario.parallel(0.0, spread_shift_bp=50.0)),
+    )
+    started = time.perf_counter()
+    result = value_portfolio(
+        run_id=f"bench-mixed-{mode}",
+        as_of=mixed_book.AS_OF,
+        snapshot=mixed_book.snapshot(),
+        instruments=tuple(instruments.values()),
+        positions=positions,
+        policy=policy,
+        scenarios=scenarios if mode == "scenarios" else (),
+    )
+    elapsed = time.perf_counter() - started
+    return Timing("mixed", mode, size, result.coverage.completed, elapsed)
+
+
 @dataclass(frozen=True)
 class Timing:
     curve: str
@@ -249,11 +311,18 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--positions", type=int, default=2000)
     parser.add_argument("--json", type=Path, help="also write the timings as JSON")
+    parser.add_argument(
+        "--cases", default="kbd,ois,fx,mixed", help="comma-separated: kbd, ois, fx, mixed"
+    )
     args = parser.parse_args(argv)
     size = args.positions
+    cases = tuple(c.strip() for c in args.cases.split(",") if c.strip())
     timings = []
-    for curve in ("kbd", "ois", "fx"):
+    for curve in cases:
         for mode in ("first", "hessian", "scenarios"):
+            if curve == "mixed":
+                timings.append(mixed_case(mode, size))
+                continue
             timing, cache = run_case(curve, mode, size)
             timings.append(timing)
             if curve == "ois" and mode == "hessian":

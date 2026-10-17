@@ -148,7 +148,7 @@ other repositories and must be changed there, not in this core.
 
 ## FX futures — 2026-10-15
 
-33. **FX futures in the local worker and the monitor.** The 0.8.1 core
+33. *(portfolio part done in 0.29.0; local worker open, #102)* **FX futures in the local worker and the monitor.** The 0.8.1 core
     (`docs/fx-futures.md`) gives rate risk on the RUB and foreign curves, basis,
     FX delta, scenarios and the Hessian for a single position. Remaining:
     - a public FX futures snapshot (contract terms from the exchange specification,
@@ -208,22 +208,22 @@ other repositories and must be changed there, not in this core.
     registered specs once their quote conventions (spot and payment lags, fixed frequency,
     day counts) are confirmed from primary sources. Until then the backend builds the
     discount factors (`*_discount_factors_v1`).
-41. **Non-RUB horizon and local worker.** FX forward carry in `horizon_portfolio`, and
+41. *(partly done in 0.29.0: every product in value_portfolio; horizon and local worker open)* **Non-RUB horizon and local worker.** FX forward carry in `horizon_portfolio`, and
     non-RUB bonds in `local_worker.run_local_risk`; both still reject them.
 42. *(downstream)* **FX rate semantics.** Core values at the snapshot's `FxRate` as given,
     with no FX settlement lag or forward points. The backend chooses the CBR official or
     the market TOM rate and records it in the evidence.
-43. **Per-curve scenario shocks.** A `PortfolioScenario` shifts every position's own
+43. *(done in 0.29.0)* **Per-curve scenario shocks.** A `PortfolioScenario` shifts every position's own
     discount curve; desk scenarios that move only the RUB or one foreign curve need
     per-curve shift vectors.
-44. *(downstream decision)* **Result schema for non-RUB rows.** 0.18.0 keeps
+44. *(decided in 0.29.0: v3 only for books with derivatives, bond-only books stay v2)* *(downstream decision)* **Result schema for non-RUB rows.** 0.18.0 keeps
     `rub-portfolio-risk-result.v2` with optional keys, so RUB-only output is
     byte-identical; a 0.17 reader rejects a result with non-RUB rows. Bump to `v3` if the
     backend needs every result readable by older releases.
 
 ## FX forwards and swaps — 0.19.0
 
-45. **FX forwards in the portfolio path** (extends #33). Needs `Instrument` terms for
+45. *(done in 0.29.0)* **FX forwards in the portfolio path** (extends #33). Needs `Instrument` terms for
     `FX_FORWARD` / `FX_SWAP` (legs, quote units, trade ID) or a separate position type; an
     FX spot **with its value date** in `MarketSnapshot` (`FxRate` has none); RUB and
     foreign curve IDs, settlement calendar ID and basis (or an implied-curve policy) per
@@ -244,7 +244,7 @@ other repositories and must be changed there, not in this core.
 
 ## Callables, perpetuals, pass-throughs — 0.20.0
 
-50. **Native exercise assumptions in `value_portfolio`.** With `OMIT_IF_DEFAULT` the
+50. *(done in 0.29.0)* **Native exercise assumptions in `value_portfolio`.** With `OMIT_IF_DEFAULT` the
     assumption can live in the portfolio itself: optional per-instrument assumptions on
     `ValuationPolicy`, `PositionValuation.exercise_assumption`, a `"call"` value of
     `horizon` (and `local_risk`'s `"issuer_call"` label), all omitted at their defaults.
@@ -267,7 +267,7 @@ other repositories and must be changed there, not in this core.
 
 ## Seasoned swaps — 0.21.0
 
-55. **Swaps in `value_portfolio`.** Needs a `SwapInstrument` (`Instrument` is bond-shaped)
+55. *(done in 0.29.0)* **Swaps in `value_portfolio`.** Needs a `SwapInstrument` (`Instrument` is bond-shaped)
     with the projection curve and fixing IDs on the instrument, not on
     `ValuationPolicy` (the policy is part of `job_id`); key-rate projection curves in
     `CurveEntry` (`_build_curve` rejects `KEY_RATE_SWAP` specs today); a rule for KRS
@@ -296,7 +296,7 @@ other repositories and must be changed there, not in this core.
     checkout. With either, add a raw fixture and test exact par repricing of the 17
     tenors; compare with `RUB-DSC-CSARUB` for MOEX's own curve construction. The backend
     builds the joint SPFI / MOSCOW / RUONIA calendar from official holiday lists.
-61. **The swap side of v2.** `swaps.swap_convention("rub_ruonia_ois_moex_v2")` raises
+61. *(done in 0.29.0)* **The swap side of v2.** `swaps.swap_convention("rub_ruonia_ois_moex_v2")` raises
     `UnsupportedProduct`: the swap float leg does not yet apply the NFA leap-year `Act`
     rule. Build seasoned v2 legs from `OisSwapConvention.periods` and
     `float_amount_scale`, then derive the convention. v2 bootstraps cost about four times
@@ -327,14 +327,14 @@ other repositories and must be changed there, not in this core.
 
 ## CDS — 0.24.0
 
-66. **CDS in `value_portfolio`.** Needs a `ProductType.CDS` and a contract form (or a CDS
+66. *(done in 0.29.0)* **CDS in `value_portfolio`.** Needs a `ProductType.CDS` and a contract form (or a CDS
     position list in the job), credit quotes keyed by reference entity in
     `MarketSnapshot`, a recovery source with no default, the contract currency's discount
     curve ID, a `CdsCurveCache` per job, coverage codes and result fields (side, points
     upfront, par spread, `recovery01`, accrued premium). Non-RUB contracts can reuse
     `fx_translated_factor_risk`; JTD adds up with bond JTD (same sign rule). Until then
     `value_portfolio` rejects CDS as `UNSUPPORTED_PRODUCT`.
-67. **Credit factor contract.** Recovery sensitivity is reported beside the factors; a
+67. *(partly done in 0.29.0: CDS CS shared with bonds; recovery and per-tenor factors open)* **Credit factor contract.** Recovery sensitivity is reported beside the factors; a
     desk factor (e.g. `REC|<entity>`) is a contract change. `CS` on a CDS is all of the
     entity's quoted spreads together; per-tenor credit risk as factors needs a key such
     as `CS|<entity>|<tenor>`.
@@ -344,13 +344,13 @@ other repositories and must be changed there, not in this core.
 69. **CDS golden against a bank system** or Bloomberg CDSW on frozen inputs once a data
     source exists. Current evidence is the ISDA / Markit values published in QuantLib's
     test suite; cdsmodel.com was not reachable.
-70. **Credit-curve export / seed.** The cold Hessian costs about 288 hazard rebootstraps
+70. *(partly: shared within a job in 0.29.0; across jobs open)* **Credit-curve export / seed.** The cold Hessian costs about 288 hazard rebootstraps
     per entity (34–40 ms per position). Keeping a `CdsCurveCache` across jobs needs an
     export / seed API with a repricing check, like `ShockedCurveCache.seed`.
 
 ## Cross-currency swaps — 0.25.0
 
-71. **XCCY in `value_portfolio`.** Needs an `XccyInstrument` (or a separate position
+71. *(done in 0.29.0)* **XCCY in `value_portfolio`.** Needs an `XccyInstrument` (or a separate position
     type), an FX spot with its value date in `MarketSnapshot` (as #45), curve IDs per
     role (RUB discount, RUB projection, CNY curve as `cny_discount_factors_v1` or
     `cny_ruonia_xccy_v1` with its quotes, the NCC notional rate and the spot), RUONIA and
@@ -371,7 +371,7 @@ other repositories and must be changed there, not in this core.
     compounded-spread variants of the NCC parameters, lookback and observation shift, the
     0.0001 % rounding of settled RUONIA indices (NFA 8.4(б)) and 2-decimal amounts,
     KEYRATE or RUSFAR RUB legs.
-76. **XCCY carry and persisted curves.** Horizon / carry for XCCY, and export / seed of
+76. *(partly: shared within a job in 0.29.0; carry and across jobs open)* **XCCY carry and persisted curves.** Horizon / carry for XCCY, and export / seed of
     shocked XCCY curves across jobs (a cold quote-basis job rebuilds about 530).
 77. **Quote-fixed FX risk.** On the quote basis the CNY curve is held under spot moves
     (sticky curve, linear FX delta). A desk that holds the quotes under FX moves needs
@@ -391,7 +391,7 @@ other repositories and must be changed there, not in this core.
     not carry the accrued. `HorizonValuation.accrued_*` is None for floaters today.
 82. **Floaters in the local worker and non-RUB floaters.** `FixedRubBondInput` is fixed
     only; `value_portfolio` rejects non-RUB floaters.
-83. **Per-position model flags** in the portfolio result (e.g. `has_optionality`, the
+83. *(done in 0.29.0)* **Per-position model flags** in the portfolio result (e.g. `has_optionality`, the
     two-curve model) need result contract `v3`.
 84. *(downstream)* **Floater data.** The per-bond formula (lag in calendar or business
     days, averaging, in advance or in arrears, rounding, bounds) from the hub's
@@ -410,7 +410,7 @@ other repositories and must be changed there, not in this core.
 
 ## Rate futures — 0.27.0
 
-87. **Rate futures in `value_portfolio` and the local worker.** Needs terms for
+87. *(portfolio part done in 0.29.0; local worker open, #102)* **Rate futures in `value_portfolio` and the local worker.** Needs terms for
     `RATE_FUTURE` (RUON / RUONIA index / KEYRATE) and `OFZ_FUTURE` (contract dates, basket
     ISINs with published CFs) or a futures position type; snapshot entries for RUONIA
     fixings with declared unpublished days, a published RUONIA index value, the key-rate
@@ -437,7 +437,7 @@ other repositories and must be changed there, not in this core.
 
 ## Repo legs — 0.28.0
 
-94. **Repo in `value_portfolio`.** Needs a repo instrument form (trade, collateral
+94. *(done in 0.29.0)* **Repo in `value_portfolio`.** Needs a repo instrument form (trade, collateral
     reference), discount and projection curve, calendar and fixing IDs, an open-repo end
     policy, one engine per trade on the shared shocked-curve cache, result fields (S1,
     S2, accrued interest, repurchase amount, collateral exposure and coverage), the
@@ -460,4 +460,26 @@ other repositories and must be changed there, not in this core.
 100. **Floating repo Hessian speed and carry explain.** 22 factors cost about 10.7 ms per
      position warm; the interest is linear in the forwards, so an analytic or sparse
      projection block would cut it. Carry has no rolldown term or P&L explain.
+
+## Portfolio v3 — 0.29.0
+
+101. **Derivative carry in `horizon_portfolio`.** It rejects every derivative
+     (`UNSUPPORTED_PRODUCT`); `swap_horizon` and `repo_carry` exist, FX, XCCY and CDS carry
+     do not.
+102. **Derivatives in the local worker** (`run_local_risk`; its contract v1 is fixed RUB
+     bonds), including FX futures (#33) and rate futures (#87).
+103. **Basis scenarios.** `PortfolioScenario` cannot shift `FXBASIS`, `XCCYBASIS` or
+     `FUTBASIS`; desk scenarios that move a basis need shift entries per basis key.
+104. **Shared FX futures engines.** Rate and OFZ futures share one engine per contract;
+     FX futures still build one per position (`fx_futures` has no `for_quantity`).
+105. **RUSFAR projection spec.** A RUSFAR repo projects on a curve under a RUONIA OIS spec;
+     register a RUSFAR projection spec together with the typed `rusfar` index (#95).
+106. **Heavy engines in the portfolio.** With the Hessian, CDS cost 30–34 ms per position,
+     a two-curve OIS swap and an open floating repo on OIS quotes about 45 ms (engine
+     costs, not portfolio overhead); see also #70, #86, #100.
+107. *(downstream)* **v3 consumer migration.** The backend stores v3 next to v2, supplies
+     the new snapshot inputs (FX spots with value dates, bases, credit curves, futures
+     prices, RUONIA fixings with declared gaps) and maps desk products to the position
+     types; run imported and computed derivatives in parallel before switching them to
+     `computed`.
 

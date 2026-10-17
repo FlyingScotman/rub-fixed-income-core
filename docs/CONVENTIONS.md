@@ -492,6 +492,32 @@ See [repo](repo.md); sources in [sources/repo_moex](sources/repo_moex/README.md)
 - **Risk:** `IR|<discount>|*` and, for a two-curve floating repo, `IR|<projection>|*`;
   central (DEC08). A lender's discount DV01 is negative.
 
+## Portfolio result contract v3 (derivatives)
+
+The rules the portfolio path adds; the products' own conventions are in their sections.
+Full reference: [portfolio-v3.md](portfolio-v3.md).
+
+- **When.** v3 only when a position is on a derivative position type; a bond-only book is
+  v2 byte for byte. Derivative instruments that no position references do not switch
+  the contract.
+- **Dating.** Every curve is dated the snapshot business date, the key-rate projection
+  curve included (a TOM calibration is re-dated with `rebase_key_rate_curve`, which
+  extends the current-rate interval; a key-rate change effective on TOM is rejected).
+  The FX spot carries its own value date (`FxSpot.value_date`) and settlement calendar;
+  FX value dates must be business days of that calendar.
+- **Quantity.** A multiplier of the contract as booked (futures: signed contracts).
+  Repo contract amounts (S1, S2, accrued) are reported per trade.
+- **Futures PV.** The pending variation margin from `margined_price` to the snapshot
+  price, undiscounted; RUON margins follow the specification's rounding.
+- **FX basis.** Always explicit per (currency, foreign curve) (`FxBasis`); 0 on an
+  implied or XCCY-bootstrapped curve.
+- **JTD.** By bond `issuer_id` / CDS reference entity; one sign rule (DEC07). A CDS uses the
+  position's recovery when stated, else the credit curve's.
+- **Scenarios.** Per-curve shifts win over the shock for the named curves in every
+  role; `spread_shift_bp` moves `CS` of bonds, CDS quotes and OFZ futures baskets;
+  `fx_shocks_pct` moves FX spots and conversions; bases are held.
+- **Model flags.** Fixed vocabulary listed in [portfolio-v3.md](portfolio-v3.md); sorted.
+
 ## Horizon valuation: carry and rolldown (0.14.0)
 
 Start at settlement `S0` of business date `d0`; horizon at settlement `S1` of `d1` (the

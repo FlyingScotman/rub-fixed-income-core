@@ -34,6 +34,7 @@ linear guardrail; they do not call the exact solver.
 - [XCCY](docs/xccy.md) — CNY/RUB cross-currency swaps vs RUONIA and the CNY curve bootstrap
 - [Rate futures](docs/rate-futures.md) — RUONIA, RUONIA index, KEYRATE and OFZ basket futures
 - [Repo](docs/repo.md) — repo and reverse-repo legs: fixed, RUSFAR / RUONIA / key-rate floating, collateral reference
+- [Portfolio v3](docs/portfolio-v3.md) — derivatives in `value_portfolio`: position types, snapshot inputs, result contract `rub-portfolio-risk-result.v3`
 - [Backlog](docs/BACKLOG.md) — remaining fixes and downstream migrations
 - [Changelog](CHANGELOG.md)
 

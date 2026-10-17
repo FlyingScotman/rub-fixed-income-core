@@ -34,6 +34,18 @@ is missed by a kopeck on about one corporate bond in ten:
 
 Existing `FixedCouponLeg` instruments keep their serialised form and hashes.
 
+**Result contract v3 (derivatives in the portfolio).** A job with a position on a swap,
+FX forward or swap, XCCY, CDS, FX / rate / OFZ future or repo returns
+`rub-portfolio-risk-result.v3` (`PortfolioRiskResultV3`, a subclass of
+`PortfolioRiskResult`). Bond-only jobs keep v2 byte for byte, so stored v2 results,
+their hashes and job IDs are unaffected. A reader that only knows v2 rejects v3 (the
+schema version differs); `portfolio_result_from_json` now reads both, and
+`verify_portfolio_result_v3` checks v3. The adapter supplies the new snapshot inputs
+(FX spots with value dates, FX bases per foreign curve, credit curves with recovery,
+futures prices and margined prices, RUONIA fixings with declared unpublished days, key-rate
+curves dated the business date) and an assumed end for every open repo. See
+[portfolio-v3.md](portfolio-v3.md).
+
 ## Deprecations in 0.12.0 and what consumers should move to
 
 Nothing is removed before 1.0. Each call below now emits a `DeprecationWarning` (hidden by

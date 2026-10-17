@@ -1,5 +1,71 @@
 # Changelog
 
+## 0.29.0 — derivatives in `value_portfolio`, result contract v3
+
+Portfolio integration of packages 2, 4, 5, 6, 7 and 8. A book with any derivative
+position returns `rub-portfolio-risk-result.v3`; a bond-only book still returns v2 with
+the bytes, `job_id` and hashes of 0.26.0 (pinned, and checked against a clean 0.26.0
+checkout on Python 3.11 and 3.13). See `docs/portfolio-v3.md`.
+
+### Added
+
+- **Derivatives in `value_portfolio`, result contract `rub-portfolio-risk-result.v3`**
+  (`docs/portfolio-v3.md`).
+  - Position types (`rub_fixed_income.portfolio_instruments`): `SwapInstrument`
+    (RUONIA OIS and key-rate swaps; projection curve and fixing IDs on the position),
+    `FxForwardInstrument` (`FxForward` / `FxSwap`), `XccyInstrument` (a curve ID per
+    role, RUONIA and foreign index fixings), `CdsInstrument`, `FxFuturesInstrument`,
+    `RateFuturesInstrument` (RUON, RUONIA index, KEYRATE), `OfzFuturesInstrument`
+    (`OfzDeliverable` basket by instrument ID and conversion factor) and
+    `RepoInstrument` (assumed end of an open repo on the position).
+    `value_portfolio(instruments=...)` takes any mix (`PortfolioInstrument`).
+  - `MarketSnapshot` inputs, all optional and omitted at their defaults: `fx_spots`
+    (`FxSpot` with value date and settlement calendar), `fx_bases` (`FxBasis` per
+    currency and foreign curve), `credit_curves` (`CreditCurveEntry` by reference entity
+    and currency, explicit recovery), `futures_quotes` (`FuturesQuote`: price and
+    margined price), `index_fixings`, `ruonia_fixings` (declared unpublished days) and
+    `ruonia_index`; `CurveEntry` takes key-rate forward curves (`rub_key_rate_swap_v1`)
+    and XCCY quote sets (`cny_ruonia_xccy_v1`).
+  - `PortfolioRiskResultV3` (a subclass of `PortfolioRiskResult`): per-product rows
+    (`swaps`, `fx_forwards`, `xccy_swaps`, `cds`, `fx_futures`, `rate_futures`,
+    `ofz_futures`, `repos`), factor totals over every product (`IR`, `REAL`, `CS`, `FX`,
+    `FXBASIS`, `XCCYBASIS`, `FUTBASIS`), the book's sparse Hessian by factor name
+    (`hessian_totals`), jump-to-default by entity for bonds and CDS (`jtd_totals`,
+    `jtd_total_rub`, one sign rule), `position_models` (engine model version and flags
+    per computed position), FX spots and credit curves used. Coverage and scenarios over
+    every position. `verify_portfolio_result_v3`; `portfolio_result_to_json` writes and
+    `portfolio_result_from_json` reads both v2 and v3. Pinned fixture
+    `tests/fixtures/portfolio_result_v3.json`.
+  - One engine per futures contract and job for rate and OFZ futures (`for_quantity`);
+    shared shocked-curve, XCCY and CDS curve caches per job.
+  - Coded rejections `EXPIRED_CONTRACT`, `SETTLED_LEG`, `UNDECLARED_FIXING_GAP`,
+    `MISSING_BASKET_PRICE` (and `MISSING_ASSUMPTION` for an open repo without an end).
+  - The `PRODUCT_ADAPTERS` registry (`rub_fixed_income.portfolio_products`): a new
+    product adds a position type, a row type, an adapter and an `OMIT_IF_DEFAULT` row
+    field (repo legs were added this way).
+- **Per-curve scenario shifts** (`PortfolioScenario.curve_shifts_bp`, BACKLOG #43): named
+  curves move by their own vector in every role and for every product; a real curve moves
+  when named. `spread_shift_bp` moves CDS quotes and OFZ futures baskets too;
+  `fx_shocks_pct` moves FX spots.
+- **Native exercise assumptions** (BACKLOG #50): `ValuationPolicy.exercise_assumptions`
+  values callable and perpetual bonds in `value_portfolio` and `horizon_portfolio` as the
+  bond the resolved exercise implies; `PositionValuation.exercise_assumption` and
+  `horizon="call"`. Numbers equal `value_assumed_portfolio`'s (unchanged).
+- **The swap side of `rub_ruonia_ois_moex_v2`** (BACKLOG #61):
+  `swap_convention("rub_ruonia_ois_moex_v2")`; `SwapConvention.float_compounding="nfa_act"`
+  (NFA `RUB-RUONIA-OIS-COMPOUND`: `n_i / Act` weights, `Act` = 366 if any day of the
+  period is in a leap year, amount `(growth - 1) * Act / d * Act/Act ISDA`). Par v2 swaps
+  reprice the v2 bootstrap within 1e-6 bp.
+- `key_rate.rebase_key_rate_curve(curve, business_date, *, rate_in_force)`: re-dates a
+  TOM-calibrated key-rate curve to the business date (BACKLOG #55 dating rule).
+- `benchmarks/portfolio_bench.py --cases mixed`: a 2k mixed book.
+
+### Changed
+
+- `SwapRiskEngine.base_id` hashes the swap through the canonical form instead of
+  `dataclasses.asdict` (identical bytes for every existing convention; needed so the new
+  `float_compounding` field is omitted at its default).
+
 ## 0.28.0 — repo and reverse-repo legs
 
 Package 6 (core part), instrument valuation only: desk funding economics stay in the

@@ -244,3 +244,18 @@ rate never move. A cash lender (`reverse_repo`) has negative discount DV01 and p
 projection DV01; the borrower the reverse. The collateral carries no risk here: the bond
 stays a position of the cash borrower and is risked by the bond engines, so the repo
 leg and the bond are never counted twice. There is no `CS`, JTD or FX factor.
+
+## Derivatives in the portfolio (result contract v3)
+
+`value_portfolio` maps every product's engine risk to the desk factors with the product
+module's own mapping (`swap_factor_risk`, `fx_forward_factor_risk`, `xccy_factor_risk`,
+`cds_factor_risk`, `fx_futures_factor_risk`, `rate_futures_factor_risk`,
+`ofz_futures_factor_risk`, `repo_factor_risk`), scaled by the position quantity (futures
+engines include it). A non-RUB CDS is scaled by the snapshot `FxRate` and gains `FX|<ccy>`
+with its cross terms (`fx_translated_factor_risk`), as non-RUB bonds. Bonds and
+derivatives share one factor space: `factor_totals` sums every position's first order,
+`hessian_totals` every position's sparse Hessian by factor name (upper triangle by name);
+cross terms within one position (FX x rates of FX products, `CS` x rates of CDS,
+discount x projection of two-curve swaps) are those of its engine. All first orders and
+Hessians are central with the policy's bump (DEC08). Recovery sensitivity of a CDS is
+reported as `recovery01_rub` beside the factors. See [portfolio-v3.md](portfolio-v3.md).

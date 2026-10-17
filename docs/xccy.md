@@ -325,4 +325,5 @@ curves are not persisted yet.
 - Bootstrapping from basis quotes of RUONIA plus a spread against a CNY floating index
   (MOEX `XCCY/BASIS` with `RUSFARCNY`). Only CNY fixed par quotes are bootstrapped.
 - Carry and horizon valuation; persisted XCCY shocked curves.
-- `value_portfolio`, `MarketSnapshot` and `Position` integration (release notes).
+- Portfolio carry: `value_portfolio` takes XCCY swaps (`XccyInstrument`, result contract
+  v3, [portfolio-v3.md](portfolio-v3.md)); `horizon_portfolio` does not.

@@ -11,6 +11,7 @@ import numpy as np
 from .conventions import DayCount
 from .dates import BusinessCalendar, add_months
 from .discount import DiscountCurve
+from .errors import InvalidTerms
 from .tenors import parse_tenor, resolve_tenor
 
 MODEL_VERSION = "krs-pillar-forward-average-v1"
@@ -91,6 +92,37 @@ class KeyRateForwardCurve:
             total += rate * (boundary - cursor).days
             cursor = boundary
         return total / (end - start).days
+
+
+def rebase_key_rate_curve(
+    curve: KeyRateForwardCurve, business_date: date, *, rate_in_force: float
+) -> KeyRateForwardCurve:
+    """``curve`` re-dated to an earlier ``business_date`` (the portfolio's curve date).
+
+    :func:`build_key_rate_forward_curve` dates its curve at the swaps' TOM start. A
+    portfolio values on the snapshot business date, so its key-rate swaps and futures read
+    a curve dated that day. Between ``business_date`` and the curve date the key rate in
+    force is the one the Bank of Russia has already set: ``rate_in_force`` states it, and
+    it must equal the curve's ``current_rate`` (a decision effective on the TOM date itself
+    cannot be expressed by extending the current interval and is rejected). The current
+    interval is extended back; the forward segments are unchanged. Bucket shifts are then
+    read at times from ``business_date``.
+    """
+    if not isinstance(curve, KeyRateForwardCurve):
+        raise TypeError("curve must be a KeyRateForwardCurve")
+    if business_date > curve.curve_date:
+        raise InvalidTerms("a key-rate curve can only be re-dated to an earlier date")
+    if not math.isfinite(rate_in_force) or rate_in_force != curve.current_rate:
+        raise InvalidTerms(
+            "the key rate in force on the business date differs from the curve's current rate"
+        )
+    return KeyRateForwardCurve(
+        business_date,
+        curve.current_rate,
+        curve.current_rate_end,
+        curve.segments,
+        curve.model_version,
+    )
 
 
 @dataclass(frozen=True)
