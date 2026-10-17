@@ -23,6 +23,7 @@ def test_registered_specs() -> None:
         "cny_discount_factors_v1",
         "usd_discount_factors_v1",
         "eur_discount_factors_v1",
+        "rub_key_rate_projection_v1",
         "cny_ruonia_xccy_v1",
         "rub_real_discount_factors_v1",
     }

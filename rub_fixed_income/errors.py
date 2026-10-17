@@ -11,6 +11,7 @@ __all__ = [
     "CalendarRangeError",
     "CoreRejection",
     "InvalidTerms",
+    "MissingFixing",
     "MissingMarketData",
     "UnknownCurveSpec",
     "UnsupportedProduct",
@@ -37,6 +38,13 @@ class MissingMarketData(CoreRejection):
     """A required curve, fixing, FX rate, calendar or quote is absent from the snapshot."""
 
     code = "MISSING_MARKET_DATA"
+
+
+class MissingFixing(MissingMarketData, LookupError):
+    """A required fixing (for example a RUONIA business day) is absent; it is never filled.
+
+    Also a ``LookupError``, which is what the floating-coupon module raised before.
+    """
 
 
 class CalendarRangeError(CoreRejection):

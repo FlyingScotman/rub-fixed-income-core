@@ -120,6 +120,7 @@ def test_coupon_paid_inside_the_horizon_is_received_and_accrual_restarts() -> No
     assert result.coupons_received_rub == 40.0 and result.principal_received_rub == 0.0
     assert result.accrued_start_rub == pytest.approx(40.0 * 168 / 184, abs=0.01)
     assert result.accrued_end_rub == pytest.approx(40.0 * 16 / 181, abs=0.01)
+    assert result.accrued_start_rub is not None and result.accrued_end_rub is not None
     clean_start = result.pv_start_rub - result.accrued_start_rub
     clean_end = result.pv_rolled_rub - result.accrued_end_rub
     assert result.horizon_pnl_rub == pytest.approx(

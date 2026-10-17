@@ -25,6 +25,7 @@ from datetime import date, datetime
 from typing import Literal, cast
 
 from ._money import finite_money, positive_money
+from ._risk_common import _shifts
 from ._version import __version__
 from .bond import YieldRequest, solve_effective_annual_yield
 from .canonical import OMIT_IF_DEFAULT, canonical_json_bytes, canonical_sha256
@@ -33,20 +34,22 @@ from .compatibility import bond_duration
 from .conventions import (
     ANNUAL,
     DEFAULT_YIELD_CONVENTION,
-    CurveConvention,
     YieldConvention,
     ZSpreadConvention,
     calendar_fingerprint,
 )
-from .curve_specs import CurveKind, get_curve_spec, ois_curve_convention
+from .curve_specs import CurveKind, _check_ois_spec_convention, get_curve_spec
 from .dates import BusinessCalendar
 from .discount import CurveBootstrapRequest, DiscountCurve
 from .domain import (
     AccountingCategory,
+    BondPriceObservation,
     CurveEntry,
+    FloatingCouponLeg,
     FxRate,
     Instrument,
     MarketSnapshot,
+    Offer,
     Position,
     ProductType,
 )
@@ -57,6 +60,7 @@ from .factors import (
     fx_translated_factor_risk,
     linker_factor_risk,
 )
+from .floating import FixingIndex
 from .horizon import HORIZON_MODEL_VERSION, HorizonValuation, horizon_valuation
 from .inflation import IndexedPrincipalLeg
 from .kbd import KBD_MODEL_VERSION, ZcycParameters, g_spread_bp, kbd_discount_curve
@@ -67,7 +71,7 @@ from .local_risk import (
     RiskRunContext,
     prepare_local_bond_risk,
 )
-from .risk import BondScenario, ShockedCurveCache
+from .risk import BondRiskEngine, BondRiskRequest, BondScenario, ShockedCurveCache
 from .serialization import decode
 
 __all__ = [
@@ -97,7 +101,7 @@ __all__ = [
 ]
 
 PORTFOLIO_RESULT_SCHEMA = "rub-portfolio-risk-result.v2"
-SUPPORTED_PRODUCTS = frozenset({ProductType.FIXED_BOND})
+SUPPORTED_PRODUCTS = frozenset({ProductType.FIXED_BOND, ProductType.FLOATING_BOND})
 # Bond currencies of value_portfolio (package 3): each non-RUB one needs a discount curve
 # named in ValuationPolicy.foreign_curves and an FX rate in the snapshot.
 SUPPORTED_CURRENCIES = frozenset({"RUB", "CNY", "USD", "EUR"})
@@ -127,6 +131,11 @@ class ValuationPolicy:
     RUB bonds are discounted on ``discount_curve_id``. A non-RUB bond is discounted on
     the curve that ``foreign_curves`` names for its currency, as ``(currency, curve_id)``
     pairs; there is no fallback. ``curve_overrides`` win for the instruments they name.
+
+    ``cap_floor_guard_bp`` is the model policy for floaters with a floor or cap: core
+    prices them at intrinsic value on the projected rate only when that rate is at least
+    this many bp from every strike, and rejects them otherwise (``UNSUPPORTED_PRODUCT``).
+    None, the default, rejects every projected coupon that has a floor or cap.
     """
 
     discount_curve_id: str
@@ -137,8 +146,14 @@ class ValuationPolicy:
     include_second_order: bool = True
     bump_bp: float = 1.0
     foreign_curves: tuple[tuple[str, str], ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
+    cap_floor_guard_bp: float | None = field(default=None, metadata=OMIT_IF_DEFAULT)
 
     def __post_init__(self) -> None:
+        if self.cap_floor_guard_bp is not None:
+            guard = finite_money(self.cap_floor_guard_bp, "cap/floor guard bp")
+            if guard < 0.0:
+                raise InvalidTerms("cap_floor_guard_bp cannot be negative")
+            object.__setattr__(self, "cap_floor_guard_bp", guard)
         object.__setattr__(
             self, "foreign_curves", tuple(sorted(tuple(p) for p in self.foreign_curves))
         )
@@ -184,15 +199,26 @@ class PortfolioScenario:
     ``fx_shocks_pct`` moves FX rates against RUB, as ``(currency, percent)`` pairs: a
     position in that currency is revalued at ``FX * (1 + percent / 100)``. RUB positions
     and currencies not listed are not moved.
+
+    A floater that projects off a curve other than its discount curve moves that curve
+    by ``projection_curve_shifts_bp`` (11 bucket shifts, bp) or, when None, by the
+    shock's curve shifts too, so a rates scenario moves every curve it depends on.
     """
 
     name: str
     shock: BondScenario
     fx_shocks_pct: tuple[tuple[str, float], ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
+    projection_curve_shifts_bp: tuple[float, ...] | None = field(
+        default=None, metadata=OMIT_IF_DEFAULT
+    )
 
     def __post_init__(self) -> None:
         if not self.name:
             raise InvalidTerms("scenario name is required")
+        if self.projection_curve_shifts_bp is not None:
+            object.__setattr__(
+                self, "projection_curve_shifts_bp", _shifts(tuple(self.projection_curve_shifts_bp))
+            )
         object.__setattr__(
             self, "fx_shocks_pct", tuple(sorted(tuple(p) for p in self.fx_shocks_pct))
         )
@@ -412,17 +438,6 @@ def _build_curve(entry: CurveEntry, business_date: date) -> _BuiltCurve:
     raise InvalidTerms(f"spec {spec.spec_id} is not a bond discount curve")
 
 
-def _check_ois_spec_convention(curve_id: str, spec_id: str, convention: CurveConvention) -> None:
-    """A spot-OIS convention belongs to ``rub_ruonia_ois_moex_v2`` and nothing else."""
-    ois = convention.ois_swap
-    if spec_id == "rub_ruonia_ois_legacy_v1":
-        if ois is not None:
-            raise InvalidTerms(f"curve {curve_id}: {spec_id} has no spot-starting OIS convention")
-        return
-    if ois is None or convention != ois_curve_convention(spec_id, ois.calendar):
-        raise InvalidTerms(f"curve {curve_id}: convention does not match spec {spec_id}")
-
-
 def _coverage(expected: Sequence[Position], rejections: list[Rejection]) -> PortfolioCoverage:
     failed = {r.position_id for r in rejections}
     completed = sum(1 for p in expected if p.position_id not in failed)
@@ -499,7 +514,8 @@ def value_portfolio(
     cache = ShockedCurveCache() if curve_cache is None else curve_cache
     valuations: list[PositionValuation] = []
     rejections: list[Rejection] = []
-    prepared_by_position: dict[str, PreparedLocalBondRisk] = {}
+    prepared_by_position: dict[str, BondRiskEngine] = {}
+    projections: dict[str, _BuiltCurve | CoreRejection] = {}
     used_calendars: dict[str, CalendarUse] = {}
     used_fx: dict[str, FxRate] = {}
     fx_currency: dict[str, str] = {}
@@ -516,6 +532,9 @@ def value_portfolio(
         if isinstance(outcome, CoreRejection):
             raise outcome
         return outcome
+
+    def projection(curve_id: str, index: FixingIndex) -> _BuiltCurve:
+        return _projection_curve(snapshot, projections, curve_id, index)
 
     for position in positions:
         reason = stopped()
@@ -541,6 +560,7 @@ def value_portfolio(
                 run_id,
                 used_calendars,
                 used_fx,
+                projection,
                 used_cpi,
             )
         except CoreRejection as exc:
@@ -590,10 +610,13 @@ def value_portfolio(
         if coverage.completed
         else "failed"
     )
+    used_curves = {
+        k: c for k, c in projections.items() if "|" not in k and isinstance(c, _BuiltCurve)
+    }
+    used_curves.update((k, c) for k, c in built.items() if isinstance(c, _BuiltCurve))
     curves_used = tuple(
         CurveUse(c.entry.curve_id, c.entry.spec_id, c.model_version)
-        for _, c in sorted(built.items())
-        if isinstance(c, _BuiltCurve)
+        for _, c in sorted(used_curves.items())
     )
     result = PortfolioRiskResult(
         run_id,
@@ -639,7 +662,48 @@ def _supported_instrument(
         raise UnsupportedProduct("perpetual bonds need a call assumption (package 9)")
     if any(o.kind.value == "call" for o in instrument.offers):
         raise UnsupportedProduct("callable bonds are not supported (package 9)")
+    leg = instrument.coupon_leg
+    if isinstance(leg, FloatingCouponLeg):
+        if instrument.currency != "RUB":
+            raise UnsupportedProduct("floating coupons are supported on RUB bonds only")
+        if leg.projection_curve_id is None:
+            raise UnsupportedProduct(
+                "the floating leg names no projection curve (FloatingCouponLeg.projection_curve_id)"
+            )
     return instrument
+
+
+def _projection_curve(
+    snapshot: MarketSnapshot,
+    memo: dict[str, _BuiltCurve | CoreRejection],
+    curve_id: str,
+    index: FixingIndex,
+) -> _BuiltCurve:
+    """The snapshot curve ``curve_id`` checked as a projection curve, once per call."""
+    key = f"{curve_id}|{index}"
+    if key not in memo:
+        try:
+            source = snapshot.projection_curve(curve_id, index)
+            entry = snapshot.curve(curve_id)
+            spec = get_curve_spec(entry.spec_id)
+            memo[key] = _BuiltCurve(entry, source, None, spec.model_version, spec.currency)
+        except CoreRejection as exc:
+            memo[key] = exc
+    outcome = memo[key]
+    if isinstance(outcome, CoreRejection):
+        raise outcome
+    memo.setdefault(curve_id, outcome)
+    return outcome
+
+
+def _accrued(instrument: Instrument, quote: BondPriceObservation, settlement: date) -> float:
+    if quote.accrued_per_bond is not None:
+        return quote.accrued_per_bond
+    if isinstance(instrument.coupon_leg, FloatingCouponLeg):
+        # Exchange accrual of a floater depends on how its current coupon is fixed;
+        # core does not assume a convention.
+        raise MissingMarketData("a floater's accrued interest must come with its quote")
+    return instrument.accrued(settlement)
 
 
 def _use_calendar(
@@ -667,19 +731,25 @@ def _value_position(
     run_id: str,
     used_calendars: dict[str, CalendarUse],
     used_fx: dict[str, FxRate],
+    projection: Callable[[str, FixingIndex], _BuiltCurve],
     used_cpi: dict[str, CpiUse] | None = None,
-) -> tuple[PositionValuation, PreparedLocalBondRisk]:
+) -> tuple[PositionValuation, BondRiskEngine]:
     """Value one bond position.
 
     A non-RUB bond (package 3) is priced in its currency on its own currency's curve.
     Its flows, nominal and accrued enter the RUB risk adapter converted at the snapshot
     FX rate, so PV, DV01, CS01, the Hessian and JTD come out in RUB; the FX delta and
     the FX cross terms are added from them (``fx_translated_factor_risk``).
+
+    A floater (package 1) projects its coupons off its leg's projection curve with the
+    snapshot's point-in-time fixings; a projection curve other than the discount curve
+    adds its own ``IR|<projection curve>|<bucket>`` factors.
+
     An inflation-linked bond (package 9a) goes to :func:`_value_linker_position`.
     """
     linker = instruments.get(position.instrument_id)
     if linker is not None and linker.product is ProductType.INFLATION_LINKED_BOND:
-        return _value_linker_position(
+        valuation, prepared = _value_linker_position(
             position,
             linker,
             snapshot,
@@ -691,6 +761,7 @@ def _value_position(
             used_calendars,
             {} if used_cpi is None else used_cpi,
         )
+        return valuation, prepared.engine
     instrument = _supported_instrument(position, instruments, SUPPORTED_CURRENCIES)
     convention = instrument.yield_convention
     if convention.compounding != ANNUAL:
@@ -719,11 +790,7 @@ def _value_position(
     if not flows:
         raise InvalidTerms("no cashflows remain after settlement")
     quote = snapshot.quote(instrument.instrument_id)
-    accrued = (
-        quote.accrued_per_bond
-        if quote.accrued_per_bond is not None
-        else instrument.accrued(settlement)
-    )
+    accrued = _accrued(instrument, quote, settlement)
     nominal = instrument.outstanding_face(settlement)
     # RUB amounts: unchanged for a RUB bond, converted at the snapshot rate otherwise.
     rub_flows: tuple[BondCashflow, ...] = (
@@ -734,48 +801,77 @@ def _value_position(
     basis: Literal["continuous_zero", "ois_quote"] = (
         "ois_quote" if isinstance(built.curve, CurveBootstrapRequest) else "continuous_zero"
     )
-    prepared = prepare_local_bond_risk(
-        FixedRubBondInput(
-            context=RiskRunContext(
-                run_id,
-                instrument.instrument_id,
-                snapshot.snapshot_id,
-                snapshot.snapshot_id,
-                f"{snapshot.snapshot_id}:{curve_id}",
-                basis,
+    projection_id: str | None = None
+    yield_flows: Sequence[BondCashflow] = flows
+    if isinstance(instrument.coupon_leg, FloatingCouponLeg):
+        engine, adapter_id, projection_id = _floating_engine(
+            instrument,
+            snapshot,
+            policy,
+            built,
+            curve_id,
+            projection,
+            cache,
+            (settlement, horizon_date, offer),
+            flows,
+            quote,
+            (nominal, accrued, position.quantity),
+            run_id,
+        )
+        # Yield and duration of a floater are on its base projected flows.
+        yield_flows = tuple(
+            BondCashflow(d, a)
+            for d, a in sorted(
+                (
+                    *((f.payment_date, f.amount) for f in engine.request.cashflows),
+                    *((c.payment_date, c.amount_rub) for c in engine.projected_coupons),
+                )
+            )
+        )
+    else:
+        prepared = prepare_local_bond_risk(
+            FixedRubBondInput(
+                context=RiskRunContext(
+                    run_id,
+                    instrument.instrument_id,
+                    snapshot.snapshot_id,
+                    snapshot.snapshot_id,
+                    f"{snapshot.snapshot_id}:{curve_id}",
+                    basis,
+                ),
+                cashflows=rub_flows,
+                settlement_date=settlement,
+                horizon_date=horizon_date,
+                horizon="maturity" if offer is None else "confirmed_investor_put",
+                cashflow_currency="RUB",
+                coupon_model="fixed",
+                current_nominal_rub=nominal_rub,
+                clean_price_pct=quote.clean_price_pct,
+                accrued_interest_rub=accrued_rub,
+                quantity=position.quantity,
+                curve=built.curve,
+                spread_convention=policy.spread_convention,
+                spread_kind=policy.spread_kind,
             ),
-            cashflows=rub_flows,
-            settlement_date=settlement,
-            horizon_date=horizon_date,
-            horizon="maturity" if offer is None else "confirmed_investor_put",
-            cashflow_currency="RUB",
-            coupon_model="fixed",
-            current_nominal_rub=nominal_rub,
-            clean_price_pct=quote.clean_price_pct,
-            accrued_interest_rub=accrued_rub,
-            quantity=position.quantity,
-            curve=built.curve,
-            spread_convention=policy.spread_convention,
-            spread_kind=policy.spread_kind,
-        ),
-        curve_cache=cache,
-    )
-    engine = prepared.engine
+            curve_cache=cache,
+        )
+        engine, adapter_id = prepared.engine, prepared.calculation_id
     risk = engine.risk(bump_bp=policy.bump_bp, difference="central")
     second = engine.second_order(bump_bp=policy.bump_bp) if policy.include_second_order else None
-    factor_risk = bond_factor_risk(risk, curve_id, second)
+    factor_risk = bond_factor_risk(risk, curve_id, second, projection_curve_id=projection_id)
     dirty = cast(float, engine.request.dirty_price_rub)
     dirty_ccy = (
         clean_price_pct_to_dirty_rub(quote.clean_price_pct, nominal, accrued) if foreign else dirty
     )
-    effective_yield, duration = _yield_and_duration(settlement, dirty_ccy, flows, convention)
+    effective_yield, duration = _yield_and_duration(settlement, dirty_ccy, yield_flows, convention)
     g_spread = None
-    if built.kbd is not None:
+    # A G-spread compares a fixed-rate yield with the KBD; a floater has none.
+    if built.kbd is not None and not isinstance(instrument.coupon_leg, FloatingCouponLeg):
         # The KBD is effective annual on ACT/365F: compare on that basis.
         kbd_yield, kbd_tenor = (
             (effective_yield, duration)
             if convention == DEFAULT_YIELD_CONVENTION
-            else _yield_and_duration(settlement, dirty_ccy, flows, DEFAULT_YIELD_CONVENTION)
+            else _yield_and_duration(settlement, dirty_ccy, yield_flows, DEFAULT_YIELD_CONVENTION)
         )
         g_spread = g_spread_bp(built.kbd, kbd_yield, kbd_tenor)
     jtd = (
@@ -794,7 +890,7 @@ def _value_position(
         {
             "job_id": job_id,
             "position_id": position.position_id,
-            "adapter_id": prepared.calculation_id,
+            "adapter_id": adapter_id,
         }
     )
     valuation = PositionValuation(
@@ -826,7 +922,71 @@ def _value_position(
         convention.identifier,
         amounts,
     )
-    return valuation, prepared
+    return valuation, engine
+
+
+def _floating_engine(
+    instrument: Instrument,
+    snapshot: MarketSnapshot,
+    policy: ValuationPolicy,
+    built: _BuiltCurve,
+    curve_id: str,
+    projection: Callable[[str, FixingIndex], _BuiltCurve],
+    cache: ShockedCurveCache,
+    dates: tuple[date, date, Offer | None],
+    flows: Sequence[BondCashflow],
+    quote: BondPriceObservation,
+    amounts: tuple[float, float, float],
+    run_id: str,
+) -> tuple[BondRiskEngine, str, str | None]:
+    """The risk engine of a RUB floater, its adapter ID and its separate projection curve.
+
+    ``flows`` are the principal flows; the coupons come from the floating leg.
+    """
+    settlement, horizon_date, offer = dates
+    nominal, accrued, quantity = amounts
+    leg = cast(FloatingCouponLeg, instrument.coupon_leg)
+    projection_id = cast(str, leg.projection_curve_id)
+    if built.curve.curve_date != snapshot.business_date:
+        raise InvalidTerms(f"curve {curve_id} is not dated the snapshot business date")
+    model = instrument.floating_leg(
+        snapshot, horizon=horizon_date, strike_guard_bp=policy.cap_floor_guard_bp
+    )
+    projected = projection(projection_id, leg.rule.index)
+    two_curve = projection_id != curve_id
+    engine = BondRiskEngine(
+        BondRiskRequest(
+            cashflows=tuple(BondCashflow(f.payment_date, f.amount) for f in flows),
+            settlement_date=settlement,
+            curve=built.curve,
+            spread_convention=policy.spread_convention,
+            spread_kind=policy.spread_kind,
+            dirty_price_rub=clean_price_pct_to_dirty_rub(quote.clean_price_pct, nominal, accrued),
+            quantity=quantity,
+            floating_leg=model,
+            projection_curve=projected.curve if two_curve else None,
+        ),
+        cache,
+    )
+    adapter_id = canonical_sha256(
+        {
+            "adapter_model": "portfolio-floating-rub-risk-v1",
+            "library_version": __version__,
+            "run_id": run_id,
+            "instrument_id": instrument.instrument_id,
+            "market_snapshot_id": snapshot.snapshot_id,
+            "discount_curve": f"{snapshot.snapshot_id}:{curve_id}",
+            "projection_curve": f"{snapshot.snapshot_id}:{projection_id}",
+            "fixing_id": leg.fixing_id,
+            "core_base_id": engine.base_id,
+            "horizon": "maturity" if offer is None else "confirmed_investor_put",
+            "horizon_date": horizon_date,
+            "current_nominal_rub": nominal,
+            "clean_price_pct": quote.clean_price_pct,
+            "accrued_interest_rub": accrued,
+        }
+    )
+    return engine, adapter_id, projection_id if two_curve else None
 
 
 def _value_linker_position(
@@ -983,7 +1143,7 @@ def _yield_and_duration(
 def _run_scenario(
     scenario: PortfolioScenario,
     positions: Sequence[Position],
-    prepared: Mapping[str, PreparedLocalBondRisk],
+    prepared: Mapping[str, BondRiskEngine],
     fx_currency: Mapping[str, str],
     rejections: list[Rejection],
     job_id: str,
@@ -1025,11 +1185,16 @@ def _run_scenario(
                 )
             )
             continue
-        engine = prepared[position.position_id].engine
+        engine = prepared[position.position_id]
         currency = fx_currency.get(position.position_id)
         move = 0.0 if currency is None else scenario.fx_move_pct(currency)
         try:
-            repriced = engine.reprice(scenario.shock)
+            repriced = engine.reprice(
+                scenario.shock,
+                projection_curve_shifts_bp=(
+                    scenario.projection_curve_shifts_bp if engine.two_curve else None
+                ),
+            )
             pnl = repriced.total_pnl_rub
             if move:
                 # RUB value is linear in the rate: the shocked PV at the moved rate.
@@ -1231,12 +1396,15 @@ def _horizon_position(
         raise InvalidTerms(f"curve {curve_id} is not dated the snapshot business date")
     settlement = calendar.add_business_days(snapshot.business_date, instrument.settlement_lag_days)
     quote = snapshot.quote(instrument.instrument_id)
-    accrued = (
-        quote.accrued_per_bond
-        if quote.accrued_per_bond is not None
-        else instrument.accrued(settlement)
-    )
+    accrued = _accrued(instrument, quote, settlement)
     nominal = instrument.outstanding_face(settlement)
+    fixings = projection_curve = None
+    leg = instrument.coupon_leg
+    if isinstance(leg, FloatingCouponLeg):
+        fixings = snapshot.point_in_time_fixing(leg.fixing_id)
+        projection_id = cast(str, leg.projection_curve_id)
+        source = snapshot.projection_curve(projection_id, leg.rule.index)
+        projection_curve = None if projection_id == curve_id else source
     per_bond = horizon_valuation(
         instrument,
         outcome.curve,
@@ -1246,6 +1414,9 @@ def _horizon_position(
         spread_convention=policy.spread_convention,
         redemption_horizon=policy.horizon,
         curve_cache=cache,
+        fixings=fixings,
+        projection_curve=projection_curve,
+        strike_guard_bp=policy.cap_floor_guard_bp,
     )
     q = position.quantity
     return PositionHorizon(

@@ -22,10 +22,18 @@ from ._money import finite_money, positive_money
 from .canonical import OMIT_IF_DEFAULT
 from .cashflows import Cashflow, CashflowKind, accrued_interest
 from .conventions import DEFAULT_YIELD_CONVENTION, YieldConvention
+from .curve_specs import CurveKind, _check_ois_spec_convention, get_curve_spec
 from .dates import BusinessCalendar
-from .discount import CurveBootstrapRequest, DiscountCurve
-from .errors import InvalidTerms, MissingMarketData
-from .floating import FixingHistory, FloatingCouponPeriod, FloatingCouponRule
+from .discount import CurveBootstrapRequest, DiscountCurve, bootstrap_discount_curve
+from .errors import InvalidTerms, MissingMarketData, UnsupportedProduct
+from .floating import (
+    FixingHistory,
+    FixingIndex,
+    FloatingCouponPeriod,
+    FloatingCouponProjection,
+    FloatingCouponRule,
+    FloatingLeg,
+)
 from .inflation import CpiSeries, IndexedCouponLeg, IndexedPrincipalLeg
 from .kbd import ZcycParameters
 
@@ -240,17 +248,29 @@ class RateAccrualCouponLeg:
 
 @dataclass(frozen=True)
 class FloatingCouponLeg:
-    """A floater formula over its periods; ``fixing_id`` keys the snapshot's history."""
+    """A floater formula over its periods; ``fixing_id`` keys the snapshot's history.
+
+    ``projection_curve_id`` names the snapshot curve that projects unfixed observations
+    (a RUONIA OIS curve for RUONIA, a ``rub_key_rate_projection_v1`` curve for the key
+    rate). It may equal the discount curve (single-curve). A leg without one is not
+    projected: :meth:`Instrument.cashflows` then returns its principal only and
+    portfolio valuation rejects it as unsupported.
+    """
 
     rule: FloatingCouponRule
     periods: tuple[FloatingCouponPeriod, ...]
     fixing_id: str
+    projection_curve_id: str | None = field(default=None, metadata=OMIT_IF_DEFAULT)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "periods", tuple(self.periods))
         _text(self.fixing_id, "fixing_id")
         if not self.periods:
             raise InvalidTerms("a floating leg needs at least one period")
+        if self.projection_curve_id is not None:
+            _text(self.projection_curve_id, "projection_curve_id")
+            if "|" in self.projection_curve_id:
+                raise InvalidTerms("projection_curve_id cannot contain '|'")
 
 
 @dataclass(frozen=True)
@@ -323,9 +343,7 @@ class Instrument:
     product: ProductType
     currency: str
     initial_face: float
-    coupon_leg: (
-        FixedCouponLeg | RateAccrualCouponLeg | FloatingCouponLeg | IndexedCouponLeg | None
-    )
+    coupon_leg: FixedCouponLeg | RateAccrualCouponLeg | FloatingCouponLeg | IndexedCouponLeg | None
     principal_leg: PrincipalLeg | IndexedPrincipalLeg
     calendar_id: str
     offers: tuple[Offer, ...] = ()
@@ -439,35 +457,69 @@ class Instrument:
             raise InvalidTerms("a perpetual bond has no maturity horizon")
         return maturity, None
 
+    def floating_leg(
+        self,
+        market: MarketSnapshot,
+        *,
+        horizon: date | None = None,
+        strike_guard_bp: float | None = None,
+    ) -> FloatingLeg:
+        """The floating coupon model: this leg's periods paid on or before ``horizon``
+        with the snapshot's point-in-time fixings (:meth:`MarketSnapshot.point_in_time_fixing`).
+
+        ``strike_guard_bp`` is the cap/floor model policy of :class:`FloatingLeg`.
+        """
+        leg = self.coupon_leg
+        if not isinstance(leg, FloatingCouponLeg):
+            raise InvalidTerms("the instrument has no floating coupon leg")
+        history = market.point_in_time_fixing(leg.fixing_id)
+        if history.index != leg.rule.index:
+            raise InvalidTerms(
+                f"fixings {leg.fixing_id!r} are {history.index}, the coupon is on {leg.rule.index}"
+            )
+        periods = tuple(p for p in leg.periods if horizon is None or p.payment_date <= horizon)
+        if not periods:
+            raise InvalidTerms("no floating coupon period is paid by the horizon")
+        return FloatingLeg(leg.rule, periods, history, strike_guard_bp=strike_guard_bp)
+
     def cashflows(
         self,
         *,
         after: date | None = None,
         horizon: date | None = None,
         offer: Offer | None = None,
+        market: MarketSnapshot | None = None,
+        strike_guard_bp: float | None = None,
     ) -> tuple[Cashflow, ...]:
         """Known coupon and principal flows, merged by payment date.
 
         Only flows paid strictly after ``after`` and on or before ``horizon`` are
         returned. With ``offer`` the outstanding face is redeemed at the offer date at
-        ``offer.price_pct`` (kind ``OFFER_REDEMPTION``). Floating coupons are not
-        projected here: a floating leg contributes principal only.
+        ``offer.price_pct`` (kind ``OFFER_REDEMPTION``).
+
+        A floating leg contributes principal only, unless ``market`` is given: its
+        coupons are then projected off the leg's ``projection_curve_id`` with the
+        snapshot's point-in-time fixings (see :meth:`floating_leg`); known fixings and
+        published coupons are used as they are.
         """
         if offer is not None:
             if horizon is not None and horizon != offer.offer_date:
                 raise ValueError("an offer horizon must be the offer date")
             horizon = offer.offer_date
-        coupons: dict[date, CouponPeriod | RateCouponPeriod] = {}
+        coupons: dict[date, CouponPeriod | RateCouponPeriod | FloatingCouponProjection] = {}
         if isinstance(self.coupon_leg, (FixedCouponLeg, RateAccrualCouponLeg)):
             coupons = {p.payment_date: p for p in self.coupon_leg.periods}
+        elif isinstance(self.coupon_leg, FloatingCouponLeg) and market is not None:
+            coupons = {
+                c.payment_date: c
+                for c in self._projected_coupons(market, after, horizon, strike_guard_bp)
+            }
         principal: dict[date, Redemption] = {r.payment_date: r for r in self._redemptions()}
         if offer is not None:
             principal = {d: r for d, r in principal.items() if d < offer.offer_date}
             # Face outstanding just before the offer date, including any redemption due on it.
             remaining = self.outstanding_face(offer.offer_date) + math.fsum(
-                r.amount
-                for r in self._redemptions()
-                if r.payment_date == offer.offer_date
+                r.amount for r in self._redemptions() if r.payment_date == offer.offer_date
             )
             principal[offer.offer_date] = Redemption(
                 offer.offer_date, remaining * offer.price_pct / 100.0, CashflowKind.MATURITY
@@ -486,10 +538,15 @@ class Instrument:
                 kind = CashflowKind.OFFER_REDEMPTION
             else:
                 kind = redemption.kind
+            coupon = 0.0
+            if isinstance(period, FloatingCouponProjection):
+                coupon = period.amount_rub
+            elif period is not None:
+                coupon = period.amount
             flows.append(
                 Cashflow.split(
                     paid,
-                    coupon=0.0 if period is None else period.amount,
+                    coupon=coupon,
                     principal=0.0 if redemption is None else redemption.amount,
                     accrual_start=None if period is None else period.accrual_start,
                     accrual_end=None if period is None else period.accrual_end,
@@ -497,6 +554,28 @@ class Instrument:
                 )
             )
         return tuple(flows)
+
+    def _projected_coupons(
+        self,
+        market: MarketSnapshot,
+        after: date | None,
+        horizon: date | None,
+        strike_guard_bp: float | None,
+    ) -> tuple[FloatingCouponProjection, ...]:
+        leg = self.coupon_leg
+        assert isinstance(leg, FloatingCouponLeg)
+        if leg.projection_curve_id is None:
+            raise UnsupportedProduct(
+                f"floating leg of {self.instrument_id} names no projection curve"
+            )
+        model = self.floating_leg(market, horizon=horizon, strike_guard_bp=strike_guard_bp)
+        source = market.projection_curve(leg.projection_curve_id, leg.rule.index)
+        curve = (
+            bootstrap_discount_curve(source)
+            if isinstance(source, CurveBootstrapRequest)
+            else source
+        )
+        return model.project(curve, settlement_date=date.min if after is None else after)
 
     def accrued(self, settlement: date) -> float:
         """Accrued coupon per bond at ``settlement``, rounded half-up to 0.01.
@@ -508,7 +587,9 @@ class Instrument:
         if isinstance(self.coupon_leg, FloatingCouponLeg):
             raise InvalidTerms("floating accrued interest needs fixings; use the floating leg")
         if isinstance(self.coupon_leg, IndexedCouponLeg):
-            raise InvalidTerms("indexed accrued interest needs a CPI series; use the linkers module")
+            raise InvalidTerms(
+                "indexed accrued interest needs a CPI series; use the linkers module"
+            )
         if isinstance(self.coupon_leg, RateAccrualCouponLeg):
             return self._rate_accrued(self.coupon_leg, settlement)
         return accrued_interest(self.cashflows(), settlement)
@@ -664,6 +745,58 @@ class MarketSnapshot:
             if entry.fixing_id == fixing_id:
                 return entry.history
         raise MissingMarketData(f"fixings {fixing_id!r} are not in snapshot {self.snapshot_id}")
+
+    def point_in_time_fixing(self, fixing_id: str) -> FixingHistory:
+        """The fixings under ``fixing_id`` as known at this snapshot's ``known_at``.
+
+        The history must be dated the business date and say when it was known: a
+        ``known_at_utc`` after ``known_at`` is rejected, and with per-row
+        ``published_at`` every row published after ``known_at`` is dropped (a dropped
+        RUONIA day is then missing or unpublished, never filled). A history with
+        neither is not point-in-time and is rejected.
+        """
+        history = self.fixing(fixing_id)
+        label = f"fixings {fixing_id!r}"
+        if history.valuation_date != self.business_date:
+            raise InvalidTerms(f"{label} are not dated the snapshot business date")
+        try:
+            known = history.known_at
+        except ValueError as exc:
+            raise InvalidTerms(f"{label}: {exc}") from exc
+        if known is None and not history.published_at:
+            raise InvalidTerms(f"{label} carry neither known_at_utc nor publication times")
+        if known is not None and known > self.known_at:
+            raise InvalidTerms(f"{label} were known after the snapshot cut {self.known_at}")
+        return history.published_by(self.known_at) if history.published_at else history
+
+    def projection_curve(
+        self, curve_id: str, index: FixingIndex
+    ) -> DiscountCurve | CurveBootstrapRequest:
+        """The curve under ``curve_id`` checked as a projection curve for ``index``.
+
+        RUONIA projects off a RUONIA OIS spec (quotes or the built curve), the key rate
+        off a ``rub_key_rate_projection_v1`` curve; both must be dated the business date.
+        """
+        entry = self.curve(curve_id)
+        spec = get_curve_spec(entry.spec_id)
+        source = entry.curve
+        expected = {"ruonia": CurveKind.OIS_BOOTSTRAP, "key_rate": CurveKind.KEY_RATE_PROJECTION}
+        if spec.kind is not expected[index]:
+            raise InvalidTerms(f"curve {curve_id} ({spec.spec_id}) cannot project the {index}")
+        if spec.kind is CurveKind.OIS_BOOTSTRAP and isinstance(
+            source, (CurveBootstrapRequest, DiscountCurve)
+        ):
+            _check_ois_spec_convention(curve_id, spec.spec_id, source.convention)
+        if isinstance(source, CurveBootstrapRequest) and spec.kind is CurveKind.OIS_BOOTSTRAP:
+            if source.convention.fixed_leg_schedule is not None:
+                raise InvalidTerms(
+                    f"curve {curve_id}: {spec.spec_id} uses the legacy fixed-leg schedule"
+                )
+        elif not (isinstance(source, DiscountCurve) and source.model_version == spec.model_version):
+            raise InvalidTerms(f"curve {curve_id} does not match spec {spec.spec_id}")
+        if source.curve_date != self.business_date:
+            raise InvalidTerms(f"curve {curve_id} is not dated the snapshot business date")
+        return source
 
     def cpi_series(self, series_id: str) -> CpiSeries:
         for series in self.cpi:

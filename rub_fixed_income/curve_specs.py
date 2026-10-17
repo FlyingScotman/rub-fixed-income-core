@@ -27,6 +27,10 @@ one spec per currency (``cny_discount_factors_v1``, ``usd_discount_factors_v1``,
 sets, SOFR, ESTR) and passes a :class:`~rub_fixed_income.discount.DiscountCurve`; core
 only reads, interpolates and shifts it. Their quote conventions are the builder's, so
 core registers no foreign bootstrap.
+
+``rub_key_rate_projection_v1`` is a projection-only curve for key-rate floaters: the
+discount factors of :func:`~rub_fixed_income.floating.key_rate_projection_curve`, whose
+overnight forwards are a key-rate path. It never discounts a bond.
 """
 
 from __future__ import annotations
@@ -38,6 +42,7 @@ from types import MappingProxyType
 from .conventions import CurveConvention, DayCount, OisSwapConvention
 from .dates import BusinessCalendar
 from .errors import InvalidTerms, UnknownCurveSpec
+from .floating import KEY_RATE_PROJECTION_MODEL_VERSION
 from .kbd import KBD_MODEL_VERSION
 from .key_rate import CONVENTION_ID as KEY_RATE_SWAP_CONVENTION_ID
 
@@ -50,6 +55,7 @@ class CurveKind(Enum):
     KEY_RATE_SWAP = "key_rate_swap"
     XCCY_BOOTSTRAP = "xccy_bootstrap"
     DISCOUNT_FACTORS = "discount_factors"
+    KEY_RATE_PROJECTION = "key_rate_projection"
     REAL_DISCOUNT_FACTORS = "real_discount_factors"
 
 
@@ -150,6 +156,18 @@ _SPECS = (
         payment_lag_business_days=0,
         business_day_convention="MODIFIED_FOLLOWING",
         float_averaging="arithmetic key-rate average",
+    ),
+    CurveSpec(
+        spec_id="rub_key_rate_projection_v1",
+        kind=CurveKind.KEY_RATE_PROJECTION,
+        currency="RUB",
+        time_day_count=DayCount.ACT_365_FIXED,
+        interpolation="log-linear-df on business- or calendar-day nodes, flat-forward beyond",
+        model_version=KEY_RATE_PROJECTION_MODEL_VERSION,
+        description="Key-rate projection curve for floaters: DiscountCurve from "
+        "key_rate_projection_curve, one node per observation day with "
+        "DF(next) = DF(day) / (1 + key rate in force * tau). Projection only, never a "
+        "discount curve; risk shifts its continuous zero rates",
     ),
 )
 
@@ -273,3 +291,14 @@ def ois_curve_convention(spec_id: str, calendar: BusinessCalendar | None = None)
             float_day_count=DayCount.ACT_ACT_ISDA,
         ),
     )
+
+
+def _check_ois_spec_convention(curve_id: str, spec_id: str, convention: CurveConvention) -> None:
+    """A spot-OIS convention belongs to ``rub_ruonia_ois_moex_v2`` and nothing else."""
+    ois = convention.ois_swap
+    if spec_id == "rub_ruonia_ois_legacy_v1":
+        if ois is not None:
+            raise InvalidTerms(f"curve {curve_id}: {spec_id} has no spot-starting OIS convention")
+        return
+    if ois is None or convention != ois_curve_convention(spec_id, ois.calendar):
+        raise InvalidTerms(f"curve {curve_id}: convention does not match spec {spec_id}")

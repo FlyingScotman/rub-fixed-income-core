@@ -205,6 +205,39 @@ long bond. Inflation-linked bonds (package 9a) carry `REAL|<curve_id>|<bucket>` 
 pillar of a real discount curve) instead of `IR|…`; it appears only when a linker is
 computed.
 
+A two-curve floater (package 1) carries `IR|<discount curve>|<bucket>` and
+`IR|<projection curve>|<bucket>` separately, then `CS` (its spread over the discount
+curve), with the full 23 x 23 Hessian including the discount/projection cross terms.
+Its spread is the spread to the benchmark curves, not a quoted discount margin.
+
+## Floating coupons (package 1)
+
+Every convention is a term of `FloatingCouponRule`; core infers none (see
+`docs/floating.md`). The MOEX-confirmed choices (`tests/test_moex_floater_goldens.py`):
+
+| Convention | Explicit input | MOEX finding |
+| --- | --- | --- |
+| Lag | `ObservationShift(days, "calendar_days" \| "business_days", accrues_over)`, `lookback_business_days`, `ObservationWindow`, `FixingDateRule` | calendar days: 6 (arithmetic), 7 (compounded), 4 for some key-rate bonds; a few use a 4-business-day lookback |
+| Window weights and year fraction | `accrues_over="observation"` or `"accrual"` | the shifted window gives both (ACT/ACT ISDA for OFZ-PK) |
+| Non-business days | the history's calendar | the latest fixing on or before the day; the RUONIA year-end day without a fixing is a holiday of the RUONIA publication calendar |
+| Key rate | rows dated by the CBR **effective date**; `observation_days="business"` or `"calendar"` | |
+| Averaging | `compounded`, `arithmetic`, `single_fixing` | arithmetic "Ставка RUONIA" and key rate, compounded "Индекс RUONIA" and term RUONIA 3M |
+| Rounding | `rate_rounding_decimals`, `amount_rounding_decimals` (fully fixed coupons only) | in arrears: amount to the kopeck from the unrounded rate; in advance: rate to 0.01 % first |
+| Floor / cap | `CouponRateBounds(applies_to, floor, cap)` | not seen in the golden set |
+
+**Optionality policy.** Floors and caps are priced at intrinsic value on the projected
+rate, accepted only when that rate is at least the explicit `strike_guard_bp`
+(`ValuationPolicy.cap_floor_guard_bp`) from every strike; otherwise
+`UNSUPPORTED_PRODUCT`. Time value is not modelled.
+
+**Point in time.** A portfolio uses a fixing history only through
+`MarketSnapshot.point_in_time_fixing`: dated the business date, `known_at_utc` not after
+the snapshot's `known_at`, rows published after it (`published_at`) dropped. A dropped or
+missing RUONIA day is `MISSING_MARKET_DATA` (beyond the explicit carry allowance), never
+filled.
+
+**Accrued interest.** Core assumes no floater accrual convention: the quote supplies it.
+
 ## Non-RUB bonds and FX (package 3)
 
 - **FX rate.** `FxRate.rub_per_unit` is RUB per one unit of the currency, from the

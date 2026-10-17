@@ -106,6 +106,22 @@ All convention objects are frozen and hashable.
 `BondRiskRequest(floating_leg=...)` and `FLOATING_RISK_MODEL_VERSION`. See
 [floating coupons](floating.md).
 
+Package 1 (floaters) adds, all optional fields omitted from the canonical form at
+their default:
+
+| Name | Description |
+| --- | --- |
+| `CouponRateBounds(applies_to, floor=None, cap=None)` | Per-period floor/cap on `"index_rate"` (before multiplier and margin) or `"coupon_rate"`. `FloatingCouponRule(bounds=...)`. Priced at intrinsic value only outside `FloatingLeg(strike_guard_bp=...)` of every strike, else `UnsupportedProduct`. `FloatingCouponProjection.bound`, `FloatingLeg.has_optionality`. |
+| `ObservationShift(days, unit, accrues_over)` | Shift the observation period by business or calendar days; `accrues_over="observation"` (MOEX OFZ-PK) or `"accrual"` (ISDA). `FloatingCouponRule(observation_shift=...)`. |
+| `ObservationWindow(end_offset_days, end_unit, length_months=None)` | In-advance window ending before the accrual start; `.bounds(calendar, start, end)`. `FloatingCouponRule(observation_window=...)`. |
+| `FixingDateRule(anchor, offset_days, unit)` | Single fixing in advance or in arrears, with `averaging="single_fixing"`. |
+| `FloatingCouponRule(multiplier=1.0, observation_days="business")` | Index multiplier; `"calendar"` observes each calendar day's key rate in force. |
+| `FixingHistory(published_at=())`, `.published_by(cut)`, `.known_at` | Per-row publication times; drop rows published after a cut; parsed `known_at_utc`. |
+| `MissingFixing` | `MissingMarketData` (code `MISSING_MARKET_DATA`) and `LookupError`: a required fixing is absent. |
+| `key_rate_projection_curve(forward, calendar, *, rate_day_count, observation_days)`, `KEY_RATE_PROJECTION_MODEL_VERSION` | `DiscountCurve` whose overnight forwards are a `KeyRateForwardCurve` path; spec `rub_key_rate_projection_v1`. |
+| `BondRiskRequest(projection_curve=...)`, `TwoCurveBondRiskResult`, `FLOATING_TWO_CURVE_RISK_MODEL_VERSION` | Separate projection curve: `risk()` adds `projection_buckets`; `second_order()` is 23 x 23; `reprice(scenario, projection_curve_shifts_bp=None)` and `approximate(...)` take projection shifts (None: the scenario's curve shifts). |
+| `bond_factor_risk(risk, curve_id, second_order=None, *, projection_curve_id=None)` | Two-curve risk maps to `IR|<curve_id>|*`, `IR|<projection_curve_id>|*`, `CS`. |
+
 ## FX futures (0.8.1)
 
 `FxFuturesContract`, `FxFuturesRiskRequest`, `FxFuturesRiskEngine` (`.risk`, `.reprice`,
@@ -226,7 +242,9 @@ and the recovery are explicit.
 | `CashflowKind` | `COUPON`, `AMORTIZATION`, `MATURITY`, `OFFER_REDEMPTION`. |
 | `accrued_interest(cashflows, settlement, *, quantum=Decimal("0.01"))` | Accrued from the split; `quantum=None` returns the raw value. |
 | `Instrument(instrument_id, product, currency, initial_face, coupon_leg, principal_leg, calendar_id, offers=(), settlement_lag_days=1, isin=None, issuer_id=None)` | `.cashflows(after=, horizon=, offer=)`, `.outstanding_face(on)`, `.horizon(policy, settlement)`, `.accrued(settlement)`, `.maturity_date`, `.is_perpetual`. |
-| `ProductType`, `FixedCouponLeg`, `CouponPeriod`, `FloatingCouponLeg`, `PrincipalLeg`, `Redemption`, `Offer`, `OfferKind` | Instrument terms. |
+| `ProductType`, `FixedCouponLeg`, `CouponPeriod`, `FloatingCouponLeg`, `PrincipalLeg`, `Redemption`, `Offer`, `OfferKind` | Instrument terms. `FloatingCouponLeg(rule, periods, fixing_id, projection_curve_id=None)`: the snapshot curve that projects (package 1). |
+| `Instrument.cashflows(..., market=None, strike_guard_bp=None)`, `Instrument.floating_leg(market, *, horizon=None, strike_guard_bp=None)` (package 1) | With `market`, floating coupons are projected off the leg's projection curve with point-in-time fixings; without it a floating leg yields principal only. |
+| `MarketSnapshot.point_in_time_fixing(fixing_id)`, `MarketSnapshot.projection_curve(curve_id, index)` (package 1) | Fixings as known at `known_at` (history dated the business date; `known_at_utc` not after the cut; rows published after it dropped; neither given: `InvalidTerms`). A projection curve checked against its spec (RUONIA OIS for RUONIA, `rub_key_rate_projection_v1` for the key rate). |
 | `RateAccrualCouponLeg(periods, accrual_basis)`, `RateCouponPeriod(accrual_start, accrual_end, payment_date, amount, rate)`, `AccrualBasis` **(0.17.0)** | Known coupons whose accrued interest comes from the rate: `RATE_ACT_365` (MOEX corporates), `RATE_ACT_360`, `RATE_30_360`. `AccrualBasis.days(start, end) -> (days, year)`. Same cash flows as `FixedCouponLeg`; see `CONVENTIONS.md`. |
 | `MarketSnapshot(snapshot_id, business_date, known_at, curves, calendars, fixings, fx, quotes, evidence)` | `.curve(id)`, `.calendar(id)`, `.fixing(id)`, `.fx_rate(ccy)`, `.quote(instrument_id)`; missing keys raise `MissingMarketData`. |
 | `CurveEntry`, `CalendarEntry`, `FixingEntry`, `FxRate`, `BondPriceObservation`, `SnapshotEvidence` | Snapshot entries. |
@@ -245,7 +263,9 @@ and the recovery are explicit.
 | `ir_factor(curve_id, bucket)`, `CS_FACTOR`, `fx_factor(ccy)`, `fx_basis_factor(ccy)` | Desk factor keys. |
 | `FactorRisk(factors, first_order, hessian, difference, bump_bp, has_second_order)` | `HessianEntry(i, j, value)` upper triangle; `.first_order_by_factor()`, `.hessian_by_factor()`. |
 | `bond_factor_risk(risk, curve_id, second_order=None)`, `fx_futures_factor_risk(risk, rub_curve_id, foreign_curve_id, second_order=None)` | Convert engine results. |
-| `ValuationPolicy(discount_curve_id, spread_kind, spread_convention, horizon, curve_overrides, include_second_order, bump_bp)` | Valuation choices; part of the job identity. |
+| `ValuationPolicy(discount_curve_id, spread_kind, spread_convention, horizon, curve_overrides, include_second_order, bump_bp)` | Valuation choices; part of the job identity. Package 1: `cap_floor_guard_bp=None`, the floater floor/cap guard. |
+| `PortfolioScenario(name, shock, ..., projection_curve_shifts_bp=None)` (package 1) | Shifts of two-curve floaters' projection curves; None moves them with `shock.curve_shifts_bp`. |
+| `SUPPORTED_PRODUCTS` | `FIXED_BOND` and, with package 1, `FLOATING_BOND` (RUB; single- or two-curve; quote must carry accrued). |
 | `value_portfolio(*, run_id, as_of, snapshot, instruments, positions, policy, scenarios=(), time_budget_seconds=None, should_cancel=None, curve_cache=None)` | `PortfolioRiskResult` with `PositionValuation`s, `PortfolioCoverage` (coded `Rejection`s), `PortfolioScenarioResult`s, `CurveUse`, `CalendarUse`, `FactorTotal`s. |
 | `portfolio_result_to_json`, `portfolio_result_from_json`, `verify_portfolio_result` | Contract `rub-portfolio-risk-result.v2`. |
 
@@ -266,7 +286,7 @@ writes the table to the job summary (informational, never gating).
 
 | Name | Description |
 | --- | --- |
-| `horizon_valuation(instrument, curve, calendar, *, horizon_date, spread_bp=None, dirty_price_rub=None, spread_convention=None, redemption_horizon="maturity", curve_cache=None)` | `HorizonValuation` per bond: `pv_start_rub`, `pv_forward_rub` (today's forwards realised), `pv_rolled_rub` (curve shape held), coupons and principal received in `(S0, S1]`, accrued and nominal at both settlements, `carry_rub`, `rolldown_rub`, `horizon_pnl_rub`. Exactly one of `spread_bp` / `dirty_price_rub`. Fixed-coupon bonds; others raise `UnsupportedProduct`. |
+| `horizon_valuation(instrument, curve, calendar, *, horizon_date, spread_bp=None, dirty_price_rub=None, spread_convention=None, redemption_horizon="maturity", curve_cache=None, fixings=None, projection_curve=None, strike_guard_bp=None)` | `HorizonValuation` per bond: `pv_start_rub`, `pv_forward_rub` (today's forwards realised), `pv_rolled_rub` (curve shape held), coupons and principal received in `(S0, S1]`, accrued and nominal at both settlements, `carry_rub`, `rolldown_rub`, `horizon_pnl_rub`. Exactly one of `spread_bp` / `dirty_price_rub`. Fixed-coupon bonds and (package 1) RUB floaters with `fixings`; others raise `UnsupportedProduct`. A floater's `accrued_start_rub` / `accrued_end_rub` are None (the fields are `float | None`). `explain_horizon_pnl` rejects floaters. |
 | `explain_horizon_pnl(instrument, start_curve, end_curve, calendar, *, start_spread_bp \| start_dirty_price_rub, end_spread_bp \| end_dirty_price_rub, ...)` | `HorizonPnlExplain`: `carry + rolldown + rates + spread + residual == total` (full revaluation change to the end curve's date). |
 | `roll_curve(curve, horizon_date)` | The curve moved forward with its shape in calendar days unchanged. |
 | `horizon_portfolio(*, snapshot, instruments, positions, policy, horizon_date, curve_cache=None)` | `PortfolioHorizonResult`: `PositionHorizon` rows (signed RUB, per-bond detail), coverage with the same rejection codes as `value_portfolio`, covered carry / rolldown / horizon P&L and a total when coverage is complete. |

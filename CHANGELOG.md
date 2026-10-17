@@ -1,5 +1,138 @@
 # Changelog
 
+## 0.26.0 — floaters: bounds, shifts, two curves, portfolio and MOEX goldens
+
+Package 1 (floaters) and BACKLOG #29 (core part). Every new field of an existing type is
+omitted at its default, so earlier encodings, pinned hashes and
+`portfolio_result_v2.json` are unchanged. The single-curve floater risk path is
+bit-identical to 0.8.0.
+
+### Added
+
+- **Floors and caps** (`CouponRateBounds(applies_to, floor, cap)`, `FloatingCouponRule(bounds=)`):
+  per period, on the benchmark average (`"index_rate"`, before multiplier and margin) or
+  the all-in rate (`"coupon_rate"`), applied before rounding. Priced at intrinsic value
+  on the projected rate, and only when that rate is at least an explicit guard
+  (`FloatingLeg(strike_guard_bp=)`, `ValuationPolicy.cap_floor_guard_bp`) from every
+  strike; otherwise `UnsupportedProduct`. Fully fixed coupons are bounded exactly.
+  `FloatingCouponProjection.bound`, `FloatingLeg.has_optionality`.
+- **Index multiplier** (`FloatingCouponRule(multiplier=1.0)`).
+- **Observation shifts** (`ObservationShift(days, unit, accrues_over)`): the period moves
+  back in calendar or business days, rates and weights together;
+  `accrues_over="observation"` accrues the amount over the shifted window (the MOEX
+  OFZ-PK and corporate rule), `"accrual"` over the accrual period (ISDA).
+- **In-advance observation windows** (`ObservationWindow(end_offset_days, end_unit, length_months=None)`):
+  rate from a window ending before the accrual start, amount over the accrual period
+  (old OFZ-PK 29007-29010: 6 months to the 2nd business day before the start; monthly
+  corporates: a coupon-length window ending 6 calendar days before it).
+- **Single fixings in advance or in arrears** (`averaging="single_fixing"`,
+  `FixingDateRule(anchor, offset_days, unit)`) and **calendar-day key-rate observation**
+  (`observation_days="calendar"`: each day takes the key rate in force from its CBR
+  effective date).
+- **Point-in-time fixings**: `FixingHistory(published_at=())` per-row publication times,
+  `.published_by(cut)`, `.known_at`; `MarketSnapshot.point_in_time_fixing(fixing_id)`
+  (history dated the business date, `known_at_utc` not after the cut, rows published
+  after it dropped, neither given rejected). `MissingFixing` (a `MissingMarketData`
+  and a `LookupError`) for a missing required fixing; nothing is ever filled.
+- **Separate projection and discount curves** (`BondRiskRequest(projection_curve=)`):
+  `TwoCurveBondRiskResult` with `projection_buckets`; a 23-factor central Hessian;
+  `reprice` / `approximate(projection_curve_shifts_bp=None)`;
+  `bond_factor_risk(..., projection_curve_id=)` emits `IR|<discount>|*`,
+  `IR|<projection>|*` and `CS` with the cross terms;
+  `FLOATING_TWO_CURVE_RISK_MODEL_VERSION = "rub-floating-two-curve-risk-v1"`.
+- **Key-rate projection curve**: `key_rate_projection_curve(forward, calendar, *, rate_day_count, observation_days)`
+  turns a `KeyRateForwardCurve` into a `DiscountCurve` whose overnight forwards are the
+  key-rate path; registered spec `rub_key_rate_projection_v1` (projection only).
+- **Floaters in the portfolio path**: `FloatingCouponLeg(projection_curve_id=None)`;
+  `Instrument.cashflows(..., market=, strike_guard_bp=)` projects floating coupons;
+  `Instrument.floating_leg(market, ...)`; `MarketSnapshot.projection_curve(curve_id, index)`.
+  `value_portfolio` values RUB floaters (`SUPPORTED_PRODUCTS` adds `FLOATING_BOND`),
+  single-curve when the leg projects off its discount curve and two-curve otherwise;
+  `PortfolioScenario(projection_curve_shifts_bp=None)`. Coverage codes: no projection
+  curve, non-RUB floater, near-the-money floor/cap `UNSUPPORTED_PRODUCT`; missing or
+  unpublished fixings, accrued not supplied with the quote `MISSING_MARKET_DATA`;
+  late-known or undated fixings, wrong projection spec `INVALID_TERMS`.
+- **Floaters at the horizon**: `horizon_valuation(..., fixings=, projection_curve=, strike_guard_bp=)`
+  and `horizon_portfolio` carry floaters (today's forwards realised up to the horizon,
+  later observations off the rolled projection curve). `explain_horizon_pnl` rejects
+  floaters with `UnsupportedProduct`.
+- `benchmarks/floater_bench.py`: 2k synthetic floaters, single-curve OIS, KBD + RUONIA OIS
+  and KBD + key-rate projection, first order and Hessian.
+- Tests: `tests/test_floating_terms.py`, `tests/test_floating_two_curve.py`,
+  `tests/test_portfolio_floaters.py`; the MOEX floater goldens now project every coupon
+  on its real accrual dates with `ObservationShift` / `ObservationWindow`.
+- **MOEX floater goldens** (`tests/test_moex_floater_goldens.py`, fixtures in
+  `tests/fixtures/floaters/`: CBR DailyInfo RUONIA, key rate and term RUONIA; ISS
+  bondization, descriptions and board rows, all fetched on 2026-10-17). `FixingHistory` and
+  `FloatingLeg` reproduce **328 published coupons of 21 floaters to the kopeck** (70 of
+  them OFZ-PK), the rates and amounts of 19 coupons of 4 in-advance OFZ-PK, and every
+  running coupon the boards show as fixed (9 bonds):
+  - OFZ-PK 29013, 29015, 29017, 29022, 29025 (RUONIA, quarterly): arithmetic RUONIA over
+    the coupon period shifted back 6 calendar days, each day taking the latest fixing on
+    or before it, with the day weights and the year fraction (ACT/ACT, so 1/366 in 2024)
+    over that window. The rate is not rounded before the amount. Checked on 237 of 237
+    coupons of 12 bonds from 2020 to 2026 during the analysis, 54 of them in the tests.
+  - OFZ-PK 29026–29028 ("Срочная ставка RUONIA 3m") and VEB.RF "Индекс RUONIA" bonds:
+    compounded RUONIA over the period shifted 7 days. `FloatingLeg` compounding equals
+    CBR's published term RUONIA 3M to 1e-12 on over 200 dates, and the coupons follow the
+    shifted period, not the published 3M rate (SU29026, which pays on the 4th, shows the
+    difference).
+  - Old OFZ-PK 29007–29010 (semiannual, set in advance): mean RUONIA over the 6 months to
+    the 2nd business day before the coupon start, plus the margin, rounded to 0.01 %;
+    amount on days/365 (46 of 46 coupons since 2021 in the analysis, the next-best
+    window 43). The leg now reproduces the amounts too, with `ObservationWindow`.
+  - Corporate RUONIA floaters (VEB.RF, VTB): the OFZ-PK formula plus the ISS margin.
+    Monthly in-advance ones (Russian Railways, Rosagroleasing): the same-length window
+    ending 6 days before the start, rate rounded to 0.01 %.
+  - Key-rate floaters: period shifted 6 days (2 bonds), 4 days (1), and a native
+    4-business-day lookback (2).
+  - Also asserted: the business calendar is the RUONIA publication calendar (CBR computes
+    no RUONIA on the last business day of the year, the working Saturday 2024-12-28
+    included); a business-day lookback or observation shift does not reproduce the
+    calendar-day shift; 2024 OFZ-PK coupons need ACT/ACT; in-arrears amounts use the
+    unrounded rate.
+  Every coupon is projected on its real accrual dates. The first coupons of SU29026 and
+  SU29027 (December 2024: MOEX 52.66 and 52.71, core 52.72 and 52.75) stay a pinned,
+  unexplained gap.
+
+### Changed
+
+- `HorizonValuation.accrued_start_rub` / `accrued_end_rub` are `float | None` (None for
+  floaters: core assumes no floater accrual convention). Fixed bonds are unchanged.
+- The single-curve floater risk path is bit-identical to 0.8.0 (PV, spread, `base_id`,
+  risk, Hessian, scenarios, approximations; checked against the 0.17.0 code on flat,
+  node and OIS curves with lookback and rounding), and faster: coupons that read only
+  discount factors a shock leaves unchanged are reused, and overnight forwards are
+  memoised on each shared shocked curve.
+- `curve_specs._check_ois_spec_convention` (moved from `portfolio.py`) also validates
+  RUONIA OIS projection curves.
+
+### Policy decisions
+
+- **Cap/floor optionality**: intrinsic value with an explicit moneyness guard (no
+  default; None rejects every projected bounded coupon). The guard is checked on the
+  base projection only; shocked curves and scenarios apply the bound deterministically.
+- **Spread** of a two-curve floater is a Z-spread over the discount curve (`CS`), not a
+  quoted discount margin over the projection curve.
+- **Scenarios**: a scenario's curve shifts move a two-curve floater's projection curve
+  too unless projection shifts are given; for single-curve floaters projection shifts
+  are ignored in the portfolio and rejected by the engine.
+- **Projection specs**: RUONIA projects only off a RUONIA OIS spec, the key rate only
+  off `rub_key_rate_projection_v1`; KBD never projects.
+- **Accrued interest of floaters** must come with the quote (`MISSING_MARKET_DATA`).
+- **Yield and duration** of a floater in `PositionValuation` are on its base projected
+  flows; `g_spread_bp` is None.
+- **RUONIA publication calendar**: documented requirement; no-publication days are
+  holidays of the history's calendar, never filled.
+
+### Benchmark
+
+`benchmarks/floater_bench.py`, 2k floaters (quarterly 1–7 years, current coupon partly
+fixed, 6-day calendar shift, every fifth with a far floor), Linux, Python 3.13, ms per
+position: RUONIA OIS single curve 17.8 first order / 74.5 with the Hessian; KBD discount
++ RUONIA OIS projection (23 factors) 19.6 / 100.5; KBD + key-rate projection 17.2 / 59.3.
+Above the 10 ms fixed-bond target (BACKLOG #86).
+
 ## 0.25.0 — cross-currency swaps CNY/RUB vs RUONIA
 
 Package 7 (core part). New module `rub_fixed_income.xccy` (`docs/xccy.md`). No existing

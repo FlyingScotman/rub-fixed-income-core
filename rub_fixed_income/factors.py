@@ -26,7 +26,7 @@ from typing import Literal
 
 from .errors import InvalidTerms
 from .fx_futures import FxFuturesRiskResult, FxFuturesSecondOrderRisk
-from .risk import RISK_BUCKETS, BondRiskResult, BondSecondOrderRisk
+from .risk import RISK_BUCKETS, BondRiskResult, BondSecondOrderRisk, TwoCurveBondRiskResult
 
 __all__ = [
     "CS_FACTOR",
@@ -114,14 +114,31 @@ def _upper(matrix: tuple[tuple[float, ...], ...]) -> tuple[HessianEntry, ...]:
 
 
 def bond_factor_risk(
-    risk: BondRiskResult, curve_id: str, second_order: BondSecondOrderRisk | None = None
+    risk: BondRiskResult,
+    curve_id: str,
+    second_order: BondSecondOrderRisk | None = None,
+    *,
+    projection_curve_id: str | None = None,
 ) -> FactorRisk:
     """Map a bond's central risk (and optionally its Hessian) to desk factors.
 
     With ``second_order`` the first order is its central gradient, which uses the same
     bump as the Hessian. Otherwise ``risk`` must itself be central.
+
+    A two-curve floater (:class:`TwoCurveBondRiskResult`) needs ``projection_curve_id``:
+    its factors are ``IR|<curve_id>|*`` (discount), ``IR|<projection_curve_id>|*`` and
+    ``CS`` (the spread over the discount curve), in that order, and its Hessian covers
+    all 23 with the discount/projection cross terms.
     """
-    factors = (*(ir_factor(curve_id, b) for b in RISK_BUCKETS), CS_FACTOR)
+    two_curve = isinstance(risk, TwoCurveBondRiskResult)
+    if two_curve != (projection_curve_id is not None):
+        raise InvalidTerms("projection_curve_id is required for, and only for, two-curve risk")
+    rates = tuple(ir_factor(curve_id, b) for b in RISK_BUCKETS)
+    if projection_curve_id is not None:
+        if projection_curve_id == curve_id:
+            raise InvalidTerms("discount and projection curves need distinct curve IDs")
+        rates = (*rates, *(ir_factor(projection_curve_id, b) for b in RISK_BUCKETS))
+    factors = (*rates, CS_FACTOR)
     if second_order is not None:
         if second_order.base_id != risk.base_id:
             raise InvalidTerms("risk and second-order results describe different calibrations")
@@ -138,7 +155,8 @@ def bond_factor_risk(
     if risk.difference != "central":
         raise InvalidTerms("desk factors need central-difference risk (DEC08)")
     spread = risk.cs01_rub if risk.cs01_rub != 0.0 else risk.ofz_spr01_rub
-    first = (*(b.dv01_rub for b in risk.buckets), spread)
+    projection = risk.projection_buckets if isinstance(risk, TwoCurveBondRiskResult) else ()
+    first = (*(b.dv01_rub for b in (*risk.buckets, *projection)), spread)
     return FactorRisk(factors, first, (), "central", risk.bump_bp, False)
 
 

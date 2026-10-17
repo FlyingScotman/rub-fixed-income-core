@@ -193,6 +193,20 @@ bump) and is not a desk factor. Extension risk is reported by `extension_risk`
 (duration to maturity minus duration to the call, and the value change if the call is
 skipped at the yield to call).
 
+## Floaters on separate projection and discount curves (package 1)
+
+`BondRiskRequest(floating_leg=..., projection_curve=...)` projects coupons off
+`projection_curve` and discounts on `curve`; the spread is a margin over `curve`. Each
+curve is shocked in its own basis (zero-rate overlay or OIS quote rebootstrap) on the 11
+buckets. `risk()` returns a `TwoCurveBondRiskResult` with `projection_buckets` beside the
+discount `buckets`; `dv01_rub` sums both and `parallel_dv01_rub` moves both curves
+together. `second_order()` is central over 23 factors (`discount <b>`, `projection <b>`,
+spread) with the same bump as central `risk()`, so `bond_factor_risk(...,
+projection_curve_id=...)` gives a consistent Taylor expansion. `reprice` and
+`approximate` take `projection_curve_shifts_bp`; when None the projection curve moves by
+the scenario's curve shifts. Without `projection_curve` the single-curve floater path is
+bit-identical to 0.8.0. See [floating coupons](floating.md).
+
 ## Inflation-linked bonds (package 9a)
 
 An OFZ-IN position is a fixed-flow risk in **real** terms (`docs/linkers.md`). Its flows

@@ -110,7 +110,7 @@ other repositories and must be changed there, not in this core.
 
 ## Floater audit and local worker follow-up — 2026-10-15
 
-29. **P1 — fixing-aware floater core and API consistency (C05).** *Core part done
+29. *(core completed in 0.26.0: bounds, shifts, two curves, portfolio and horizon; follow-ups #78–#86)* **P1 — fixing-aware floater core and API consistency (C05).** *Core part done
     in 0.8.0* (`docs/floating.md`): explicit point-in-time `FixingHistory`,
     business-day observation with lookback, compounded/arithmetic averaging,
     margin, day counts, rounding of fixed coupons only, published-coupon and
@@ -376,4 +376,35 @@ other repositories and must be changed there, not in this core.
 77. **Quote-fixed FX risk.** On the quote basis the CNY curve is held under spot moves
     (sticky curve, linear FX delta). A desk that holds the quotes under FX moves needs
     the curve rebuilt under spot shocks.
+
+## Floaters — 0.26.0
+
+78. **Floater P&L explain.** `explain_horizon_pnl` rejects floaters; it needs the fixings
+    realised over the horizon and the end projection curve.
+79. **Cap / floor time value.** A volatility model (e.g. Bachelier on the period average);
+    today a bound nearer than the explicit guard is rejected.
+80. **Index-ratio averaging and announced key-rate decisions.** `RUONIA_INDEX` fixings
+    and term RUONIA as an index are not modelled. History rows must precede the
+    valuation date, so a key-rate decision announced before the cut but effective later
+    is projected from the curve; CBR meeting dates are not an input.
+81. **Floater accrued convention** (MOEX `ACCINT` for in-arrears floaters), so quotes need
+    not carry the accrued. `HorizonValuation.accrued_*` is None for floaters today.
+82. **Floaters in the local worker and non-RUB floaters.** `FixedRubBondInput` is fixed
+    only; `value_portfolio` rejects non-RUB floaters.
+83. **Per-position model flags** in the portfolio result (e.g. `has_optionality`, the
+    two-curve model) need result contract `v3`.
+84. *(downstream)* **Floater data.** The per-bond formula (lag in calendar or business
+    days, averaging, in advance or in arrears, rounding, bounds) from the hub's
+    `FloaterFormula` or curated static data: ISS gives only the benchmark and margin, and
+    issuers differ for the same index. The RUONIA publication calendar (CBR computes no
+    RUONIA on the last business day of the year) in the hub's calendar feed.
+85. **Unexplained floater coupons.** The first coupons of SU29026 / SU29027 (December
+    2024), 6 of 47 sampled RUONIA corporates and 11 of 45 key-rate corporates (caps,
+    floors, multipliers or ACT/360 suspected). Revisit with the issue terms when
+    `minfin.gov.ru` / `e-disclosure.ru` are reachable. The leap-year basis of corporate
+    floaters is unconfirmed (data cover 2025–2026).
+86. **Floater risk speed.** 2k floaters cost 17–20 ms per position first order and
+    59–100 ms with the Hessian (23 factors on two curves), above the 10 ms target.
+    Telescoped compounding or prefix sums would help but change results in the last
+    bit, so they need a new model version; a sparse Hessian is the other lever.
 
