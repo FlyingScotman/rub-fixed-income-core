@@ -10,9 +10,21 @@ KBD publication of 15 October 2026 and on a 17-tenor RUONIA OIS quote set:
 - ``warm``: OIS only, the same job with a cache seeded from a previous job's
   :meth:`ShockedCurveCache.export` (the backend's persisted curves).
 
+The ``fx`` curve case (package 3) is the same book as CNY, USD and EUR bonds in turn,
+each on a caller-built discount curve of its currency, valued in RUB at snapshot FX
+rates with ``FX|<ccy>`` and its cross terms; its scenarios add a 10 % FX move.
+
+The ``mixed`` case (result contract v3) cycles through the positions of the mixed book
+of ``tests/portfolio_v3_book.py``: bonds, seasoned, two-curve and key-rate swaps, an FX
+forward and swap, XCCY on quotes and on discount factors, RUB and USD CDS, FX, RUON,
+RUONIA index, KEYRATE and OFZ futures, term and open repos. Every OTC trade is its own
+instrument; futures positions share their contract (one engine per contract). Its
+scenarios add per-curve shifts and FX moves.
+
 Run from the repository root::
 
     uv run python benchmarks/portfolio_bench.py --positions 2000
+    uv run python benchmarks/portfolio_bench.py --positions 2000 --cases mixed
 
 The numbers are machine-dependent; the target is <= 10 ms per position amortised
 for OIS with the Hessian at 2k positions.
@@ -25,7 +37,7 @@ import json
 import platform
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -39,16 +51,22 @@ from rub_fixed_income import (
     CouponPeriod,
     CurveBootstrapRequest,
     CurveEntry,
+    DiscountCurve,
     FixedCouponLeg,
+    FxFuturesInstrument,
+    FxRate,
     Instrument,
     MarketSnapshot,
     Offer,
     OfferKind,
+    OfzFuturesInstrument,
     OisQuote,
+    PortfolioInstrument,
     PortfolioScenario,
     Position,
     PrincipalLeg,
     ProductType,
+    RateFuturesInstrument,
     Redemption,
     ShockedCurveCache,
     ValuationPolicy,
@@ -59,6 +77,9 @@ from rub_fixed_income import (
 from rub_fixed_income.dates import add_months
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tests"))
+import portfolio_v3_book as mixed_book
+
 KBD_FIXTURE = ROOT / "tests" / "fixtures" / "kbd" / "zcyc_2026-10-15.json"
 BUSINESS_DATE = date(2026, 10, 15)
 AS_OF = datetime(2026, 10, 15, 16, 30, tzinfo=UTC)
@@ -107,9 +128,29 @@ def ois_request() -> CurveBootstrapRequest:
     return CurveBootstrapRequest(BUSINESS_DATE, quotes)
 
 
-def book(size: int) -> tuple[list[Instrument], list[Position], list[BondPriceObservation]]:
+FOREIGN = {"CNY": (11.4, 0.017), "USD": (81.5, 0.042), "EUR": (94.2, 0.023)}
+FX_SCENARIOS = (
+    *SCENARIOS,
+    PortfolioScenario(
+        "fx+10", BondScenario.parallel(0.0), tuple((c, 10.0) for c in sorted(FOREIGN))
+    ),
+)
+
+
+def foreign_curve(rate: float) -> DiscountCurve:
+    nodes = tuple(
+        (add_months(BUSINESS_DATE, m), (1.0 + rate + 0.0005 * m / 12.0) ** (-m / 12.0))
+        for m in (1, 3, 6, 12, 24, 36, 60, 84, 120, 180, 240, 360)
+    )
+    return DiscountCurve(BUSINESS_DATE, nodes)
+
+
+def book(
+    size: int, currencies: tuple[str, ...] = ("RUB",)
+) -> tuple[list[Instrument], list[Position], list[BondPriceObservation]]:
     instruments, positions, quotes = [], [], []
     for i in range(size):
+        currency = currencies[i % len(currencies)]
         years = 1 + i % 15
         first = add_months(date(2026, 4, 15), -(i % 6))
         coupon = 30.0 + (i % 9) * 5.0
@@ -139,7 +180,7 @@ def book(size: int) -> tuple[list[Instrument], list[Position], list[BondPriceObs
             Instrument(
                 instrument_id,
                 ProductType.FIXED_BOND,
-                "RUB",
+                currency,
                 1000.0,
                 FixedCouponLeg(periods),
                 PrincipalLeg(redemptions),
@@ -154,12 +195,59 @@ def book(size: int) -> tuple[list[Instrument], list[Position], list[BondPriceObs
                 float(100 + i % 50),
                 "RATES",
                 AccountingCategory.TRADING,
-                "RUB",
+                currency,
                 0.3,
             )
         )
         quotes.append(BondPriceObservation(instrument_id, 95.0 + (i % 11) * 0.5, "waprice"))
     return instruments, positions, quotes
+
+
+def mixed_case(mode: str, size: int) -> Timing:
+    """The v3 mixed book, ``size`` positions cycling through its position templates."""
+    templates = mixed_book.instruments()
+    by_id = {i.instrument_id: i for i in templates}
+    shared = (FxFuturesInstrument, RateFuturesInstrument, OfzFuturesInstrument)
+    book_positions = mixed_book.positions()
+    instruments: dict[str, PortfolioInstrument] = {
+        i.instrument_id: i for i in templates if isinstance(i, Instrument)
+    }
+    instruments.update((i.instrument_id, i) for i in templates if isinstance(i, shared))
+    positions = []
+    for k in range(size):
+        template = book_positions[k % len(book_positions)]
+        source = by_id[template.instrument_id]
+        if isinstance(source, (Instrument, *shared)):
+            positions.append(replace(template, position_id=f"pos-{k:05d}"))
+            continue
+        copy = replace(source, instrument_id=f"{source.instrument_id}-{k:05d}")
+        instruments[copy.instrument_id] = copy
+        positions.append(
+            replace(template, position_id=f"pos-{k:05d}", instrument_id=copy.instrument_id)
+        )
+    policy = replace(mixed_book.POLICY, include_second_order=mode != "first")
+    scenarios = (
+        PortfolioScenario("rates+100", BondScenario.parallel(100.0)),
+        PortfolioScenario(
+            "usd+10 fx",
+            BondScenario.parallel(0.0),
+            fx_shocks_pct=(("USD", 10.0), ("CNY", 10.0)),
+            curve_shifts_bp=(("USD_DF", (50.0,) * 11),),
+        ),
+        PortfolioScenario("spread+50", BondScenario.parallel(0.0, spread_shift_bp=50.0)),
+    )
+    started = time.perf_counter()
+    result = value_portfolio(
+        run_id=f"bench-mixed-{mode}",
+        as_of=mixed_book.AS_OF,
+        snapshot=mixed_book.snapshot(),
+        instruments=tuple(instruments.values()),
+        positions=positions,
+        policy=policy,
+        scenarios=scenarios if mode == "scenarios" else (),
+    )
+    elapsed = time.perf_counter() - started
+    return Timing("mixed", mode, size, result.coverage.completed, elapsed)
 
 
 @dataclass(frozen=True)
@@ -178,7 +266,8 @@ class Timing:
 def run_case(
     curve: str, mode: str, size: int, cache: ShockedCurveCache | None = None
 ) -> tuple[Timing, ShockedCurveCache]:
-    instruments, positions, quotes = book(size)
+    foreign = curve == "fx"
+    instruments, positions, quotes = book(size, tuple(sorted(FOREIGN)) if foreign else ("RUB",))
     snapshot = MarketSnapshot(
         f"bench-{BUSINESS_DATE}",
         BUSINESS_DATE,
@@ -186,15 +275,22 @@ def run_case(
         curves=(
             CurveEntry("RUB_OFZ_KBD", "rub_ofz_kbd_v1", kbd_parameters()),
             CurveEntry("RUB_OIS", "rub_ruonia_ois_legacy_v1", ois_request()),
+            *(
+                CurveEntry(f"{c}_DF", f"{c.lower()}_discount_factors_v1", foreign_curve(r))
+                for c, (_, r) in FOREIGN.items()
+            ),
         ),
         calendars=(CalendarEntry("MOEX_STOCK", CALENDAR),),
+        fx=tuple(FxRate(c, fx) for c, (fx, _) in FOREIGN.items()),
         quotes=tuple(quotes),
     )
     policy = ValuationPolicy(
         "RUB_OFZ_KBD" if curve == "kbd" else "RUB_OIS",
         horizon="confirmed_put",
         include_second_order=mode != "first",
+        foreign_curves=tuple((c, f"{c}_DF") for c in FOREIGN) if foreign else (),
     )
+    scenarios = FX_SCENARIOS if foreign else SCENARIOS
     cache = ShockedCurveCache() if cache is None else cache
     started = time.perf_counter()
     result = value_portfolio(
@@ -204,7 +300,7 @@ def run_case(
         instruments=instruments,
         positions=positions,
         policy=policy,
-        scenarios=SCENARIOS if mode == "scenarios" else (),
+        scenarios=scenarios if mode == "scenarios" else (),
         curve_cache=cache,
     )
     elapsed = time.perf_counter() - started
@@ -215,11 +311,18 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--positions", type=int, default=2000)
     parser.add_argument("--json", type=Path, help="also write the timings as JSON")
+    parser.add_argument(
+        "--cases", default="kbd,ois,fx,mixed", help="comma-separated: kbd, ois, fx, mixed"
+    )
     args = parser.parse_args(argv)
     size = args.positions
+    cases = tuple(c.strip() for c in args.cases.split(",") if c.strip())
     timings = []
-    for curve in ("kbd", "ois"):
+    for curve in cases:
         for mode in ("first", "hessian", "scenarios"):
+            if curve == "mixed":
+                timings.append(mixed_case(mode, size))
+                continue
             timing, cache = run_case(curve, mode, size)
             timings.append(timing)
             if curve == "ois" and mode == "hessian":

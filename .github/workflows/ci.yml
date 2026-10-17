@@ -60,3 +60,10 @@ jobs:
         with:
           name: portfolio-benchmark
           path: benchmark.json
+      - name: Swap benchmark
+        shell: bash
+        run: uv run python benchmarks/swap_bench.py --positions 2000 --json swap-benchmark.json | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: swap-benchmark
+          path: swap-benchmark.json

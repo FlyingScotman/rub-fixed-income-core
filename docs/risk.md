@@ -170,3 +170,92 @@ products or an independent desk pricer.
 ## Extensions in 0.5.0
 
 Full fixed-RUB gamma, exact-versus-Taylor comparison, explicit-recovery JTD and a pure local input adapter are documented in [second-order-local-risk.md](second-order-local-risk.md). The limitations above describe the original 0.4.0 interface.
+
+## Non-RUB bonds in the portfolio (package 3)
+
+`BondRiskRequest` still accepts RUB only. `value_portfolio` values a CNY, USD or EUR bond
+by converting its flows, nominal and accrued at the snapshot FX rate *explicitly* and
+discounting them on the bond's own currency curve (never the RUB curve). PV, bucket DV01,
+CS01, the Hessian, scenarios and JTD are therefore RUB at today's rate. Because the RUB
+value is `FX · PV_ccy`, the FX factor is added analytically:
+`FX delta = PV_ccy · FX / 100`, cross terms `dV/dx_i / 100`, no FX gamma (see
+`CONVENTIONS.md`). The tests check this against an independent USD-only engine converted
+afterwards and against central differences of exact rates-and-FX scenarios.
+
+## Callables, perpetuals and pass-throughs (package 9b)
+
+Risk of a callable or perpetual is the risk of the **exercised bond** under an explicit
+assumption (`docs/callables.md`): `to_worst` resolves the date at the base price and the
+date is then held through every bump, scenario and the Hessian (no switching, no option
+value; OAS is rejected). A pass-through's rate risk holds its CPR fixed; CPR risk is the
+separate `cpr_sensitivity` (central difference per 1 pp of CPR, forward at CPR below the
+bump) and is not a desk factor. Extension risk is reported by `extension_risk`
+(duration to maturity minus duration to the call, and the value change if the call is
+skipped at the yield to call).
+
+## Floaters on separate projection and discount curves (package 1)
+
+`BondRiskRequest(floating_leg=..., projection_curve=...)` projects coupons off
+`projection_curve` and discounts on `curve`; the spread is a margin over `curve`. Each
+curve is shocked in its own basis (zero-rate overlay or OIS quote rebootstrap) on the 11
+buckets. `risk()` returns a `TwoCurveBondRiskResult` with `projection_buckets` beside the
+discount `buckets`; `dv01_rub` sums both and `parallel_dv01_rub` moves both curves
+together. `second_order()` is central over 23 factors (`discount <b>`, `projection <b>`,
+spread) with the same bump as central `risk()`, so `bond_factor_risk(...,
+projection_curve_id=...)` gives a consistent Taylor expansion. `reprice` and
+`approximate` take `projection_curve_shifts_bp`; when None the projection curve moves by
+the scenario's curve shifts. Without `projection_curve` the single-curve floater path is
+bit-identical to 0.8.0. See [floating coupons](floating.md).
+
+## Inflation-linked bonds (package 9a)
+
+An OFZ-IN position is a fixed-flow risk in **real** terms (`docs/linkers.md`). Its flows
+are taken at the settlement-date indexed face, held constant, and discounted on a
+caller-built real curve (`rub_real_discount_factors_v1`). Shifts of that curve's
+continuous zero rates give `REAL|<curve_id>|<bucket>`, and the own spread over it gives
+`CS`. Both are central, with the Hessian from the same bump. The identity
+`ΣREAL = −τ·PV·10⁻⁴` holds for a single-flow bond with a continuous spread
+(`tests/test_inflation.py`). CPI is not a bumped factor. Breakeven inflation is not
+modelled: the real curve absorbs it. Nominal `PortfolioScenario` shocks do not move
+linkers; their rows are `UNSUPPORTED_PRODUCT`.
+
+## Credit default swaps (package 8)
+
+`CdsRiskEngine` (`docs/cds.md`) reports in the same vocabulary: `IR|<curve>|<bucket>` on
+the discount curve (zero overlay or OIS quote rebootstrap, as selected by the curve
+input) and `CS` = all quoted spreads of the reference entity +1 bp. Central differences
+by default; the Hessian covers the 11 buckets and `CS` with the same bump (DEC08). Every
+shock holds the CDS quotes and rebootstraps the hazard curve, so IR DV01 is at constant
+spreads. Recovery sensitivity (`recovery01`, per 0.01, quotes held) is reported beside
+the factors, not as one.
+
+JTD follows the bond rule, value after default minus value before (DEC07):
+`side · N · ((1 - R) - c · accrued) - pv`, with the recovery an explicit argument. A
+protection seller (long credit) has negative JTD like a long bond; a buyer positive.
+
+## Repo and reverse-repo legs (package 6)
+
+`RepoRiskEngine` (`docs/repo.md`) reports `IR|<discount curve>|<bucket>` on the remaining
+cash legs and, for a floating repo on a separate projection curve,
+`IR|<projection curve>|<bucket>` on the projected overnight benchmark days; a
+single-curve floating repo has one set of factors. Central differences by default; the
+Hessian covers 11 or 22 factors with the same bump (DEC08). Known fixings and the fixed
+rate never move. A cash lender (`reverse_repo`) has negative discount DV01 and positive
+projection DV01; the borrower the reverse. The collateral carries no risk here: the bond
+stays a position of the cash borrower and is risked by the bond engines, so the repo
+leg and the bond are never counted twice. There is no `CS`, JTD or FX factor.
+
+## Derivatives in the portfolio (result contract v3)
+
+`value_portfolio` maps every product's engine risk to the desk factors with the product
+module's own mapping (`swap_factor_risk`, `fx_forward_factor_risk`, `xccy_factor_risk`,
+`cds_factor_risk`, `fx_futures_factor_risk`, `rate_futures_factor_risk`,
+`ofz_futures_factor_risk`, `repo_factor_risk`), scaled by the position quantity (futures
+engines include it). A non-RUB CDS is scaled by the snapshot `FxRate` and gains `FX|<ccy>`
+with its cross terms (`fx_translated_factor_risk`), as non-RUB bonds. Bonds and
+derivatives share one factor space: `factor_totals` sums every position's first order,
+`hessian_totals` every position's sparse Hessian by factor name (upper triangle by name);
+cross terms within one position (FX x rates of FX products, `CS` x rates of CDS,
+discount x projection of two-curve swaps) are those of its engine. All first orders and
+Hessians are central with the policy's bump (DEC08). Recovery sensitivity of a CDS is
+reported as `recovery01_rub` beside the factors. See [portfolio-v3.md](portfolio-v3.md).

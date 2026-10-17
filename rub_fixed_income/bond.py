@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from itertools import pairwise
 from math import isfinite
@@ -8,8 +8,9 @@ from math import isfinite
 from ._money import finite_money
 from ._solver import bisect
 from .accumulation import AccumulationPeriod
+from .canonical import OMIT_IF_DEFAULT
 from .cashflows import BondCashflow, CashEvent, EventKey
-from .dates import year_fraction
+from .conventions import ANNUAL, DEFAULT_YIELD_CONVENTION, YieldConvention
 
 
 @dataclass(frozen=True)
@@ -41,9 +42,26 @@ class FinancedBondProjection:
 
 @dataclass(frozen=True)
 class YieldRequest:
+    """Effective annual yield ``y``: ``P = sum CF / (1 + y)^t``, ``t`` from the horizon.
+
+    ``convention`` sets the time basis of ``t`` (``convention.day_count``; default
+    ACT/365F, the MOEX quote basis). It is a term of the issue, never inferred: some
+    USD replacement bonds are quoted on ACT/360 (BACKLOG #38). Its compounding must be
+    annual; for nominal yields use ``solve_nominal_annual_yield``.
+    """
+
     horizon_date: date
     dirty_price_rub_per_bond: float
     cashflows: tuple[BondCashflow, ...]
+    convention: YieldConvention = field(default=DEFAULT_YIELD_CONVENTION, metadata=OMIT_IF_DEFAULT)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.convention, YieldConvention):
+            raise TypeError("convention must be a YieldConvention")
+        if self.convention.compounding != ANNUAL:
+            raise ValueError(
+                "an effective annual yield compounds annually; use solve_nominal_annual_yield"
+            )
 
 
 @dataclass(frozen=True)
@@ -64,13 +82,18 @@ def solve_effective_annual_yield(request: YieldRequest) -> YieldResult:
         finite_money(cashflow.amount, "cashflow amount")
     if any(cashflow.payment_date <= request.horizon_date for cashflow in request.cashflows):
         raise ValueError("yield cashflows must be strictly after horizon")
+    # ACT/365F is (end - start).days / 365.0, the expression used before the time basis
+    # became an input, so default results are unchanged bit for bit.
+    times = tuple(
+        request.convention.day_count.year_fraction(request.horizon_date, cashflow.payment_date)
+        for cashflow in request.cashflows
+    )
 
     def error(rate: float) -> float:
         return float(
             sum(
-                cashflow.amount
-                / (1.0 + rate) ** year_fraction(request.horizon_date, cashflow.payment_date)
-                for cashflow in request.cashflows
+                cashflow.amount / (1.0 + rate) ** time
+                for cashflow, time in zip(request.cashflows, times, strict=True)
             )
             - request.dirty_price_rub_per_bond
         )

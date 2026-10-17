@@ -1,7 +1,8 @@
-# MOEX end-of-day bond golden fixtures (roadmap 0.10, BACKLOG #36)
+# MOEX end-of-day bond golden fixtures (roadmap 0.10, BACKLOG #36, #38)
 
 Raw public MOEX ISS responses, unchanged, fetched directly from `iss.moex.com` on
-2026-10-17 at about 11:25 UTC:
+2026-10-17 at about 11:25 UTC (the nine USD bonds added for BACKLOG #38 at about
+13:39 UTC, with the same endpoints):
 
 | Path | ISS endpoint | Content |
 |---|---|---|
@@ -42,8 +43,15 @@ only on the bonds kept here:
   different, higher measure that is not identified. `DURATION` is to the offer.
 - `GSPREADBP` per trade is the effective yield minus the KBD yield at the duration, in
   whole bp, on the KBD publication named by `ZCYCMOMENT`.
-- Some USD bonds are quoted on an ACT/360 time basis (RU000A105RH2), others on ACT/365F
-  (RU000A10A877). ISS does not say which; core uses ACT/365F (BACKLOG #36, package 3).
+- **Yield time basis of USD bonds (BACKLOG #38).** All eleven USD replacement bonds here
+  accrue 30/360, but their `YIELDATWAP` is an effective annual yield on two time bases:
+  ACT/360 (RU000A105RH2, RU000A108P79, RU000A105R62, RU000A105JT4, RU000A105A95,
+  RU000A1059N9, RU000A1059P4) and ACT/365F (RU000A10A877, RU000A108Y11, RU000A107B43,
+  RU000A106G56). ISS does not say which; the basis is a term of the issue
+  (`Instrument.yield_convention`) that the backend takes from static data, and the test
+  table states it per bond. On its basis core matches `YIELDATWAP` within the published
+  rounding (0.005) and `DURATION` within a day; on the other basis it misses by 5 to 40 bp.
+  Duration in days does not depend on the basis.
 
 ## Bonds
 
@@ -55,4 +63,6 @@ only on the bonds kept here:
 | RU000A10B7W1 | TQCB | call bond | `ACCINT`; yield and duration to maturity |
 | RU000A10ASC6, RU000A10AC75 | TQCB | amortizers (face 800, 750) | `ACCINT` on the amortised face, yield, duration |
 | RU000A10C5Y0, RU000A10G2W7, RU000A0ZYYE3, RU000A1043Z7, RU000A101012 | TQCB | put bonds, 0.1 to 3 years to the offer | `ACCINT`; `YIELDTOOFFER` at `CLOSE`, `DURATION` to the offer; RU000A10C5Y0 per trade: `EFFECTIVEYIELD`, `DURATION`, `GSPREADBP` |
-| RU000A10A877, RU000A105RH2 | TQOD | USD replacement bonds | `ACCINT` on 30/360; RU000A10A877 yield and duration; RU000A105RH2's ACT/360 yield is a recorded gap |
+| RU000A10A877, RU000A105RH2 | TQOD | USD replacement bonds | `ACCINT` on 30/360; yield and duration on the issue's time basis (ACT/365F, ACT/360) |
+| RU000A108P79, RU000A105R62, RU000A105JT4, RU000A105A95, RU000A1059N9, RU000A1059P4 | TQOD | USD replacement bonds, ACT/360 yield basis | `ACCINT` on 30/360, `YIELDATWAP` on ACT/360, `DURATION` |
+| RU000A108Y11, RU000A107B43, RU000A106G56 | TQOD | USD replacement bonds, ACT/365F yield basis | `ACCINT` on 30/360, `YIELDATWAP` on ACT/365F, `DURATION` |

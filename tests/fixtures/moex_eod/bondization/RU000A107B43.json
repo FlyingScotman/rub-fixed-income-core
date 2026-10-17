@@ -1,0 +1,43 @@
+{
+"amortizations": {
+	"columns": ["isin", "name", "issuevalue", "amortdate", "facevalue", "initialfacevalue", "faceunit", "valueprc", "value", "value_rub", "data_source", "secid", "primary_boardid"], 
+	"data": [
+		["RU000A107B43", "ГТЛК ЗО27-Д", 346639000, "2027-03-10", 1000, 1000, "USD", 100, 1000, 83617.7, "maturity", "RU000A107B43", "TQCB"]
+	]
+},
+"amortizations.cursor": {
+	"columns": ["INDEX", "TOTAL", "PAGESIZE"], 
+	"data": [
+		[0, 1, 1]
+	]
+},
+"coupons": {
+	"columns": ["isin", "name", "issuevalue", "coupondate", "recorddate", "startdate", "initialfacevalue", "facevalue", "faceunit", "value", "valueprc", "value_rub", "secid", "primary_boardid"], 
+	"data": [
+		["RU000A107B43", "ГТЛК ЗО27-Д", 346639000, "2024-03-10", "2024-03-07", "2023-12-01", 1000, 1000, "USD", 23.2499865013, 4.6500000000, 2109.92, "RU000A107B43", "TQCB"],
+		["RU000A107B43", "ГТЛК ЗО27-Д", 346639000, "2024-09-10", "2024-09-09", "2024-03-10", 1000, 1000, "USD", 23.2500196382, 4.6500000000, 2101.46, "RU000A107B43", "TQCB"],
+		["RU000A107B43", "ГТЛК ЗО27-Д", 346639000, "2025-03-10", "2025-03-07", "2024-09-10", 1000, 1000, "USD", 23.2500375829, 4.6500000000, 2072.42, "RU000A107B43", "TQCB"],
+		["RU000A107B43", "ГТЛК ЗО27-Д", 346639000, "2025-09-10", "2025-09-09", "2025-03-10", 1000, 1000, "USD", 23.25, 4.6500000000, 1935.39, "RU000A107B43", "TQCB"],
+		["RU000A107B43", "ГТЛК ЗО27-Д", 346639000, "2026-03-10", "2026-03-09", "2025-09-10", 1000, 1000, "USD", 23.25, 4.6500000000, 1840.24, "RU000A107B43", "TQCB"],
+		["RU000A107B43", "ГТЛК ЗО27-Д", 346639000, "2026-09-10", "2026-09-09", "2026-03-10", 1000, 1000, "USD", 23.25, 4.6500000000, 1986.93, "RU000A107B43", "TQCB"],
+		["RU000A107B43", "ГТЛК ЗО27-Д", 346639000, "2027-03-10", "2027-03-09", "2026-09-10", 1000, 1000, "USD", 23.25, 4.6500000000, 1944.11, "RU000A107B43", "TQCB"]
+	]
+},
+"coupons.cursor": {
+	"columns": ["INDEX", "TOTAL", "PAGESIZE"], 
+	"data": [
+		[0, 7, 7]
+	]
+},
+"offers": {
+	"columns": ["isin", "name", "issuevalue", "offerdate", "offerdatestart", "offerdateend", "facevalue", "faceunit", "price", "value", "agent", "offertype", "secid", "primary_boardid"], 
+	"data": [
+
+	]
+},
+"coupons.cursor": {
+	"columns": ["INDEX", "TOTAL", "PAGESIZE"], 
+	"data": [
+		[0, 7, 7]
+	]
+}}

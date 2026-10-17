@@ -10,8 +10,14 @@ from __future__ import annotations
 __all__ = [
     "CalendarRangeError",
     "CoreRejection",
+    "ExpiredContract",
     "InvalidTerms",
+    "MissingAssumption",
+    "MissingBasketPrice",
+    "MissingFixing",
     "MissingMarketData",
+    "SettledLeg",
+    "UndeclaredFixingGap",
     "UnknownCurveSpec",
     "UnsupportedProduct",
 ]
@@ -39,6 +45,13 @@ class MissingMarketData(CoreRejection):
     code = "MISSING_MARKET_DATA"
 
 
+class MissingFixing(MissingMarketData, LookupError):
+    """A required fixing (for example a RUONIA business day) is absent; it is never filled.
+
+    Also a ``LookupError``, which is what the floating-coupon module raised before.
+    """
+
+
 class CalendarRangeError(CoreRejection):
     """A date lies outside the calendar's covered range; it is never assumed Mon-Fri."""
 
@@ -55,3 +68,37 @@ class InvalidTerms(CoreRejection):
     """Instrument or position terms are inconsistent."""
 
     code = "INVALID_TERMS"
+
+
+class ExpiredContract(InvalidTerms):
+    """A futures contract past its last trading or delivery day (portfolio v3)."""
+
+    code = "EXPIRED_CONTRACT"
+
+
+class SettledLeg(InvalidTerms):
+    """An FX leg settled before the business date; only outstanding legs are valued."""
+
+    code = "SETTLED_LEG"
+
+
+class UndeclaredFixingGap(MissingFixing):
+    """A RUONIA business day without a fixing that is not declared unpublished."""
+
+    code = "UNDECLARED_FIXING_GAP"
+
+
+class MissingBasketPrice(MissingMarketData):
+    """A deliverable bond of an OFZ futures basket has no price in the snapshot."""
+
+    code = "MISSING_BASKET_PRICE"
+
+
+class MissingAssumption(InvalidTerms):
+    """A required valuation assumption is absent; core never picks one.
+
+    A pass-through without a prepayment assumption (core never picks a CPR), an open
+    repo without an assumed end date.
+    """
+
+    code = "MISSING_ASSUMPTION"

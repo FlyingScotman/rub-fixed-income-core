@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import sys
 from dataclasses import asdict, replace
 from datetime import date
+from pathlib import Path
 
 import pytest
 from test_local_worker import run, snapshot
@@ -20,6 +23,11 @@ from rub_fixed_income import (
     ZSpreadConvention,
     local_risk,
     local_worker,
+    portfolio,
+    portfolio_result_from_json,
+    portfolio_result_to_json,
+    verify_portfolio_result,
+    verify_portfolio_result_v3,
 )
 from rub_fixed_income.analytics import (
     BondAnalyticsResultV1,
@@ -144,6 +152,70 @@ def _at_version(value: object, version: str) -> object:
     return value
 
 
+# Hashes of results recomputed from floats are pinned on Linux, where they were checked
+# against a clean 0.26.0 run: the C maths library differs between operating systems in
+# the last bit (Windows gives other result hashes for the same inputs). Elsewhere the
+# results are checked for schema, hash consistency and a byte-exact round trip; the
+# frozen fixtures are platform-independent.
+_PINNED_PLATFORM = sys.platform.startswith("linux")
+
+
+def _pin_version(monkeypatch: pytest.MonkeyPatch, version: str) -> None:
+    monkeypatch.setattr(portfolio, "__version__", version)
+    monkeypatch.setattr(local_risk, "__version__", version)
+
+
+def test_bond_only_portfolio_results_keep_their_0_26_v2_hashes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bond-only books (fixed, amortizing, put, floaters, non-RUB, linkers) give the
+    bytes, job IDs and result hashes of release 0.26.0 after the v3 work."""
+    import test_inflation
+    import test_non_rub_bonds
+    import test_portfolio
+    import test_portfolio_floaters
+
+    _pin_version(monkeypatch, "0.26.0")
+    books = {
+        "portfolio": test_portfolio.run(),
+        "portfolio_all": test_portfolio.run(positions=test_portfolio.positions()),
+        "non_rub": test_non_rub_bonds.run(),
+        "floaters": test_portfolio_floaters.run(),
+        "linker": test_inflation._value([test_inflation.bond(), test_inflation.fixed_bond()]),
+    }
+    # Python 3.12 made float sum() compensated, so some 0.26.0 numbers differ in the last
+    # bit between 3.11 and later; each interpreter is pinned to the 0.26.0 output on it.
+    pinned = {**V2_PINNED, **V2_PINNED_PY311} if sys.version_info < (3, 12) else V2_PINNED
+    for name, result in books.items():
+        data = portfolio_result_to_json(result)
+        assert result.schema_version == "rub-portfolio-risk-result.v2", name
+        assert verify_portfolio_result(result), name
+        assert portfolio_result_to_json(portfolio_result_from_json(data)) == data, name
+        if not _PINNED_PLATFORM:
+            continue
+        assert (result.job_id, result.result_sha256, hashlib.sha256(data).hexdigest()) == (
+            pinned[name]
+        ), name
+
+
+def test_portfolio_v3_result_is_pinned(monkeypatch: pytest.MonkeyPatch) -> None:
+    from portfolio_v3_book import pinned_v3_result
+
+    _pin_version(monkeypatch, "0.27.0")
+    result = pinned_v3_result()
+    assert result.schema_version == "rub-portfolio-risk-result.v3"
+    assert verify_portfolio_result_v3(result)
+    data = portfolio_result_to_json(result)
+    assert portfolio_result_to_json(portfolio_result_from_json(data)) == data
+    if not _PINNED_PLATFORM:
+        return
+    assert (result.job_id, result.result_sha256) == (
+        PINNED["portfolio_v3_job_id"],
+        PINNED["portfolio_v3_result"],
+    )
+    assert portfolio_result_to_json(result) == V3_FIXTURE.read_bytes()
+
+
 def test_canonical_sha256_of_plain_values_is_pinned() -> None:
     payload = {"d": date(2026, 1, 1), "x": [1, 2.5, "a"], "n": None}
     assert canonical_sha256(payload) == PINNED["plain"]
@@ -158,4 +230,56 @@ PINNED: dict[str, str] = {
     "job_id": "0d9d9d88c815393c478fe3b6cbeb7d3468aa12f61b248062bfcfb28bcfa0935c",
     "local_result_body": "2d37374572ae89eb4dd69ffe13d7b21963c2f7b1395ae3dbbef381604b2b82ca",
     "plain": "b96b0e8e367c6ed6ee81cbccd316d0f95e0a02375e8fe7117c7a220e190c6afb",
+    "portfolio_v3_job_id": "f2ed552f4ff6c90de05e7be0a377759db76804394d42b5b028274689390bcb5a",
+    "portfolio_v3_result": "ff72b04d27e0d9166e9034247f3198d1e4ce31e3b1ad1c6245b56fd293ed6635",
+}
+
+V3_FIXTURE = Path(__file__).parent / "fixtures" / "portfolio_result_v3.json"
+
+# (job_id, result_sha256, SHA-256 of the JSON bytes) of bond-only books under 0.26.0.
+V2_PINNED: dict[str, tuple[str, str, str]] = {
+    "portfolio": (
+        "a1b88d5e0854bb3feae7f6934390f43c3e4cd75fb015cb73b8d851a0c974a0ad",
+        "d2b939e2b1440227a3112b8b164d340b03a80eaade64fb53a66beca0bea29c1c",
+        "0d154ef550229533e254cb63d3fab908f778505a3c28666b9a24eb887e6cb2b2",
+    ),
+    "portfolio_all": (
+        "70828ba8a7fba69227394bd9d1a22f469b7aa7f5ff2f782ca62497e2ca72eef9",
+        "169d809f1036e5069e835003f5b9ee7d54ac06c0e1cee33ee9af880f94793f49",
+        "e9b76a34756e16035eefd78c3f0b348a6ca5c845616e47b4e2729e1a950fd9af",
+    ),
+    "non_rub": (
+        "53d764fdd2ee6e60c44e05ee85bce512ba31f8d2ffcd272c39e8c3f4de2adf00",
+        "835b09634bd6a836976c89007f9a31aeee5a9866aac288aa2f5a64a92c4e72c8",
+        "59388261960d8a79ccfedbd32b1c4298f8b008957a903fd12a78d7f3b85f3574",
+    ),
+    "floaters": (
+        "7bcb2cbabebf2ce400560a3b26e88932b2e380a0fbe19c35cc71ff3f054284bf",
+        "3b9fad26221a40d8788b966fc6855727c4e3bf7cfac9fdcd279cc1d5d6f6d809",
+        "ca7fbf288301b99a526d2b66768423340de92d975b434f100376c76b67e2f882",
+    ),
+    "linker": (
+        "7617c6f9ea550d84a24d2d436fdf23f4dbb3b64eef5bf01007dadf135a876b8d",
+        "45920705d72d558c6832924f432ab43595129b200bf98a6eb2f26885704c74a7",
+        "f9c101e2073fea9c0ffde0d81a933e300e5a6687d274189b973573007f7276ae",
+    ),
+}
+
+# The books whose 0.26.0 output differs on Python 3.11 (taken from 0.26.0 code on 3.11).
+V2_PINNED_PY311: dict[str, tuple[str, str, str]] = {
+    "portfolio": (
+        "a1b88d5e0854bb3feae7f6934390f43c3e4cd75fb015cb73b8d851a0c974a0ad",
+        "e2c15dee10184746bac89cfa3819dd3219ae8bf659464b784d34a4edde3dccf8",
+        "0fb4f6807c24d06316af6edf7d8ba2ce2b99db93860e939c1f986ecb54499622",
+    ),
+    "portfolio_all": (
+        "70828ba8a7fba69227394bd9d1a22f469b7aa7f5ff2f782ca62497e2ca72eef9",
+        "c07a75d0fe52bd369b106442aa1c8ad1a1e5b43b835307a4e6a651a88784a798",
+        "50a43c746f0ea3cd2f8269a3c3114d0741f7201c1552b790d3ee43eb781675d1",
+    ),
+    "floaters": (
+        "7bcb2cbabebf2ce400560a3b26e88932b2e380a0fbe19c35cc71ff3f054284bf",
+        "8b454b01725edb318deb2fcd360a03918084695034d6c2a20e6c36be6f99d8f5",
+        "98bcd1e70c81668c7a4c6715bd2b9c55d1b21e558690090c163d5fd40f110303",
+    ),
 }

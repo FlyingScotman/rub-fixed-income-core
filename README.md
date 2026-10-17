@@ -26,6 +26,15 @@ linear guardrail; they do not call the exact solver.
 - [API](docs/API.md) — public functions, units, errors
 - [Consumers](docs/CONSUMERS.md) — who uses the core and how it is pinned
 - [FX futures](docs/fx-futures.md) — rate, basis and spot risk of FX futures against RUB
+- [FX forwards and swaps](docs/fx-forwards.md) — OTC FX forwards and FX swap legs by covered parity
+- [Swaps](docs/swaps.md) — seasoned RUONIA OIS and key-rate swaps
+- [Callables](docs/callables.md) — exercise assumptions, perpetuals and constant-CPR pass-throughs
+- [Linkers](docs/linkers.md) — OFZ-IN indexation, real-curve valuation and the `REAL` factor
+- [CDS](docs/cds.md) — ISDA Standard Model single-name CDS: hazard bootstrap, CS01, JTD
+- [XCCY](docs/xccy.md) — CNY/RUB cross-currency swaps vs RUONIA and the CNY curve bootstrap
+- [Rate futures](docs/rate-futures.md) — RUONIA, RUONIA index, KEYRATE and OFZ basket futures
+- [Repo](docs/repo.md) — repo and reverse-repo legs: fixed, RUSFAR / RUONIA / key-rate floating, collateral reference
+- [Portfolio v3](docs/portfolio-v3.md) — derivatives in `value_portfolio`: position types, snapshot inputs, result contract `rub-portfolio-risk-result.v3`
 - [Backlog](docs/BACKLOG.md) — remaining fixes and downstream migrations
 - [Changelog](CHANGELOG.md)
 

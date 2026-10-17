@@ -1,98 +1,142 @@
 # Handoff для следующей сессии
 
-Состояние на 17 октября 2026, после релиза **0.17.0** (ветка `claude/blissful-brown-a0gh2o`,
-PR в `main`). Сначала прочитайте `docs/PRODUCT_ROADMAP.md` (таблица статуса) и
-`docs/BACKLOG.md` (#36–#38). Этот файл — короткая сводка того, что выяснено и что делать
-дальше; когда пункт сделан, обновите или удалите его здесь.
+Состояние на 17 октября 2026, после релиза **0.29.0** (ветка
+`claude/gracious-einstein-agqmb0`). В этой ветке закрыта разработка продуктовых пакетов
+0–9 roadmap в ядре: каждый продукт имеет модуль, риск в словаре desk-факторов, тесты и,
+где данные публичны, golden-сверку с MOEX / ЦБ / ISDA. Дальше — интеграция в бэкенд,
+данные и уточнение конвенций по первоисточникам, а не новые продукты.
 
-## Что сделано в 0.17.0
+Сначала прочитайте `docs/PRODUCT_ROADMAP.md` (таблица статуса до 0.29.0) и
+`docs/BACKLOG.md` (открытые пункты #39–#107). Когда пункт сделан, обновите
+или удалите его здесь.
 
-- `RateCouponPeriod`, `RateAccrualCouponLeg`, `AccrualBasis` (`RATE_ACT_365`, `RATE_ACT_360`,
-  `RATE_30_360`) в `rub_fixed_income/domain.py`. НКД по ставке на непогашенный номинал
-  на начало периода. Это новые типы, а не новые поля: инструменты 0.16.0 сериализуются и
-  хешируются как раньше (проверено в `tests/test_accrual_basis.py`).
-- EOD golden-тесты MOEX: `tests/test_moex_eod_goldens.py`, фикстуры
-  `tests/fixtures/moex_eod/` (18 облигаций, торги 2026-10-15) и
-  `tests/fixtures/kbd/zcyc_2026-10-16.json`. Провенанс и смысл полей ISS — в
-  `tests/fixtures/moex_eod/README.md`.
-- BACKLOG #36 закрыт, заведён #38.
+## Что сделано в 0.18.0–0.29.0
 
-## Что установлено про данные MOEX ISS (не перепроверять заново)
+| Версия | Пакет | Что |
+|---|---|---|
+| 0.18.0 | 3, #38 | Валютные облигации (CNY/USD/EUR) в `value_portfolio`, `FX\|ccy`, база времени доходности как условие выпуска |
+| 0.19.0 | 4, #34 | `fx_forwards`: внебиржевые FX-форварды и свопы, паритет, implied-кривая |
+| 0.20.0 | 9 | `callables`, `pass_through`, `assumed_portfolio`: колл/пут к исполнению, бессрочные, MBS/ABS с постоянным CPR |
+| 0.21.0 | 2 | `swaps`: seasoned OIS на RUONIA и свопы на ключевую ставку |
+| 0.22.0 | 0.5, #37 | `rub_ruonia_ois_moex_v2` по методике MOEX и условиям НФА |
+| 0.23.0 | 9 | `inflation`, `linkers`: ОФЗ-ИН, фактор `REAL\|curve\|bucket` |
+| 0.24.0 | 8 | `cds`: ISDA Standard Model |
+| 0.25.0 | 7 | `xccy`: CNY/RUB против RUONIA, бутстрап CNY-кривой |
+| 0.26.0 | 1, #29 | Флоатеры: floors/caps, сдвиги наблюдения, две кривые, портфель, 328 купонов MOEX |
+| 0.27.0 | 5 | `rate_futures`, `ofz_futures`: RUON, индекс RUONIA, KEYRATE, корзина ОФЗ |
+| 0.28.0 | 6 | `repo`: прямое и обратное РЕПО, фиксированная ставка, RUSFAR / RUONIA / ключевая ставка, обеспечение — отдельная ссылка |
+| 0.29.0 | 2, 4–8 | Все деривативы в `value_portfolio`, контракт `rub-portfolio-risk-result.v3`; книги только из облигаций остаются v2 байт в байт |
 
-- История `/iss/history/engines/stock/markets/bonds/boards/<BOARD>/securities.json?date=`:
-  `ACCINT` — НКД на **дату торгов**; `YIELDATWAP`, `YIELDCLOSE`, `DURATION` — на дату
-  расчётов (T+1), эффективная годовая ACT/365F, Macaulay в днях.
-- НКД: ОФЗ — пропорционально сумме купона (Минфин, `FixedCouponLeg`); корпоративные —
-  `номинал × ставка × дни / 365` (`RateAccrualCouponLeg`, ставка = `valueprc / 100` из
-  bondization). Есть выпуски ACT/360 (RU000A1089U1) и 30/360 (замещающие USD-бонды на TQOD).
-- На TQCB `ACCINT` валютной облигации в рублях, на TQOD — в валюте бумаги (CNY-бумаги на
-  TQOD выглядят пересчитанными в USD; не использовать).
-- Колл-облигации MOEX считает к погашению (колл не исполняется).
-- Пут-облигации: `YIELDTOOFFER` = эффективная доходность к оферте по `CLOSE`;
-  `trades_yields.EFFECTIVEYIELD` — то же по сделке. `YIELDATWAP` и `trades.YIELD` у
-  пут-облигаций — **другая, неопознанная метрика**, с ядром не сравнивать. 7 из 57 пут-бумаг
-  выборки не сходятся и по `YIELDTOOFFER` (RU000A10EKX1, RU000A106ZQ4, RU000A1023K1,
-  RU000A10CDX0, RU000A102LF6, RU000A10EA16, RU000A100DZ5) — не разобрано.
-- `trades_yields.GSPREADBP` = эффективная доходность − КБД на дюрации (в годах /365), на
-  публикации КБД из `ZCYCMOMENT`; ядро совпадает до целого бп. Поля `ZSPREAD` /
-  `ZSPREADATWAPRICE` в истории ОФЗ с Z-спредом ядра к КБД **не совпадают** (MOEX даёт
-  доли бп, ядро — десятки бп); их смысл не выяснен.
-- Bondization: в `offers` бывает `offerdate == "0000-00-00"` (тип «Оферта/Погашение») —
-  пропускать. У некоторых бумаг первые купоны без `valueprc`.
-- Бумаги с растущим номиналом (ОФЗ-ИН `SU52…` и индексируемые корпоративные, например
-  RU000A108RQ7, RU000A1062M5) отвергаются `Instrument` («redemptions must sum to the
-  initial face») — это пакет 9, не баг.
+## Что установлено про данные (не перепроверять заново)
+
+- **MOEX ISS, облигации.** `ACCINT` — НКД на дату торгов; `YIELDATWAP`, `YIELDCLOSE`,
+  `DURATION` — на дату расчётов (T+1), эффективная годовая ACT/365F, Macaulay в днях.
+  ОФЗ начисляют пропорционально сумме купона, корпоративные — на ставку (ACT/365).
+  Валютные бумаги на TQOD котируются на базе ACT/360 или ACT/365F — база приходит из
+  условий выпуска (`Instrument.yield_convention`), ISS её не даёт.
+- **Колл и пут.** MOEX считает доходность к коллу, только когда дата колла объявлена
+  (`CALLOPTIONDATE`), иначе к погашению. У пут-облигаций сравнивать `YIELDTOOFFER` и
+  `EFFECTIVEYIELD`; `YIELDATWAP` у них — другая, неопознанная метрика. Доходность
+  бессрочных = ставка купона / цена.
+- **Флоатеры.** Сдвиг окна наблюдения считается в календарных днях (ОФЗ-ПК «Ставка
+  RUONIA» — 6 дней, срочная RUONIA и «Индекс RUONIA» — 7 дней с компаундированием),
+  вес дней и доля года — по сдвинутому окну. Старые ОФЗ-ПК 29007–29010 фиксируются
+  заранее. ЦБ не публикует RUONIA в последний рабочий день года — это праздник календаря
+  публикации, не пропуск. Формулу каждого выпуска должен давать бэкенд: ISS даёт только
+  бенчмарк и маржу.
+- **ОФЗ-ИН.** Лаг 3 месяца, линейно по дням; купоны — от номинала на дату выплаты.
+  Номинал из CPI ЦБ сходится до 2.6e-4, а не до копейки: Минфин индексирует по уровням
+  Росстата, недоступным отсюда. RU000A1062M5 и RU000A108RQ7 — это золото, не инфляция.
+- **OIS RUONIA v2.** TOM старт, MODFOL, один период до 1Y, далее годовые с коротким
+  начальным стабом, Act/Act ISDA, оплата +1 рабочий день, RUONIA с компаундированием без
+  lookback; `Act` = 366, если в периоде есть день високосного года (НФА 8.4(б)).
+  Значения кривых СПФИ в ISS (`/iss/sdfi/curves/...`) — только для подписчиков.
+- **FX.** CNY/RUB расчёты на совместном российском и китайском календаре; `SRATE_CNY_ON`
+  — паритет ACT/365F без члена CNY-ставки.
+- **Фьючерсы.** Фьючерсы на ОФЗ не листингуются с июня 2022 (golden — серия декабря
+  2021). RUON сходится в 9 из 10 исполнений; RRK6 — необъяснённое расхождение.
 
 ## Доступ к сети из облачной среды
 
-- Работают: `iss.moex.com`, `www.cbr.ru` (проверено 2026-10-17).
-- Отклоняются прокси: `fs.moex.com`, `www.moex.com`, `nfa.ru`. Без них BACKLOG #37 не сдвинуть.
-- Полезные адреса ЦБ (все отвечают 200):
-  - RUONIA: `https://www.cbr.ru/hd_base/ruonia/dynamics/?UniDbQuery.Posted=True&UniDbQuery.From=DD.MM.YYYY&UniDbQuery.To=DD.MM.YYYY` (HTML-таблица);
-  - ключевая ставка: `https://www.cbr.ru/hd_base/KeyRate/?UniDbQuery.Posted=True&UniDbQuery.From=...&UniDbQuery.To=...`;
-  - веб-сервис: `https://www.cbr.ru/DailyInfoWebServ/DailyInfo.asmx` (методы `Ruonia`, `KeyRate` и др.);
-  - курсы: `https://www.cbr.ru/scripts/XML_daily.asp?date_req=DD/MM/YYYY`.
-- Скачанные данные класть в отдельную пустую папку, скрипты держать в другой, Python
-  запускать с `-I`. Фикстуры в репозитории — сырые ответы без изменений, с провенансом в
-  README рядом.
+- Работают: `iss.moex.com`, `www.moex.com`, `www.cbr.ru`, `nfa.ru`, `gu-st.ru`
+  (`fs.moex.com` — с сертификатом, см. ниже).
+- `fs.moex.com` (и другие хосты `*.moex.com` с сертификатом Минцифры): прокси пропускает,
+  но цепочка подписана **Russian Trusted Root CA**, которого нет в хранилище контейнера.
+  Скачайте корневой и промежуточный сертификаты с официального сайта и передавайте их
+  только в запрос, не отключая проверку TLS:
+
+  ```bash
+  mkdir -p <scratchpad>/ca
+  curl -sS -o <scratchpad>/ca/root.crt https://gu-st.ru/content/lending/russian_trusted_root_ca_pem.crt
+  curl -sS -o <scratchpad>/ca/sub.crt  https://gu-st.ru/content/lending/russian_trusted_sub_ca_pem.crt
+  { openssl x509 -in <scratchpad>/ca/root.crt; openssl x509 -in <scratchpad>/ca/sub.crt; } > <scratchpad>/ca/russian_trusted.pem
+  curl --cacert <scratchpad>/ca/russian_trusted.pem https://fs.moex.com/...
+  ```
+
+  SHA-256 корневого: `D2:6D:2D:02:31:B7:C3:9F:92:CC:73:85:12:BA:54:10:35:19:E4:40:5D:68:B5:BD:70:3E:97:88:CA:8E:CF:31`.
+  Многие старые ссылки `fs.moex.com/files/<n>` устарели (26130 — 404); документы MOEX
+  доступны через `www.moex.com/ru/documents/<n>` и `www.moex.com/files/<id>`.
+- Отклоняются прокси: `minfin.gov.ru`, `rosstat.gov.ru`, `e-disclosure.ru`,
+  `nationalclearingcentre.ru`, `nkcbank.ru`, правовые базы (pravo, garant, consultant),
+  `cbonds.ru`, `cdsmodel.com`. Без них не сдвинуть BACKLOG #59, #62, #64, #72, #85.
+- Полезные адреса ЦБ: веб-сервис `https://www.cbr.ru/DailyInfoWebServ/DailyInfo.asmx`
+  (RUONIA с временем публикации, ключевая ставка, `RuoniaSVXML` для срочной RUONIA),
+  `reg_cpd.xlsx` (CPI), курсы `scripts/XML_daily.asp`.
+- Скачанные данные класть в отдельную пустую папку, скрипты — в другую, Python
+  запускать с `-I`. Фикстуры в репозитории — сырые ответы с README о происхождении;
+  лицензированные документы не хранить (URL + SHA-256 + дата в `docs/sources/<тема>/`).
 
 ## Как проверять перед пушем
 
 CI: Windows и Ubuntu, Python 3.11 (+3.12 на Ubuntu); `pytest`, `ruff check`, `mypy`
-(только 3.11), `uv build`. Системный Python в контейнере 3.13, и mypy на нём падает на
-стабах numpy, поэтому mypy гонять в отдельном окружении 3.11:
+(только 3.11), `uv build`; бенчмарки портфеля и свопов на Windows информационно.
+Системный Python в контейнере 3.13, mypy гонять в отдельном окружении 3.11:
 
 ```bash
+uv sync --extra dev --locked
 UV_PROJECT_ENVIRONMENT=<scratchpad>/venv311 uv sync --python 3.11 --extra dev --locked
 UV_PROJECT_ENVIRONMENT=<scratchpad>/venv311 uv run --python 3.11 mypy
 uv run pytest -q && uv run ruff check . && uv build
 ```
 
-`ruff format --check` ругается на `rub_fixed_income/key_rate.py` и
-`tests/test_qr_bond_reconciliation_probe.py` — это было до 0.17.0, в CI формат не проверяется.
-
 Релиз = один коммит `Release X.Y.Z: ...` с версией в `pyproject.toml`,
 `rub_fixed_income/_version.py`, `uv.lock` и записями в `CHANGELOG.md`,
 `docs/PRODUCT_ROADMAP.md`, `docs/BACKLOG.md`, при необходимости `docs/API.md`,
-`docs/CONVENTIONS.md`, `docs/CONSUMERS.md`. Хеши в `tests/test_hash_stability.py` и
-фикстура `tests/fixtures/portfolio_result_v2.json` не должны меняться.
+`docs/CONVENTIONS.md`, `docs/CONSUMERS.md`, `README.md`. Хеши в
+`tests/test_hash_stability.py` и фикстуры `tests/fixtures/portfolio_result_v2.json` и
+`tests/fixtures/portfolio_result_v3.json`
+не должны меняться. Новые поля существующих типов — только с
+`metadata=canonical.OMIT_IF_DEFAULT`.
+
+Работа воркерами (так делалась эта ветка): каждый воркер в своём git worktree, без
+версии и CHANGELOG, пишет `docs/release-notes/<тема>.md`; оркестратор сливает ветку
+`git merge --squash`, переносит заметку в CHANGELOG / ROADMAP / BACKLOG, удаляет её и
+делает релизный коммит.
 
 ## Следующие шаги (по приоритету)
 
-1. **Golden-тесты флоатеров (пакет 1, критерий приёмки «reproduce MOEX-published current
-   coupons for sample OFZ-PK and corporate floaters»).** Данные теперь доступны: RUONIA и
-   ключевая ставка с `www.cbr.ru`, текущие купоны и даты периодов — bondization ISS
-   (ОФЗ-ПК `SU29…`; корпоративные с `COUPON_DETAILS` «Ставка RUONIA» / «Ключевая
-   ставка»). Модуль `rub_fixed_income/floating.py` (`docs/floating.md`) уже считает купон
-   по истории фиксингов. Нужно: зафиксировать сырые выгрузки ЦБ как фикстуры, найти
-   формулы купонов (лаг, усреднение, маржа) из условий выпусков — у ОФЗ-ПК они
-   стандартные (Минфин), у корпоративных брать только те, где формула однозначна, —
-   и сверить опубликованные купоны. Не угадывать конвенции: если формула не
-   подтверждается данными, записать в BACKLOG.
-2. **BACKLOG #37** — как только откроют `fs.moex.com` / `www.moex.com` / `nfa.ru`.
-3. **BACKLOG #38** (база времени доходности валютных бумаг) — вместе с пакетом 3; базис
-   должен прийти из условий выпуска, ISS его не даёт.
-4. Разобрать 7 непонятных пут-облигаций и смысл `YIELDATWAP` у пут-бумаг — низкий
-   приоритет, ядро с ним не сравнивается.
-5. Перенос bridge- и fixing-тестов из неотслеживаемой папки `implementation/` (её нет в
+Продуктовых пакетов в ядре больше нет. Пакет 8 (CDS) в проде ждёт лицензированных
+котировок; пакет 9 (ОФЗ-ИН, коллы, MBS) — решения DEC10 на стороне владельца.
+
+1. **Миграция бэкенда на v3 (BACKLOG #107, downstream).** Хранить v3 рядом с v2,
+   поставлять новые входы снапшота, сопоставить продукты деска с типами позиций,
+   параллельный прогон imported и computed перед переключением. Контракт —
+   `docs/portfolio-v3.md`, `docs/CONSUMERS.md`.
+2. **Данные бэкенда (downstream):** база доходности валютных бумаг (#39), формула каждого
+   флоатера и календарь публикации RUONIA (#84), CPI с датами публикации (#62),
+   маппинг ОФЗ-ИН (#65) и коллов (#54), календарь RUSFAR (#95).
+3. **Оставшееся в ядре по портфелю:** carry деривативов в `horizon_portfolio` (#101),
+   деривативы в local worker (#102), базисные сценарии (#103), P&L explain флоатеров (#78).
+4. **Скорость тяжёлых движков** (#86 флоатеры, #70 CDS, #100 РЕПО, #106): Hessian 30–100
+   мс на позицию против цели 10 мс. Ускорение меняет последний бит — нужна новая версия
+   модели.
+5. **Первоисточники, недоступные из среды:** НКЦ (#59, #72, #98), Минфин и Росстат
+   (#62, #85), e-disclosure (#64, #85). Если домены откроют — перепроверить конвенции и
+   закрыть расхождения (SU29026/27, RRK6 #88, номинал ОФЗ-ИН до копейки).
+6. **Живые golden-сверки по подписке ISS:** OIS v2 (#60), XCCY (#73), значения СПФИ.
+7. **Модели с опциональностью** — только по решению владельца: OAS (#52), стоимость
+   cap/floor (#79), опционы поставки ОФЗ-фьючерсов (#90), CPR-модели (#53).
+8. **Мелочи:** KKV6 в голдены после 23.10.2026 (#93); типизированный индекс `rusfar` и
+   спецификация проекции RUSFAR (#95, #105); общий движок FX-фьючерсов (#104).
+9. Перенос bridge- и fixing-тестов из неотслеживаемой папки `implementation/` (её нет в
    этом чекауте) — остаток пункта 0.10.

@@ -1,0 +1,51 @@
+{
+"history": {
+	"columns": ["BOARDID", "SECID", "TRADEDATE", "SHORTNAME", "NAME", "CLOSE", "OPEN", "HIGH", "LOW", "VALUE", "DURATION", "YIELD", "DECIMALS", "CAPITALIZATION", "CURRENCYID", "DIVISOR", "TRADINGSESSION", "VOLUME", "TRADE_SESSION_DATE", "RECALC_DATE"], 
+	"data": [
+		["MMIX", "RUSFAR", "2026-08-25", "RUSFAR", "RUSFAR", 13.7, 13.7, 13.7, 13.7, 1026126209000, null, null, 2, null, "RUB", null, "3", null, "2026-08-25", null],
+		["MMIX", "RUSFAR", "2026-08-26", "RUSFAR", "RUSFAR", 13.58, 13.58, 13.58, 13.58, 987337144000, null, null, 2, null, "RUB", null, "3", null, "2026-08-26", null],
+		["MMIX", "RUSFAR", "2026-08-27", "RUSFAR", "RUSFAR", 13.51, 13.51, 13.51, 13.51, 644713464000, null, null, 2, null, "RUB", null, "3", null, "2026-08-27", null],
+		["MMIX", "RUSFAR", "2026-08-28", "RUSFAR", "RUSFAR", 13.54, 13.54, 13.54, 13.54, 1016705077000, null, null, 2, null, "RUB", null, "3", null, "2026-08-28", null],
+		["MMIX", "RUSFAR", "2026-08-31", "RUSFAR", "RUSFAR", 13.68, 13.68, 13.68, 13.68, 729308864000, null, null, 2, null, "RUB", null, "3", null, "2026-08-31", null],
+		["MMIX", "RUSFAR", "2026-09-01", "RUSFAR", "RUSFAR", 13.99, 13.99, 13.99, 13.99, 812689974000, null, null, 2, null, "RUB", null, "3", null, "2026-09-01", null],
+		["MMIX", "RUSFAR", "2026-09-02", "RUSFAR", "RUSFAR", 13.88, 13.88, 13.88, 13.88, 981637853000, null, null, 2, null, "RUB", null, "3", null, "2026-09-02", null],
+		["MMIX", "RUSFAR", "2026-09-03", "RUSFAR", "RUSFAR", 13.95, 13.95, 13.95, 13.95, 710959615000, null, null, 2, null, "RUB", null, "3", null, "2026-09-03", null],
+		["MMIX", "RUSFAR", "2026-09-04", "RUSFAR", "RUSFAR", 14.15, 14.15, 14.15, 14.15, 1046639688000, null, null, 2, null, "RUB", null, "3", null, "2026-09-04", null],
+		["MMIX", "RUSFAR", "2026-09-07", "RUSFAR", "RUSFAR", 13.99, 13.99, 13.99, 13.99, 954582853000, null, null, 2, null, "RUB", null, "3", null, "2026-09-07", null],
+		["MMIX", "RUSFAR", "2026-09-08", "RUSFAR", "RUSFAR", 14.22, 14.22, 14.22, 14.22, 1162491148000, null, null, 2, null, "RUB", null, "3", null, "2026-09-08", null],
+		["MMIX", "RUSFAR", "2026-09-09", "RUSFAR", "RUSFAR", 13.93, 13.93, 13.93, 13.93, 854274454000, null, null, 2, null, "RUB", null, "3", null, "2026-09-09", null],
+		["MMIX", "RUSFAR", "2026-09-10", "RUSFAR", "RUSFAR", 13.71, 13.71, 13.71, 13.71, 936291122000, null, null, 2, null, "RUB", null, "3", null, "2026-09-10", null],
+		["MMIX", "RUSFAR", "2026-09-11", "RUSFAR", "RUSFAR", 13.84, 13.84, 13.84, 13.84, 951885389000, null, null, 2, null, "RUB", null, "3", null, "2026-09-11", null],
+		["MMIX", "RUSFAR", "2026-09-14", "RUSFAR", "RUSFAR", 14.06, 14.06, 14.06, 14.06, 857388641000, null, null, 2, null, "RUB", null, "3", null, "2026-09-14", null],
+		["MMIX", "RUSFAR", "2026-09-15", "RUSFAR", "RUSFAR", 14.09, 14.09, 14.09, 14.09, 1161564970000, null, null, 2, null, "RUB", null, "3", null, "2026-09-15", null],
+		["MMIX", "RUSFAR", "2026-09-16", "RUSFAR", "RUSFAR", 14.31, 14.31, 14.31, 14.31, 1138371436000, null, null, 2, null, "RUB", null, "3", null, "2026-09-16", null],
+		["MMIX", "RUSFAR", "2026-09-17", "RUSFAR", "RUSFAR", 14.23, 14.23, 14.23, 14.23, 897879756000, null, null, 2, null, "RUB", null, "3", null, "2026-09-17", null],
+		["MMIX", "RUSFAR", "2026-09-18", "RUSFAR", "RUSFAR", 14.03, 14.03, 14.03, 14.03, 787260558000, null, null, 2, null, "RUB", null, "3", null, "2026-09-18", null],
+		["MMIX", "RUSFAR", "2026-09-21", "RUSFAR", "RUSFAR", 14.13, 14.13, 14.13, 14.13, 743386557000, null, null, 2, null, "RUB", null, "3", null, "2026-09-21", null],
+		["MMIX", "RUSFAR", "2026-09-22", "RUSFAR", "RUSFAR", 14.03, 14.03, 14.03, 14.03, 1117260159000, null, null, 2, null, "RUB", null, "3", null, "2026-09-22", null],
+		["MMIX", "RUSFAR", "2026-09-23", "RUSFAR", "RUSFAR", 14.21, 14.21, 14.21, 14.21, 676644757000, null, null, 2, null, "RUB", null, "3", null, "2026-09-23", null],
+		["MMIX", "RUSFAR", "2026-09-24", "RUSFAR", "RUSFAR", 14.1, 14.1, 14.1, 14.1, 742572799000, null, null, 2, null, "RUB", null, "3", null, "2026-09-24", null],
+		["MMIX", "RUSFAR", "2026-09-25", "RUSFAR", "RUSFAR", 14.11, 14.11, 14.11, 14.11, 831182620000, null, null, 2, null, "RUB", null, "3", null, "2026-09-25", null],
+		["MMIX", "RUSFAR", "2026-09-28", "RUSFAR", "RUSFAR", 14.15, 14.15, 14.15, 14.15, 668256083000, null, null, 2, null, "RUB", null, "3", null, "2026-09-28", null],
+		["MMIX", "RUSFAR", "2026-09-29", "RUSFAR", "RUSFAR", 14.17, 14.17, 14.17, 14.17, 904840595000, null, null, 2, null, "RUB", null, "3", null, "2026-09-29", null],
+		["MMIX", "RUSFAR", "2026-09-30", "RUSFAR", "RUSFAR", 14.07, 14.07, 14.07, 14.07, 585318782000, null, null, 2, null, "RUB", null, "3", null, "2026-09-30", null],
+		["MMIX", "RUSFAR", "2026-10-01", "RUSFAR", "RUSFAR", 14.07, 14.07, 14.07, 14.07, 862131270000, null, null, 2, null, "RUB", null, "3", null, "2026-10-01", null],
+		["MMIX", "RUSFAR", "2026-10-02", "RUSFAR", "RUSFAR", 13.83, 13.83, 13.83, 13.83, 781158812000, null, null, 2, null, "RUB", null, "3", null, "2026-10-02", null],
+		["MMIX", "RUSFAR", "2026-10-05", "RUSFAR", "RUSFAR", 13.76, 13.76, 13.76, 13.76, 722678216000, null, null, 2, null, "RUB", null, "3", null, "2026-10-05", null],
+		["MMIX", "RUSFAR", "2026-10-06", "RUSFAR", "RUSFAR", 13.68, 13.68, 13.68, 13.68, 1098864359000, null, null, 2, null, "RUB", null, "3", null, "2026-10-06", null],
+		["MMIX", "RUSFAR", "2026-10-07", "RUSFAR", "RUSFAR", 13.68, 13.68, 13.68, 13.68, 888484499000, null, null, 2, null, "RUB", null, "3", null, "2026-10-07", null],
+		["MMIX", "RUSFAR", "2026-10-08", "RUSFAR", "RUSFAR", 14.02, 14.02, 14.02, 14.02, 746672156000, null, null, 2, null, "RUB", null, "3", null, "2026-10-08", null],
+		["MMIX", "RUSFAR", "2026-10-09", "RUSFAR", "RUSFAR", 13.98, 13.98, 13.98, 13.98, 693776031000, null, null, 2, null, "RUB", null, "3", null, "2026-10-09", null],
+		["MMIX", "RUSFAR", "2026-10-12", "RUSFAR", "RUSFAR", 13.79, 13.79, 13.79, 13.79, 725985643000, null, null, 2, null, "RUB", null, "3", null, "2026-10-12", null],
+		["MMIX", "RUSFAR", "2026-10-13", "RUSFAR", "RUSFAR", 13.67, 13.67, 13.67, 13.67, 605228942000, null, null, 2, null, "RUB", null, "3", null, "2026-10-13", null],
+		["MMIX", "RUSFAR", "2026-10-14", "RUSFAR", "RUSFAR", 13.83, 13.83, 13.83, 13.83, 773741492000, null, null, 2, null, "RUB", null, "3", null, "2026-10-14", null],
+		["MMIX", "RUSFAR", "2026-10-15", "RUSFAR", "RUSFAR", 13.78, 13.78, 13.78, 13.78, 701083012000, null, null, 2, null, "RUB", null, "3", null, "2026-10-15", null],
+		["MMIX", "RUSFAR", "2026-10-16", "RUSFAR", "RUSFAR", 13.78, 13.78, 13.78, 13.78, 693753085000, null, null, 2, null, "RUB", null, "3", null, "2026-10-16", null]
+	]
+},
+"history.cursor": {
+	"columns": ["INDEX", "TOTAL", "PAGESIZE"], 
+	"data": [
+		[0, 39, 100]
+	]
+}}

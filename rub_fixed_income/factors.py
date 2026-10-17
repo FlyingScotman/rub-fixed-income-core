@@ -5,7 +5,13 @@ Factor keys:
 - ``IR|<curve_id>|<bucket>``: a 1 bp shift of one of the 11 bucket pillars of a curve;
 - ``CS``: a 1 bp move of the position's own spread (credit or OFZ spread);
 - ``FX|<ccy>``: a 1 % move of the currency against RUB;
-- ``FXBASIS|<ccy>``: a 1 bp move of a calibrated FX-futures basis.
+- ``FXBASIS|<ccy>``: a 1 bp move of a calibrated FX-futures basis;
+- ``REAL|<curve_id>|<bucket>``: a 1 bp shift of one of the 11 bucket pillars of a *real*
+  (inflation-adjusted) discount curve. Only inflation-linked bonds carry it (package 9a),
+  so books without linkers report exactly the factors they did before.
+
+A non-RUB bond's risk is in RUB at the snapshot FX rate; ``FX|<ccy>`` and its cross terms
+with the rates and spread factors come from :func:`fx_translated_factor_risk`.
 
 ``first_order`` is RUB per factor unit. ``hessian`` holds the sparse upper triangle
 ``(i, j, d2PV)`` with ``i <= j`` over ``factors`` (RUB per unit squared); exact zeros
@@ -20,7 +26,7 @@ from typing import Literal
 
 from .errors import InvalidTerms
 from .fx_futures import FxFuturesRiskResult, FxFuturesSecondOrderRisk
-from .risk import RISK_BUCKETS, BondRiskResult, BondSecondOrderRisk
+from .risk import RISK_BUCKETS, BondRiskResult, BondSecondOrderRisk, TwoCurveBondRiskResult
 
 __all__ = [
     "CS_FACTOR",
@@ -30,7 +36,10 @@ __all__ = [
     "fx_basis_factor",
     "fx_factor",
     "fx_futures_factor_risk",
+    "fx_translated_factor_risk",
     "ir_factor",
+    "linker_factor_risk",
+    "real_factor",
 ]
 
 CS_FACTOR = "CS"
@@ -46,6 +55,13 @@ def ir_factor(curve_id: str, bucket: str) -> str:
     if bucket not in RISK_BUCKETS:
         raise InvalidTerms(f"unknown risk bucket {bucket!r}")
     return f"IR|{_component(curve_id, 'curve_id')}|{bucket}"
+
+
+def real_factor(curve_id: str, bucket: str) -> str:
+    """``REAL|<curve_id>|<bucket>``: 1 bp at a bucket pillar of a real discount curve."""
+    if bucket not in RISK_BUCKETS:
+        raise InvalidTerms(f"unknown risk bucket {bucket!r}")
+    return f"REAL|{_component(curve_id, 'curve_id')}|{bucket}"
 
 
 def fx_factor(currency: str) -> str:
@@ -98,14 +114,31 @@ def _upper(matrix: tuple[tuple[float, ...], ...]) -> tuple[HessianEntry, ...]:
 
 
 def bond_factor_risk(
-    risk: BondRiskResult, curve_id: str, second_order: BondSecondOrderRisk | None = None
+    risk: BondRiskResult,
+    curve_id: str,
+    second_order: BondSecondOrderRisk | None = None,
+    *,
+    projection_curve_id: str | None = None,
 ) -> FactorRisk:
     """Map a bond's central risk (and optionally its Hessian) to desk factors.
 
     With ``second_order`` the first order is its central gradient, which uses the same
     bump as the Hessian. Otherwise ``risk`` must itself be central.
+
+    A two-curve floater (:class:`TwoCurveBondRiskResult`) needs ``projection_curve_id``:
+    its factors are ``IR|<curve_id>|*`` (discount), ``IR|<projection_curve_id>|*`` and
+    ``CS`` (the spread over the discount curve), in that order, and its Hessian covers
+    all 23 with the discount/projection cross terms.
     """
-    factors = (*(ir_factor(curve_id, b) for b in RISK_BUCKETS), CS_FACTOR)
+    two_curve = isinstance(risk, TwoCurveBondRiskResult)
+    if two_curve != (projection_curve_id is not None):
+        raise InvalidTerms("projection_curve_id is required for, and only for, two-curve risk")
+    rates = tuple(ir_factor(curve_id, b) for b in RISK_BUCKETS)
+    if projection_curve_id is not None:
+        if projection_curve_id == curve_id:
+            raise InvalidTerms("discount and projection curves need distinct curve IDs")
+        rates = (*rates, *(ir_factor(projection_curve_id, b) for b in RISK_BUCKETS))
+    factors = (*rates, CS_FACTOR)
     if second_order is not None:
         if second_order.base_id != risk.base_id:
             raise InvalidTerms("risk and second-order results describe different calibrations")
@@ -122,8 +155,46 @@ def bond_factor_risk(
     if risk.difference != "central":
         raise InvalidTerms("desk factors need central-difference risk (DEC08)")
     spread = risk.cs01_rub if risk.cs01_rub != 0.0 else risk.ofz_spr01_rub
-    first = (*(b.dv01_rub for b in risk.buckets), spread)
+    projection = risk.projection_buckets if isinstance(risk, TwoCurveBondRiskResult) else ()
+    first = (*(b.dv01_rub for b in (*risk.buckets, *projection)), spread)
     return FactorRisk(factors, first, (), "central", risk.bump_bp, False)
+
+
+def fx_translated_factor_risk(
+    risk: FactorRisk, currency: str, fx_delta_rub_per_pct: float
+) -> FactorRisk:
+    """Add ``FX|<ccy>`` to the RUB risk of a position whose RUB value is ``FX * PV_ccy``.
+
+    ``risk`` is already in RUB at the spot rate ``FX`` (each factor's sensitivity in
+    currency times ``FX``) and ``fx_delta_rub_per_pct`` is ``PV_ccy * FX / 100``. A 1 %
+    move of the rate scales every RUB amount by 1.01, so the cross term of FX with each
+    factor is ``first_order_i / 100`` (only when ``risk`` has a Hessian) and the FX gamma
+    is zero. Central differences of this bilinear form with a 1 % FX bump and the rates
+    bump give exactly these numbers, so the Hessian stays consistent (DEC08).
+    """
+    factor = fx_factor(currency)
+    if currency == "RUB":
+        raise InvalidTerms("RUB has no FX factor against itself")
+    if factor in risk.factors:
+        raise InvalidTerms(f"{factor} is already a factor of this risk")
+    fx_index = len(risk.factors)
+    cross = (
+        tuple(
+            HessianEntry(i, fx_index, value / 100.0)
+            for i, value in enumerate(risk.first_order)
+            if value != 0.0
+        )
+        if risk.has_second_order
+        else ()
+    )
+    return FactorRisk(
+        (*risk.factors, factor),
+        (*risk.first_order, fx_delta_rub_per_pct),
+        tuple(sorted((*risk.hessian, *cross), key=lambda e: (e.i, e.j))),
+        risk.difference,
+        risk.bump_bp,
+        risk.has_second_order,
+    )
 
 
 def fx_futures_factor_risk(
@@ -168,3 +239,23 @@ def fx_futures_factor_risk(
         risk.fx_delta_rub_per_pct,
     )
     return FactorRisk(factors, first, (), "central", risk.bump_bp, False)
+
+
+def linker_factor_risk(
+    risk: BondRiskResult, real_curve_id: str, second_order: BondSecondOrderRisk | None = None
+) -> FactorRisk:
+    """Desk factors of an inflation-linked bond valued on a real curve (package 9a).
+
+    The same numbers as :func:`bond_factor_risk` (central first order, the Hessian from
+    the same bump), keyed ``REAL|<real_curve_id>|<bucket>`` and ``CS``.
+    """
+    nominal = bond_factor_risk(risk, real_curve_id, second_order)
+    renamed = (*(real_factor(real_curve_id, b) for b in RISK_BUCKETS), CS_FACTOR)
+    return FactorRisk(
+        renamed,
+        nominal.first_order,
+        nominal.hessian,
+        nominal.difference,
+        nominal.bump_bp,
+        nominal.has_second_order,
+    )

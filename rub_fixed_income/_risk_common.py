@@ -16,6 +16,7 @@ from typing import cast
 from ._money import finite_money, non_negative_money, positive_money
 from .canonical import _Canonical, _precanonical, canonical_sha256
 from .conventions import CurveConvention
+from .dates import BusinessCalendar
 from .discount import (
     CurveBootstrapRequest,
     DiscountCurve,
@@ -268,15 +269,24 @@ class ShockedCurveCache:
         return added
 
 
+def _snapshot_calendar(calendar: BusinessCalendar) -> BusinessCalendar:
+    return replace(
+        calendar,
+        holidays=frozenset(calendar.holidays),
+        working_days=frozenset(calendar.working_days),
+    )
+
+
 def _snapshot_convention(convention: CurveConvention) -> CurveConvention:
+    ois = convention.ois_swap
+    if ois is not None:
+        convention = replace(
+            convention, ois_swap=replace(ois, calendar=_snapshot_calendar(ois.calendar))
+        )
     schedule = convention.fixed_leg_schedule
     if schedule is None:
         return convention
-    calendar = replace(
-        schedule.calendar,
-        holidays=frozenset(schedule.calendar.holidays),
-        working_days=frozenset(schedule.calendar.working_days),
-    )
+    calendar = _snapshot_calendar(schedule.calendar)
     return replace(convention, fixed_leg_schedule=replace(schedule, calendar=calendar))
 
 

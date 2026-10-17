@@ -172,3 +172,7 @@ result contract with coverage and factor-basis fields, and private local-only
 result storage. Do not blindly feed partial results into a legacy table that
 assumes complete repricing. Windows execution and real-universe performance must
 be measured on their actual environments; synthetic timing is not that evidence.
+
+`run_local_risk` and its contract `rub-local-portfolio-risk-result.v1` stay fixed-RUB
+bonds only. Derivatives (swaps, FX, XCCY, CDS, futures, repo) are valued by
+`value_portfolio` under `rub-portfolio-risk-result.v3` ([portfolio-v3.md](portfolio-v3.md)).

@@ -20,12 +20,21 @@ carry is ``pv_start * (exp((r + s) * h) - 1)`` and rolldown is zero.
 term, so ``carry + rolldown + rates + spread + residual`` equals the full revaluation
 change ``pv_end + received - pv_start`` exactly.
 
+A RUB floater is carried the same way. Its coupons are projected off today's
+projection curve for ``pv_start``, ``pv_forward`` and the coupons received (today's
+forwards realised). For ``pv_rolled`` the observations before ``d1`` keep today's
+forwards (the path to the horizon) and later ones are projected off the rolled
+projection curve; the discount curve rolls as for a fixed bond. Accrued interest of a
+floater has no core convention, so its accrued fields are None. P&L explain of a
+floater is not supported: it needs the fixings realised over the horizon.
+
 Amounts are RUB per bond; :func:`horizon_portfolio` scales by position quantity.
 """
 
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from typing import Literal
@@ -36,8 +45,9 @@ from .compatibility import price_cashflows, solve_z_spread
 from .conventions import ZSpreadConvention
 from .dates import BusinessCalendar
 from .discount import CurveBootstrapRequest, DiscountCurve
-from .domain import Instrument, ProductType
+from .domain import FloatingCouponLeg, Instrument, ProductType
 from .errors import InvalidTerms, UnsupportedProduct
+from .floating import FixingHistory, FloatingLeg
 
 __all__ = [
     "HORIZON_MODEL_VERSION",
@@ -82,8 +92,8 @@ class HorizonValuation:
     pv_rolled_rub: float
     coupons_received_rub: float
     principal_received_rub: float
-    accrued_start_rub: float
-    accrued_end_rub: float
+    accrued_start_rub: float | None
+    accrued_end_rub: float | None
     nominal_start_rub: float
     nominal_end_rub: float
     carry_rub: float
@@ -123,6 +133,17 @@ class _Setup:
     received_coupons: float
     received_principal: float
     pv_flows: tuple[tuple[date, float], ...]
+    # Floaters: the start projection curve and the remaining flows re-projected off a
+    # rolled projection curve (observations before the horizon at today's forwards).
+    projection: DiscountCurve | None = None
+    reproject: Callable[[DiscountCurve], tuple[tuple[date, float], ...]] | None = None
+
+
+@dataclass(frozen=True)
+class _FloatingInputs:
+    history: FixingHistory
+    projection: DiscountCurve
+    strike_guard_bp: float | None
 
 
 def _setup(
@@ -131,9 +152,14 @@ def _setup(
     start_date: date,
     horizon_date: date,
     policy: HorizonPolicy,
+    floating: _FloatingInputs | None = None,
 ) -> _Setup:
-    if instrument.product is not ProductType.FIXED_BOND:
-        raise UnsupportedProduct(f"{instrument.product.value} horizon valuation is not supported")
+    floater = instrument.product is ProductType.FLOATING_BOND
+    if not (instrument.product is ProductType.FIXED_BOND or (floater and floating is not None)):
+        raise UnsupportedProduct(
+            f"{instrument.product.value} horizon valuation is not supported"
+            + (" without its fixing history (fixings=)" if floater else "")
+        )
     if instrument.is_perpetual:
         raise UnsupportedProduct("perpetual bonds need a call assumption (package 9)")
     if horizon_date <= start_date:
@@ -145,9 +171,33 @@ def _setup(
     if not flows:
         raise InvalidTerms("no cashflows remain after settlement")
     received = [f for f in flows if f.payment_date <= horizon_settlement]
-    remaining = tuple(
-        (f.payment_date, f.amount) for f in flows if f.payment_date > horizon_settlement
-    )
+    coupons_received = math.fsum(f.coupon for f in received)
+    pairs = tuple((f.payment_date, f.amount) for f in flows)
+    reproject = None
+    if floating is not None:
+        leg = _floating_leg(instrument, floating, start_date, redemption_date)
+        start_coupons = leg.project(floating.projection, settlement_date=settlement)
+        coupons_received = math.fsum(
+            c.amount_rub for c in start_coupons if c.payment_date <= horizon_settlement
+        )
+        pairs = tuple(sorted((*pairs, *((c.payment_date, c.amount_rub) for c in start_coupons))))
+        principal_left = tuple(
+            (f.payment_date, f.amount) for f in flows if f.payment_date > horizon_settlement
+        )
+        start_curve = floating.projection
+
+        def reproject(rolled: DiscountCurve) -> tuple[tuple[date, float], ...]:
+            coupons = leg.project(
+                rolled,
+                settlement_date=horizon_settlement,
+                check_guard=False,
+                bridge=(start_curve, horizon_date),
+            )
+            return tuple(
+                sorted((*principal_left, *((c.payment_date, c.amount_rub) for c in coupons)))
+            )
+
+    remaining = tuple((d, a) for d, a in pairs if d > horizon_settlement)
     if not remaining:
         raise InvalidTerms("the bond is redeemed before the horizon settlement")
     return _Setup(
@@ -157,10 +207,29 @@ def _setup(
         redemption_date,
         "maturity" if offer is None else "confirmed_put",
         remaining,
-        math.fsum(f.coupon for f in received),
+        coupons_received,
         math.fsum(f.principal for f in received),
-        tuple((f.payment_date, f.amount) for f in flows),
+        pairs,
+        None if floating is None else floating.projection,
+        reproject,
     )
+
+
+def _floating_leg(
+    instrument: Instrument, floating: _FloatingInputs, start_date: date, redemption_date: date
+) -> FloatingLeg:
+    terms = instrument.coupon_leg
+    if not isinstance(terms, FloatingCouponLeg):
+        raise InvalidTerms("a floating bond needs a floating coupon leg")
+    history = floating.history
+    if history.valuation_date != start_date:
+        raise InvalidTerms("the fixing history must be dated at the start curve date")
+    if history.index != terms.rule.index:
+        raise InvalidTerms(f"the fixings are {history.index}, the coupon is on {terms.rule.index}")
+    periods = tuple(p for p in terms.periods if p.payment_date <= redemption_date)
+    if not periods:
+        raise InvalidTerms("no floating coupon period is paid by the redemption date")
+    return FloatingLeg(terms.rule, periods, history, strike_guard_bp=floating.strike_guard_bp)
 
 
 def _price(
@@ -206,17 +275,35 @@ def horizon_valuation(
     spread_convention: ZSpreadConvention | None = None,
     redemption_horizon: HorizonPolicy = "maturity",
     curve_cache: ShockedCurveCache | None = None,
+    fixings: FixingHistory | None = None,
+    projection_curve: DiscountCurve | CurveBootstrapRequest | None = None,
+    strike_guard_bp: float | None = None,
 ) -> HorizonValuation:
-    """Carry a fixed-coupon bond from ``curve.curve_date`` to ``horizon_date``.
+    """Carry a fixed-coupon bond or a RUB floater from ``curve.curve_date`` to ``horizon_date``.
 
     The spread is held: pass it (``spread_bp``) or the start dirty price to calibrate
     it. Settlements are the instrument's lag in business days of ``calendar``.
     ``redemption_horizon="confirmed_put"`` values to the first confirmed put
     (yield-to-offer, the market convention for put bonds).
+
+    A floater needs ``fixings`` dated at the curve date. Its coupons project off
+    ``projection_curve`` (same date) or, when None, off ``curve`` itself;
+    ``strike_guard_bp`` is the cap/floor policy of :class:`FloatingLeg`.
     """
     convention = ZSpreadConvention() if spread_convention is None else spread_convention
-    base = _base_curve(curve, ShockedCurveCache() if curve_cache is None else curve_cache)
-    setup = _setup(instrument, calendar, base.curve_date, horizon_date, redemption_horizon)
+    cache = ShockedCurveCache() if curve_cache is None else curve_cache
+    base = _base_curve(curve, cache)
+    floating = None
+    if fixings is not None:
+        projection = base if projection_curve is None else _base_curve(projection_curve, cache)
+        if projection.curve_date != base.curve_date:
+            raise InvalidTerms("projection and discount curves must have the same date")
+        floating = _FloatingInputs(fixings, projection, strike_guard_bp)
+    elif projection_curve is not None:
+        raise InvalidTerms("a projection curve needs the floater's fixings")
+    setup = _setup(
+        instrument, calendar, base.curve_date, horizon_date, redemption_horizon, floating
+    )
     spread = _start_spread(setup, base, convention, spread_bp, dirty_price_rub)
     return _valuation(setup, base, horizon_date, spread, convention)
 
@@ -231,7 +318,14 @@ def _valuation(
     pv_start = _price(setup.pv_flows, base, spread, setup.settlement, convention)
     pv_forward = _price(setup.remaining, base, spread, setup.horizon_settlement, convention)
     rolled = roll_curve(base, horizon_date)
-    pv_rolled = _price(setup.remaining, rolled, spread, setup.horizon_settlement, convention)
+    rolled_flows = setup.remaining
+    if setup.reproject is not None:
+        assert setup.projection is not None
+        rolled_projection = (
+            rolled if setup.projection is base else roll_curve(setup.projection, horizon_date)
+        )
+        rolled_flows = setup.reproject(rolled_projection)
+    pv_rolled = _price(rolled_flows, rolled, spread, setup.horizon_settlement, convention)
     received = setup.received_coupons + setup.received_principal
     carry = finite_money(pv_forward + received - pv_start, "carry")
     rolldown = finite_money(pv_rolled - pv_forward, "rolldown")
@@ -251,8 +345,8 @@ def _valuation(
         pv_rolled,
         setup.received_coupons,
         setup.received_principal,
-        instrument.accrued(setup.settlement),
-        instrument.accrued(setup.horizon_settlement),
+        None if setup.reproject is not None else instrument.accrued(setup.settlement),
+        None if setup.reproject is not None else instrument.accrued(setup.horizon_settlement),
         instrument.outstanding_face(setup.settlement),
         instrument.outstanding_face(setup.horizon_settlement),
         carry,
@@ -278,8 +372,14 @@ def explain_horizon_pnl(
     """Explain the change from the start market to the end market (curve and spread).
 
     The horizon is the end curve's date. The end spread is given or calibrated from
-    the end dirty price at the horizon settlement.
+    the end dirty price at the horizon settlement. Floaters are rejected: explaining
+    their P&L needs the fixings realised over the horizon.
     """
+    if instrument.product is ProductType.FLOATING_BOND:
+        raise UnsupportedProduct(
+            "P&L explain of a floater is not supported: it needs the fixings realised over "
+            "the horizon and the end projection curve"
+        )
     convention = ZSpreadConvention() if spread_convention is None else spread_convention
     cache = ShockedCurveCache() if curve_cache is None else curve_cache
     start = _base_curve(start_curve, cache)

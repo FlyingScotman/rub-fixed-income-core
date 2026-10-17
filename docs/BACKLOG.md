@@ -110,7 +110,7 @@ other repositories and must be changed there, not in this core.
 
 ## Floater audit and local worker follow-up — 2026-10-15
 
-29. **P1 — fixing-aware floater core and API consistency (C05).** *Core part done
+29. *(core completed in 0.26.0: bounds, shifts, two curves, portfolio and horizon; follow-ups #78–#86)* **P1 — fixing-aware floater core and API consistency (C05).** *Core part done
     in 0.8.0* (`docs/floating.md`): explicit point-in-time `FixingHistory`,
     business-day observation with lookback, compounded/arithmetic averaging,
     margin, day counts, rounding of fixed coupons only, published-coupon and
@@ -148,7 +148,7 @@ other repositories and must be changed there, not in this core.
 
 ## FX futures — 2026-10-15
 
-33. **FX futures in the local worker and the monitor.** The 0.8.1 core
+33. *(portfolio part done in 0.29.0; local worker open, #102)* **FX futures in the local worker and the monitor.** The 0.8.1 core
     (`docs/fx-futures.md`) gives rate risk on the RUB and foreign curves, basis,
     FX delta, scenarios and the Hessian for a single position. Remaining:
     - a public FX futures snapshot (contract terms from the exchange specification,
@@ -157,7 +157,7 @@ other repositories and must be changed there, not in this core.
     - positions and coverage in `run_local_risk`;
     - a new result-contract version, because v1 fixes the bond field set;
     - an agreed choice of the foreign curve (OIS, or implied from FX swaps).
-34. **OTC FX forwards and swaps.** Their P&L is paid at `T` and needs discounting
+34. *(core done in 0.19.0, `fx_forwards`; portfolio integration is #45)* **OTC FX forwards and swaps.** Their P&L is paid at `T` and needs discounting
     on the RUB curve. This is a separate settlement style, not the futures model.
 35. *(downstream, done in market-data-store PR #5)* **market-data-store core pin.** It
     pinned `>=0.8.0,<0.9`; the PR widens it to `<1.0`, regenerates the lock and moves off
@@ -177,7 +177,7 @@ other repositories and must be changed there, not in this core.
     - **Coverage.** 18 bonds on the 2026-10-15 EOD (`tests/test_moex_eod_goldens.py`).
       The backend adapter must choose the leg type by board: `FixedCouponLeg` for OFZ,
       `RateAccrualCouponLeg` with the bondization `valueprc` for corporates.
-37. **RUONIA OIS exchange spec (`rub_ruonia_ois_moex_v2`, audit F08).**
+37. *(done in 0.22.0 from the MOEX methodology and NFA terms; follow-ups #59–#61)* **RUONIA OIS exchange spec (`rub_ruonia_ois_moex_v2`, audit F08).**
     - **What is known.** Only a summary survives in this checkout: TOM start, modified
       following, ACT/ACT with a stub, +1 business-day payment lag. The fixed-leg
       frequency, float compounding (lookback or lockout) and the stub side are not stated.
@@ -189,7 +189,7 @@ other repositories and must be changed there, not in this core.
       bootstrap's par-rate leg. New convention fields must stay out of existing curve
       identities. Then register the spec and test par repricing on the hub's ratescalcs
       snapshot (17 tenors, `ois_quotes`).
-38. **Yield time basis of non-RUB bonds (package 3).** On the 2026-10-15 EOD, some USD
+38. *(done in 0.18.0: `Instrument.yield_convention`, 11 USD goldens)* **Yield time basis of non-RUB bonds (package 3).** On the 2026-10-15 EOD, some USD
     replacement bonds on TQOD are quoted on an ACT/360 time basis (RU000A105RH2,
     RU000A108P79, RU000A105R62, RU000A105JT4, RU000A105A95, RU000A1059N9, RU000A1059P4),
     others on ACT/365F (RU000A10A877, RU000A108Y11, RU000A107B43, RU000A106G56). Accrual
@@ -198,3 +198,288 @@ other repositories and must be changed there, not in this core.
     group (`test_usd_bond_yield_time_basis_is_a_known_gap`). ISS does not publish the
     basis; it has to come from the issue terms (backend static data), then be a yield
     convention input.
+
+## Non-RUB bonds — 0.18.0
+
+39. *(downstream)* **Yield basis in the backend's static data.** The adapter must set
+    `Instrument.yield_convention` from the issue terms of every non-RUB bond. The seven
+    ACT/360 bonds in the goldens are evidence, not a rule; ISS does not publish the basis.
+40. **Bootstrapped foreign curve specs.** SOFR / €STR OIS and the hub's CNY quote sets as
+    registered specs once their quote conventions (spot and payment lags, fixed frequency,
+    day counts) are confirmed from primary sources. Until then the backend builds the
+    discount factors (`*_discount_factors_v1`).
+41. *(partly done in 0.29.0: every product in value_portfolio; horizon and local worker open)* **Non-RUB horizon and local worker.** FX forward carry in `horizon_portfolio`, and
+    non-RUB bonds in `local_worker.run_local_risk`; both still reject them.
+42. *(downstream)* **FX rate semantics.** Core values at the snapshot's `FxRate` as given,
+    with no FX settlement lag or forward points. The backend chooses the CBR official or
+    the market TOM rate and records it in the evidence.
+43. *(done in 0.29.0)* **Per-curve scenario shocks.** A `PortfolioScenario` shifts every position's own
+    discount curve; desk scenarios that move only the RUB or one foreign curve need
+    per-curve shift vectors.
+44. *(decided in 0.29.0: v3 only for books with derivatives, bond-only books stay v2)* *(downstream decision)* **Result schema for non-RUB rows.** 0.18.0 keeps
+    `rub-portfolio-risk-result.v2` with optional keys, so RUB-only output is
+    byte-identical; a 0.17 reader rejects a result with non-RUB rows. Bump to `v3` if the
+    backend needs every result readable by older releases.
+
+## FX forwards and swaps — 0.19.0
+
+45. *(done in 0.29.0)* **FX forwards in the portfolio path** (extends #33). Needs `Instrument` terms for
+    `FX_FORWARD` / `FX_SWAP` (legs, quote units, trade ID) or a separate position type; an
+    FX spot **with its value date** in `MarketSnapshot` (`FxRate` has none); RUB and
+    foreign curve IDs, settlement calendar ID and basis (or an implied-curve policy) per
+    pair; coverage codes for settled legs and missing implied curves; factor totals shared
+    with bonds and futures (`IR|curve|bucket`, `FX|ccy`, `FXBASIS|ccy`); one shocked-curve
+    cache and implied curve per pair per job; a new result-contract version.
+46. **Points-fixed RUB risk.** On an implied foreign curve a RUB shock holds the implied
+    foreign zero rates, so the points move. A "points held" basis would rebuild the
+    implied curve under RUB shocks and needs a factor for the points.
+47. **SRATE methodology.** Confirm the indicator's spot and time window from the MOEX
+    methodology (now reachable on `fs.moex.com` with the Russian Trusted Root CA), then
+    tighten the golden from a statistical to a per-day check.
+48. **CETS term swaps.** A 1W–6M points golden needs days with trades, or MOEX's
+    indicative term rates if ISS publishes them; `PREVPRICE` is usually days old.
+49. **USD/RUB, EUR/RUB, NDFs, end-of-month rule.** Spot lag and USD calendar from
+    confirmations (OTC only since 2024); NDF fixing source and lag, and freezing a
+    published fixing; the end-of-month rule for FX tenors.
+
+## Callables, perpetuals, pass-throughs — 0.20.0
+
+50. *(done in 0.29.0)* **Native exercise assumptions in `value_portfolio`.** With `OMIT_IF_DEFAULT` the
+    assumption can live in the portfolio itself: optional per-instrument assumptions on
+    `ValuationPolicy`, `PositionValuation.exercise_assumption`, a `"call"` value of
+    `horizon` (and `local_risk`'s `"issuer_call"` label), all omitted at their defaults.
+    Today `value_assumed_portfolio` wraps the portfolio, and an exercised bond reads
+    `horizon = "maturity"` with `horizon_date` = the call date.
+51. **Non-par calls in the portfolio.** `exercised_instrument` rejects calls away from
+    100 % (redemptions must sum to the face); redeem at a price as offers already do.
+52. **OAS / option value.** Needs a stated short-rate model (e.g. Hull-White on the KBD
+    or OIS curve) and a lattice; until then rejected. `to_worst` does not switch the
+    exercise date under bumps (yield-to-worst risk, by design).
+53. **Prepayment models and goldens.** Rate-dependent or seasoned prepayment (PSA-style)
+    beyond constant CPR, a `CPR` desk factor in the result contract, a yield convention
+    on `PassThroughTerms`, and DOM.RF mortgage-bond goldens (ISS does not publish the
+    CPR behind projected amortizations; SFO TB-11 coupons imply a schedule ISS lacks).
+54. *(downstream)* **Adapter guidance for calls.** A MOEX call is a bondization `offers`
+    row with a real date; its `price` is % of the initial face. An ABS may list the call
+    redemption as an amortization on the call date and zero at legal maturity: the
+    adapter moves the remaining face to legal maturity and adds the call. Coupons after
+    the call are often unset: omit them (to-maturity is then rejected) or pass resets.
+
+## Seasoned swaps — 0.21.0
+
+55. *(done in 0.29.0)* **Swaps in `value_portfolio`.** Needs a `SwapInstrument` (`Instrument` is bond-shaped)
+    with the projection curve and fixing IDs on the instrument, not on
+    `ValuationPolicy` (the policy is part of `job_id`); key-rate projection curves in
+    `CurveEntry` (`_build_curve` rejects `KEY_RATE_SWAP` specs today); a rule for KRS
+    curves dated TOM against OIS curves dated the business date (a TOM discount curve
+    from the backend, or values at a date after the curve date); a swap row type and
+    per-curve scenario shifts, i.e. result contract `v3`. `FactorTotal` aggregation and
+    `swap_horizon` already fit.
+56. **Key-rate quote-basis risk.** Today key-rate projection risk shifts the forward key
+    rate. Add shifts of the KRS quotes with recalibration, cached per shift vector, and
+    decide whether a discount shock recalibrates the key-rate curve.
+57. **Swap terms from confirmations.** Explicit period schedules, other front and back
+    stubs, amortizing or accreting notionals, compounded spreads, caps and floors.
+58. **Seasoned-swap golden.** No public golden exists; reconcile against a bank system
+    (QR / Calypso) on frozen inputs when the desk can share one (with #10).
+
+## MOEX RUONIA OIS spec — 0.22.0
+
+59. **NCC contract specification.** NCC's «Спецификация внебиржевых договоров
+    «Процентный своп»» governs cleared contracts; `nationalclearingcentre.ru` and
+    `nkcbank.ru` are refused by the proxy. Core uses NFA's `RUB-RUONIA-OIS-COMPOUND`
+    (`Act` = 366 if any day is in a leap year) on the strength of the index name. If NCC
+    annualises differently, only periods crossing a leap-year boundary change (factor
+    1.00219 for 19.10.2028–19.10.2029).
+60. **Live par repricing of v2.** ISS publishes `/iss/sdfi/curves/RUB-OIS-RUONIA`, but its
+    values are for subscribers only, and the hub's ratescalcs snapshot is not in this
+    checkout. With either, add a raw fixture and test exact par repricing of the 17
+    tenors; compare with `RUB-DSC-CSARUB` for MOEX's own curve construction. The backend
+    builds the joint SPFI / MOSCOW / RUONIA calendar from official holiday lists.
+61. *(done in 0.29.0)* **The swap side of v2.** `swaps.swap_convention("rub_ruonia_ois_moex_v2")` raises
+    `UnsupportedProduct`: the swap float leg does not yet apply the NFA leap-year `Act`
+    rule. Build seasoned v2 legs from `OisSwapConvention.periods` and
+    `float_amount_scale`, then derive the convention. v2 bootstraps cost about four times
+    the legacy one (coupled refinement passes; see #12).
+
+## OFZ-IN linkers — 0.23.0
+
+62. **Official CPI levels and the terms text.** Minfin order No. 80n, the per-issue
+    orders and Rosstat's CPI levels (`minfin.gov.ru`, `rosstat.gov.ru`, legal databases)
+    are refused by the proxy. Re-run the face golden on the official levels to confirm
+    kopeck agreement, confirm the half-up rounding of the face and the precision of
+    `INDEX_base`. *(downstream)* The hub needs a point-in-time CPI dataset with
+    publication dates, ideally with Minfin's monthly nominal table as a cross-check.
+63. **Linker risk beyond the real curve.** A real-curve builder (from OFZ-IN real yields
+    or nominal KBD minus breakeven) with a registered spec; a breakeven / inflation
+    factor (`INFL|<series>`) and projected-CPI valuation on the nominal curve; real-curve
+    scenario vectors; linker carry and rolldown (`horizon_portfolio` rejects them); the
+    option value of the deflation floor (intrinsic only today); MOEX `IRICPICLOSE` /
+    `BEICLOSE`, whose meaning is not identified.
+64. **Gold-linked corporates** (Seligdar RU000A1062M5, RU000A108RQ7). The face tracks the
+    CBR gold accounting price per gram with an offset of 1–3 business days that is not
+    stable in the data; the terms on `e-disclosure.ru` are refused. Model them as a
+    daily-index rule once the terms are available.
+65. *(downstream)* **Adapter mapping for linkers.** Map `SU52…` (`FACEVALUE_TYPE`
+    "Индексированный", `BONDTYPE` "Линкер") to `INFLATION_LINKED_BOND` with
+    `IndexedCouponLeg` / `IndexedPrincipalLeg`, base date = `ISSUEDATE`, and give each
+    linker a real-curve override (`docs/CONSUMERS.md`).
+
+## CDS — 0.24.0
+
+66. *(done in 0.29.0)* **CDS in `value_portfolio`.** Needs a `ProductType.CDS` and a contract form (or a CDS
+    position list in the job), credit quotes keyed by reference entity in
+    `MarketSnapshot`, a recovery source with no default, the contract currency's discount
+    curve ID, a `CdsCurveCache` per job, coverage codes and result fields (side, points
+    upfront, par spread, `recovery01`, accrued premium). Non-RUB contracts can reuse
+    `fx_translated_factor_risk`; JTD adds up with bond JTD (same sign rule). Until then
+    `value_portfolio` rejects CDS as `UNSUPPORTED_PRODUCT`.
+67. *(partly done in 0.29.0: CDS CS shared with bonds; recovery and per-tenor factors open)* **Credit factor contract.** Recovery sensitivity is reported beside the factors; a
+    desk factor (e.g. `REC|<entity>`) is a contract change. `CS` on a CDS is all of the
+    entity's quoted spreads together; per-tenor credit risk as factors needs a key such
+    as `CS|<entity>|<tenor>`.
+68. **CDS products out of scope:** index CDS (CDX / iTraxx), tranches, options, quanto
+    CDS, recovery term structures, default before step-in and the settlement lag of
+    default payments, the 60-day backstop; ACT/ACT premium day counts.
+69. **CDS golden against a bank system** or Bloomberg CDSW on frozen inputs once a data
+    source exists. Current evidence is the ISDA / Markit values published in QuantLib's
+    test suite; cdsmodel.com was not reachable.
+70. *(partly: shared within a job in 0.29.0; across jobs open)* **Credit-curve export / seed.** The cold Hessian costs about 288 hazard rebootstraps
+    per entity (34–40 ms per position). Keeping a `CdsCurveCache` across jobs needs an
+    export / seed API with a repricing check, like `ShockedCurveCache.seed`.
+
+## Cross-currency swaps — 0.25.0
+
+71. *(done in 0.29.0)* **XCCY in `value_portfolio`.** Needs an `XccyInstrument` (or a separate position
+    type), an FX spot with its value date in `MarketSnapshot` (as #45), curve IDs per
+    role (RUB discount, RUB projection, CNY curve as `cny_discount_factors_v1` or
+    `cny_ruonia_xccy_v1` with its quotes, the NCC notional rate and the spot), RUONIA and
+    foreign index fixings, coverage codes, factor totals shared with bonds, FX forwards
+    and swaps (`XCCYBASIS|CNY`, or an alias to `FXBASIS|CNY` if the desk treats them as
+    one), one `XccyCurveCache` per job, and result contract `v3`.
+72. **NCC XCCY specification** («Валютно-процентный своп»,
+    `nationalclearingcentre.ru/catalog/0204/274`, refused by the proxy): confirm the
+    exchange dates (today NFA 2011 6.2 defaults, no +1B), the amortization rule and the
+    rounding.
+73. **XCCY golden.** `CNY-XCS-CNYRUO`, `CNY-HYB-CNYRUO` and NCC's `CNY-DSC-CSARUB` are on
+    ISS for subscribers only. With access, test the bootstrapped curve against NCC's
+    CSA=RUB CNY discount factors and repricing of MOEX quotes.
+74. **Basis against `RUSFARCNY`.** MOEX lists `XCCY/BASIS` vs RUSFARCNY; a basis curve
+    needs the RUSFARCNY-OIS-COMPOUND formula from a primary source and a CNY projection
+    spec (`CNY-OIS-RUSFCN`).
+75. **More XCCY terms:** mark-to-market resets (FX fixing source and lag), the
+    compounded-spread variants of the NCC parameters, lookback and observation shift, the
+    0.0001 % rounding of settled RUONIA indices (NFA 8.4(б)) and 2-decimal amounts,
+    KEYRATE or RUSFAR RUB legs.
+76. *(partly: shared within a job in 0.29.0; carry and across jobs open)* **XCCY carry and persisted curves.** Horizon / carry for XCCY, and export / seed of
+    shocked XCCY curves across jobs (a cold quote-basis job rebuilds about 530).
+77. **Quote-fixed FX risk.** On the quote basis the CNY curve is held under spot moves
+    (sticky curve, linear FX delta). A desk that holds the quotes under FX moves needs
+    the curve rebuilt under spot shocks.
+
+## Floaters — 0.26.0
+
+78. **Floater P&L explain.** `explain_horizon_pnl` rejects floaters; it needs the fixings
+    realised over the horizon and the end projection curve.
+79. **Cap / floor time value.** A volatility model (e.g. Bachelier on the period average);
+    today a bound nearer than the explicit guard is rejected.
+80. **Index-ratio averaging and announced key-rate decisions.** `RUONIA_INDEX` fixings
+    and term RUONIA as an index are not modelled. History rows must precede the
+    valuation date, so a key-rate decision announced before the cut but effective later
+    is projected from the curve; CBR meeting dates are not an input.
+81. **Floater accrued convention** (MOEX `ACCINT` for in-arrears floaters), so quotes need
+    not carry the accrued. `HorizonValuation.accrued_*` is None for floaters today.
+82. **Floaters in the local worker and non-RUB floaters.** `FixedRubBondInput` is fixed
+    only; `value_portfolio` rejects non-RUB floaters.
+83. *(done in 0.29.0)* **Per-position model flags** in the portfolio result (e.g. `has_optionality`, the
+    two-curve model) need result contract `v3`.
+84. *(downstream)* **Floater data.** The per-bond formula (lag in calendar or business
+    days, averaging, in advance or in arrears, rounding, bounds) from the hub's
+    `FloaterFormula` or curated static data: ISS gives only the benchmark and margin, and
+    issuers differ for the same index. The RUONIA publication calendar (CBR computes no
+    RUONIA on the last business day of the year) in the hub's calendar feed.
+85. **Unexplained floater coupons.** The first coupons of SU29026 / SU29027 (December
+    2024), 6 of 47 sampled RUONIA corporates and 11 of 45 key-rate corporates (caps,
+    floors, multipliers or ACT/360 suspected). Revisit with the issue terms when
+    `minfin.gov.ru` / `e-disclosure.ru` are reachable. The leap-year basis of corporate
+    floaters is unconfirmed (data cover 2025–2026).
+86. **Floater risk speed.** 2k floaters cost 17–20 ms per position first order and
+    59–100 ms with the Hessian (23 factors on two curves), above the 10 ms target.
+    Telescoped compounding or prefix sums would help but change results in the last
+    bit, so they need a new model version; a sparse Hessian is the other lever.
+
+## Rate futures — 0.27.0
+
+87. *(portfolio part done in 0.29.0; local worker open, #102)* **Rate futures in `value_portfolio` and the local worker.** Needs terms for
+    `RATE_FUTURE` (RUON / RUONIA index / KEYRATE) and `OFZ_FUTURE` (contract dates, basket
+    ISINs with published CFs) or a futures position type; snapshot entries for RUONIA
+    fixings with declared unpublished days, a published RUONIA index value, the key-rate
+    forward curve, basket closing prices and the settlement price; curve roles
+    (projection, bond, funding) per contract; `FUTBASIS|<contract_id>` in the result
+    contract and factor totals; coverage codes for expired contracts, undeclared RUONIA
+    gaps and baskets without prices; one engine per contract (`for_quantity`).
+88. **RRK6 (RUON-5.26) final settlement.** ISS shows 85.79, the specification formula on
+    CBR fixings gives 85.82 (no open interest); nine other expiries match exactly. Ask
+    MOEX whether a decision changed it or a fixing was revised.
+89. **OFZ conversion-factor time basis for long bonds.** ACT/365F with one round yield per
+    series reproduces 19 of 25 December 2021 factors; six OF10/OF15 factors are 1–2 units
+    of the fourth decimal off. Pricing uses published factors. The per-series conversion
+    yields (6.6–8.7 %) were inferred from prices; the exchange decisions were not found.
+90. **Delivery-option value for OFZ futures** (quality and timing) needs a stated
+    stochastic model; today the model price carries none.
+91. **Live settlement marks.** RF* / KK* settlement prices without trades are MOEX marks
+    (RFZ6 on 2026-10-16 implies RUONIA 54 bp below the KEYRATE path); a tighter
+    mid-life golden needs MOEX's mark methodology or traded days.
+92. **RUSFAR one-month futures (`1MFR`)** share the RUON specification but need a RUSFAR
+    fixings type (MOEX indicator calculated at 12:30 for the same day).
+93. **First KEYRATE expiry (KKV6, 2026-10-23).** Add its final settlement to the goldens:
+    it should equal the key rate decided that day.
+
+## Repo legs — 0.28.0
+
+94. *(done in 0.29.0)* **Repo in `value_portfolio`.** Needs a repo instrument form (trade, collateral
+    reference), discount and projection curve, calendar and fixing IDs, an open-repo end
+    policy, one engine per trade on the shared shocked-curve cache, result fields (S1,
+    S2, accrued interest, repurchase amount, collateral exposure and coverage), the
+    booking rule (the collateral bond is booked separately by the cash borrower) and
+    coverage codes; result contract `v3`.
+95. **A typed RUSFAR fixing index.** `FixingHistory.index` names only `ruonia` and
+    `key_rate`; repo takes RUSFAR as `index="ruonia"` with its publication rules. Add
+    `rusfar` (and `rusfar_cny`); it changes no number. *(downstream)* The hub needs the
+    RUSFAR calculation calendar (none on non-trading days, trading weekends and the last
+    trading day of the year).
+96. **Term RUSFAR and other currencies.** RUSFAR 1W / 2W / 1M / 3M resets; RUSFARCNY and
+    USD / EUR / CNY repos (ACT/360 per NFA) with FX on the cash leg.
+97. **Capitalised key-rate repo (MOEX FKPO).** Its compounding applies the key rate of the
+    closing settlement day to the whole period; rejected today.
+98. **NCC Clearing Rules** (`nkcbank.ru`, refused): compounding repo clause 21.12.2,
+    margin calls, income transfers on CCP repo, the forecast rate of the risk parameters.
+    Margins and income are explicit inputs today.
+99. **Repo optionality.** Early termination, the open-repo end (an explicit assumption
+    today), the value of the KSU 0.01 % floor near zero (rejected today).
+100. **Floating repo Hessian speed and carry explain.** 22 factors cost about 10.7 ms per
+     position warm; the interest is linear in the forwards, so an analytic or sparse
+     projection block would cut it. Carry has no rolldown term or P&L explain.
+
+## Portfolio v3 — 0.29.0
+
+101. **Derivative carry in `horizon_portfolio`.** It rejects every derivative
+     (`UNSUPPORTED_PRODUCT`); `swap_horizon` and `repo_carry` exist, FX, XCCY and CDS carry
+     do not.
+102. **Derivatives in the local worker** (`run_local_risk`; its contract v1 is fixed RUB
+     bonds), including FX futures (#33) and rate futures (#87).
+103. **Basis scenarios.** `PortfolioScenario` cannot shift `FXBASIS`, `XCCYBASIS` or
+     `FUTBASIS`; desk scenarios that move a basis need shift entries per basis key.
+104. **Shared FX futures engines.** Rate and OFZ futures share one engine per contract;
+     FX futures still build one per position (`fx_futures` has no `for_quantity`).
+105. **RUSFAR projection spec.** A RUSFAR repo projects on a curve under a RUONIA OIS spec;
+     register a RUSFAR projection spec together with the typed `rusfar` index (#95).
+106. **Heavy engines in the portfolio.** With the Hessian, CDS cost 30–34 ms per position,
+     a two-curve OIS swap and an open floating repo on OIS quotes about 45 ms (engine
+     costs, not portfolio overhead); see also #70, #86, #100.
+107. *(downstream)* **v3 consumer migration.** The backend stores v3 next to v2, supplies
+     the new snapshot inputs (FX spots with value dates, bases, credit curves, futures
+     prices, RUONIA fixings with declared gaps) and maps desk products to the position
+     types; run imported and computed derivatives in parallel before switching them to
+     `computed`.
+

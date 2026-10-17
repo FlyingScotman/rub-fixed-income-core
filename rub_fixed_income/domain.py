@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from enum import Enum
@@ -19,12 +19,27 @@ from itertools import pairwise
 from typing import Literal
 
 from ._money import finite_money, positive_money
+from .canonical import OMIT_IF_DEFAULT
 from .cashflows import Cashflow, CashflowKind, accrued_interest
+from .cds import CdsConvention, CdsSpreadQuote, CdsUpfrontQuote
+from .conventions import DEFAULT_YIELD_CONVENTION, DayCount, YieldConvention
+from .curve_specs import CurveKind, _check_ois_spec_convention, get_curve_spec
 from .dates import BusinessCalendar
-from .discount import CurveBootstrapRequest, DiscountCurve
-from .errors import InvalidTerms, MissingMarketData
-from .floating import FixingHistory, FloatingCouponPeriod, FloatingCouponRule
+from .discount import CurveBootstrapRequest, DiscountCurve, bootstrap_discount_curve
+from .errors import InvalidTerms, MissingMarketData, UnsupportedProduct
+from .floating import (
+    FixingHistory,
+    FixingIndex,
+    FloatingCouponPeriod,
+    FloatingCouponProjection,
+    FloatingCouponRule,
+    FloatingLeg,
+)
+from .inflation import CpiSeries, IndexedCouponLeg, IndexedPrincipalLeg
 from .kbd import ZcycParameters
+from .key_rate import KeyRateForwardCurve
+from .rate_futures import RuoniaFixings, RuoniaIndexValue
+from .xccy import IndexFixings, XccyCurveBootstrapRequest
 
 __all__ = [
     "AccountingCategory",
@@ -32,11 +47,16 @@ __all__ = [
     "BondPriceObservation",
     "CalendarEntry",
     "CouponPeriod",
+    "CreditCurveEntry",
     "CurveEntry",
     "FixedCouponLeg",
     "FixingEntry",
     "FloatingCouponLeg",
+    "FuturesQuote",
+    "FxBasis",
     "FxRate",
+    "FxSpot",
+    "IndexFixingEntry",
     "Instrument",
     "MarketSnapshot",
     "Offer",
@@ -47,6 +67,7 @@ __all__ = [
     "RateAccrualCouponLeg",
     "RateCouponPeriod",
     "Redemption",
+    "RuoniaFixingsEntry",
     "SnapshotEvidence",
 ]
 
@@ -237,17 +258,29 @@ class RateAccrualCouponLeg:
 
 @dataclass(frozen=True)
 class FloatingCouponLeg:
-    """A floater formula over its periods; ``fixing_id`` keys the snapshot's history."""
+    """A floater formula over its periods; ``fixing_id`` keys the snapshot's history.
+
+    ``projection_curve_id`` names the snapshot curve that projects unfixed observations
+    (a RUONIA OIS curve for RUONIA, a ``rub_key_rate_projection_v1`` curve for the key
+    rate). It may equal the discount curve (single-curve). A leg without one is not
+    projected: :meth:`Instrument.cashflows` then returns its principal only and
+    portfolio valuation rejects it as unsupported.
+    """
 
     rule: FloatingCouponRule
     periods: tuple[FloatingCouponPeriod, ...]
     fixing_id: str
+    projection_curve_id: str | None = field(default=None, metadata=OMIT_IF_DEFAULT)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "periods", tuple(self.periods))
         _text(self.fixing_id, "fixing_id")
         if not self.periods:
             raise InvalidTerms("a floating leg needs at least one period")
+        if self.projection_curve_id is not None:
+            _text(self.projection_curve_id, "projection_curve_id")
+            if "|" in self.projection_curve_id:
+                raise InvalidTerms("projection_curve_id cannot contain '|'")
 
 
 @dataclass(frozen=True)
@@ -304,22 +337,37 @@ class Instrument:
     For bonds: a coupon leg (known fixed periods or a floater formula), a principal
     leg whose redemptions sum to ``initial_face`` (empty for a perpetual), offers,
     and the calendar ID under which settlement is computed.
+
+    An inflation-linked bond (package 9a) carries an :class:`IndexedPrincipalLeg` and an
+    :class:`IndexedCouponLeg` instead: its face grows with a CPI series, so its flows,
+    face and accrued need market data and come from :mod:`rub_fixed_income.linkers`.
+
+    ``yield_convention`` is the issue's yield quote basis, independent of the accrual
+    basis: the default is MOEX's effective annual ACT/365F. Some USD replacement bonds
+    are quoted on ACT/360 time while they accrue 30/360 (BACKLOG #38). It comes from
+    the issue terms (backend static data); core never infers it. Left at the default
+    it is not part of the instrument's serialized form or hash.
     """
 
     instrument_id: str
     product: ProductType
     currency: str
     initial_face: float
-    coupon_leg: FixedCouponLeg | RateAccrualCouponLeg | FloatingCouponLeg | None
-    principal_leg: PrincipalLeg
+    coupon_leg: FixedCouponLeg | RateAccrualCouponLeg | FloatingCouponLeg | IndexedCouponLeg | None
+    principal_leg: PrincipalLeg | IndexedPrincipalLeg
     calendar_id: str
     offers: tuple[Offer, ...] = ()
     settlement_lag_days: int = 1
     isin: str | None = None
     issuer_id: str | None = None
+    yield_convention: YieldConvention = field(
+        default=DEFAULT_YIELD_CONVENTION, metadata=OMIT_IF_DEFAULT
+    )
 
     def __post_init__(self) -> None:
         _text(self.instrument_id, "instrument_id")
+        if not isinstance(self.yield_convention, YieldConvention):
+            raise TypeError("yield_convention must be a YieldConvention")
         _text(self.calendar_id, "calendar_id")
         _currency(self.currency)
         if not isinstance(self.product, ProductType):
@@ -332,6 +380,13 @@ class Instrument:
             raise TypeError("settlement_lag_days must be an int")
         if self.settlement_lag_days < 0:
             raise InvalidTerms("settlement lag cannot be negative")
+        if isinstance(self.principal_leg, IndexedPrincipalLeg) or isinstance(
+            self.coupon_leg, IndexedCouponLeg
+        ):
+            self._check_indexed()
+            return
+        if self.product is ProductType.INFLATION_LINKED_BOND:
+            raise InvalidTerms("an inflation-linked bond needs an indexed principal leg")
         redemptions = self.principal_leg.redemptions
         if redemptions:
             total = math.fsum(r.amount for r in redemptions)
@@ -346,18 +401,49 @@ class Instrument:
         ):
             raise InvalidTerms("a floating bond needs a floating coupon leg")
 
+    def _check_indexed(self) -> None:
+        principal = self.principal_leg
+        if not isinstance(principal, IndexedPrincipalLeg):
+            raise InvalidTerms("coupons on an indexed nominal need an indexed principal leg")
+        if self.product is not ProductType.INFLATION_LINKED_BOND:
+            raise InvalidTerms("an indexed principal leg belongs to an inflation-linked bond")
+        if not isinstance(self.coupon_leg, (IndexedCouponLeg, type(None))):
+            raise InvalidTerms("an indexed principal pays coupons from an indexed coupon leg")
+        if self.offers:
+            raise InvalidTerms("offers on an indexed nominal are not modelled")
+        if self.coupon_leg is not None:
+            periods = self.coupon_leg.periods
+            if periods[0].accrual_start < principal.indexation.base_date:
+                raise InvalidTerms("coupons cannot accrue before the indexation base date")
+            if periods[-1].payment_date > principal.maturity_date:
+                raise InvalidTerms("coupons cannot be paid after maturity")
+
+    @property
+    def is_indexed(self) -> bool:
+        """True when the face grows with an index (an :class:`IndexedPrincipalLeg`)."""
+        return isinstance(self.principal_leg, IndexedPrincipalLeg)
+
+    def _redemptions(self) -> tuple[Redemption, ...]:
+        if isinstance(self.principal_leg, IndexedPrincipalLeg):
+            raise InvalidTerms(
+                "an indexed nominal needs a CPI series; use rub_fixed_income.linkers"
+            )
+        return self.principal_leg.redemptions
+
     @property
     def maturity_date(self) -> date | None:
+        if isinstance(self.principal_leg, IndexedPrincipalLeg):
+            return self.principal_leg.maturity_date
         redemptions = self.principal_leg.redemptions
         return redemptions[-1].payment_date if redemptions else None
 
     @property
     def is_perpetual(self) -> bool:
-        return not self.principal_leg.redemptions
+        return self.maturity_date is None
 
     def outstanding_face(self, on: date) -> float:
         """Face per bond after every redemption paid on or before ``on``."""
-        paid = math.fsum(r.amount for r in self.principal_leg.redemptions if r.payment_date <= on)
+        paid = math.fsum(r.amount for r in self._redemptions() if r.payment_date <= on)
         return max(self.initial_face - paid, 0.0)
 
     def horizon(self, policy: HorizonPolicy, settlement: date) -> tuple[date, Offer | None]:
@@ -381,37 +467,69 @@ class Instrument:
             raise InvalidTerms("a perpetual bond has no maturity horizon")
         return maturity, None
 
+    def floating_leg(
+        self,
+        market: MarketSnapshot,
+        *,
+        horizon: date | None = None,
+        strike_guard_bp: float | None = None,
+    ) -> FloatingLeg:
+        """The floating coupon model: this leg's periods paid on or before ``horizon``
+        with the snapshot's point-in-time fixings (:meth:`MarketSnapshot.point_in_time_fixing`).
+
+        ``strike_guard_bp`` is the cap/floor model policy of :class:`FloatingLeg`.
+        """
+        leg = self.coupon_leg
+        if not isinstance(leg, FloatingCouponLeg):
+            raise InvalidTerms("the instrument has no floating coupon leg")
+        history = market.point_in_time_fixing(leg.fixing_id)
+        if history.index != leg.rule.index:
+            raise InvalidTerms(
+                f"fixings {leg.fixing_id!r} are {history.index}, the coupon is on {leg.rule.index}"
+            )
+        periods = tuple(p for p in leg.periods if horizon is None or p.payment_date <= horizon)
+        if not periods:
+            raise InvalidTerms("no floating coupon period is paid by the horizon")
+        return FloatingLeg(leg.rule, periods, history, strike_guard_bp=strike_guard_bp)
+
     def cashflows(
         self,
         *,
         after: date | None = None,
         horizon: date | None = None,
         offer: Offer | None = None,
+        market: MarketSnapshot | None = None,
+        strike_guard_bp: float | None = None,
     ) -> tuple[Cashflow, ...]:
         """Known coupon and principal flows, merged by payment date.
 
         Only flows paid strictly after ``after`` and on or before ``horizon`` are
         returned. With ``offer`` the outstanding face is redeemed at the offer date at
-        ``offer.price_pct`` (kind ``OFFER_REDEMPTION``). Floating coupons are not
-        projected here: a floating leg contributes principal only.
+        ``offer.price_pct`` (kind ``OFFER_REDEMPTION``).
+
+        A floating leg contributes principal only, unless ``market`` is given: its
+        coupons are then projected off the leg's ``projection_curve_id`` with the
+        snapshot's point-in-time fixings (see :meth:`floating_leg`); known fixings and
+        published coupons are used as they are.
         """
         if offer is not None:
             if horizon is not None and horizon != offer.offer_date:
                 raise ValueError("an offer horizon must be the offer date")
             horizon = offer.offer_date
-        coupons: dict[date, CouponPeriod | RateCouponPeriod] = {}
+        coupons: dict[date, CouponPeriod | RateCouponPeriod | FloatingCouponProjection] = {}
         if isinstance(self.coupon_leg, (FixedCouponLeg, RateAccrualCouponLeg)):
             coupons = {p.payment_date: p for p in self.coupon_leg.periods}
-        principal: dict[date, Redemption] = {
-            r.payment_date: r for r in self.principal_leg.redemptions
-        }
+        elif isinstance(self.coupon_leg, FloatingCouponLeg) and market is not None:
+            coupons = {
+                c.payment_date: c
+                for c in self._projected_coupons(market, after, horizon, strike_guard_bp)
+            }
+        principal: dict[date, Redemption] = {r.payment_date: r for r in self._redemptions()}
         if offer is not None:
             principal = {d: r for d, r in principal.items() if d < offer.offer_date}
             # Face outstanding just before the offer date, including any redemption due on it.
             remaining = self.outstanding_face(offer.offer_date) + math.fsum(
-                r.amount
-                for r in self.principal_leg.redemptions
-                if r.payment_date == offer.offer_date
+                r.amount for r in self._redemptions() if r.payment_date == offer.offer_date
             )
             principal[offer.offer_date] = Redemption(
                 offer.offer_date, remaining * offer.price_pct / 100.0, CashflowKind.MATURITY
@@ -430,10 +548,15 @@ class Instrument:
                 kind = CashflowKind.OFFER_REDEMPTION
             else:
                 kind = redemption.kind
+            coupon = 0.0
+            if isinstance(period, FloatingCouponProjection):
+                coupon = period.amount_rub
+            elif period is not None:
+                coupon = period.amount
             flows.append(
                 Cashflow.split(
                     paid,
-                    coupon=0.0 if period is None else period.amount,
+                    coupon=coupon,
                     principal=0.0 if redemption is None else redemption.amount,
                     accrual_start=None if period is None else period.accrual_start,
                     accrual_end=None if period is None else period.accrual_end,
@@ -441,6 +564,28 @@ class Instrument:
                 )
             )
         return tuple(flows)
+
+    def _projected_coupons(
+        self,
+        market: MarketSnapshot,
+        after: date | None,
+        horizon: date | None,
+        strike_guard_bp: float | None,
+    ) -> tuple[FloatingCouponProjection, ...]:
+        leg = self.coupon_leg
+        assert isinstance(leg, FloatingCouponLeg)
+        if leg.projection_curve_id is None:
+            raise UnsupportedProduct(
+                f"floating leg of {self.instrument_id} names no projection curve"
+            )
+        model = self.floating_leg(market, horizon=horizon, strike_guard_bp=strike_guard_bp)
+        source = market.projection_curve(leg.projection_curve_id, leg.rule.index)
+        curve = (
+            bootstrap_discount_curve(source)
+            if isinstance(source, CurveBootstrapRequest)
+            else source
+        )
+        return model.project(curve, settlement_date=date.min if after is None else after)
 
     def accrued(self, settlement: date) -> float:
         """Accrued coupon per bond at ``settlement``, rounded half-up to 0.01.
@@ -451,6 +596,10 @@ class Instrument:
         """
         if isinstance(self.coupon_leg, FloatingCouponLeg):
             raise InvalidTerms("floating accrued interest needs fixings; use the floating leg")
+        if isinstance(self.coupon_leg, IndexedCouponLeg):
+            raise InvalidTerms(
+                "indexed accrued interest needs a CPI series; use the linkers module"
+            )
         if isinstance(self.coupon_leg, RateAccrualCouponLeg):
             return self._rate_accrued(self.coupon_leg, settlement)
         return accrued_interest(self.cashflows(), settlement)
@@ -493,12 +642,22 @@ class CurveEntry:
     """A curve under a desk curve ID, built to a registered curve spec.
 
     ``curve`` is a built curve, OIS quotes to bootstrap, or KBD parameters; the
-    valuation builds and shares it once per call.
+    valuation builds and shares it once per call. Derivative positions (result contract
+    v3) also read a :class:`~rub_fixed_income.key_rate.KeyRateForwardCurve` under
+    ``rub_key_rate_swap_v1`` (key-rate swap projection, dated the business date) and an
+    :class:`~rub_fixed_income.xccy.XccyCurveBootstrapRequest` under
+    ``cny_ruonia_xccy_v1`` (the CNY curve from XCCY par quotes). Bonds reject both.
     """
 
     curve_id: str
     spec_id: str
-    curve: DiscountCurve | CurveBootstrapRequest | ZcycParameters
+    curve: (
+        DiscountCurve
+        | CurveBootstrapRequest
+        | ZcycParameters
+        | KeyRateForwardCurve
+        | XccyCurveBootstrapRequest
+    )
 
     def __post_init__(self) -> None:
         _text(self.curve_id, "curve_id")
@@ -537,6 +696,151 @@ class FxRate:
         positive_money(self.rub_per_unit, "FX rate")
 
 
+def _foreign(value: object, label: str) -> str:
+    currency = _currency(value)
+    if currency == "RUB":
+        raise InvalidTerms(f"{label} must be a currency other than RUB")
+    return currency
+
+
+@dataclass(frozen=True)
+class FxSpot:
+    """A spot FX rate with its value date (derivative positions, result contract v3).
+
+    ``rub_per_unit`` RUB per one unit of ``currency`` for settlement on ``value_date``;
+    ``calendar_id`` names the pair's settlement calendar among the snapshot calendars
+    (usually a joint calendar, ``fx_forwards.joint_calendar``). The backend chooses the
+    rate (for example the MOEX ``TOM`` close) and records it in the evidence. Bonds keep
+    converting at :class:`FxRate`, which has no value date.
+    """
+
+    currency: str
+    rub_per_unit: float
+    value_date: date
+    calendar_id: str
+    evidence_id: str | None = None
+
+    def __post_init__(self) -> None:
+        _foreign(self.currency, "FX spot currency")
+        object.__setattr__(self, "rub_per_unit", positive_money(self.rub_per_unit, "FX spot"))
+        if not isinstance(self.value_date, date):
+            raise TypeError("value_date must be a date")
+        _text(self.calendar_id, "calendar_id")
+
+
+@dataclass(frozen=True)
+class FxBasis:
+    """The continuous FX-forward basis of a pair on one foreign curve, in bp.
+
+    Covered parity with ``foreign_curve_id`` is corrected by ``exp(b * tau(s, T))`` from
+    the spot date (``fx_forwards``, ``xccy``): zero on a curve implied from FX swaps or
+    bootstrapped from XCCY quotes, calibrated (``fx_forward_basis_bp``) on, for example,
+    a foreign OIS curve. Always explicit: a pair without an entry is rejected.
+    """
+
+    currency: str
+    foreign_curve_id: str
+    basis_bp: float
+    day_count: DayCount = DayCount.ACT_365_FIXED
+
+    def __post_init__(self) -> None:
+        _foreign(self.currency, "FX basis currency")
+        _text(self.foreign_curve_id, "foreign_curve_id")
+        object.__setattr__(self, "basis_bp", finite_money(self.basis_bp, "FX basis bp"))
+        if not isinstance(self.day_count, DayCount):
+            raise TypeError("day_count must be a DayCount")
+
+
+@dataclass(frozen=True)
+class CreditCurveEntry:
+    """Quoted CDS curve of one reference entity in one currency, with its recovery.
+
+    ``reference_entity`` is the backend's entity code (seniority and documentation
+    clause belong in it); ``recovery_rate`` is the stated recovery the hazard curve is
+    built with. There is no default recovery. Quotes are par spreads or upfronts of
+    standard contracts traded on the business date under ``convention``.
+    """
+
+    reference_entity: str
+    currency: str
+    quotes: tuple[CdsSpreadQuote | CdsUpfrontQuote, ...]
+    recovery_rate: float
+    convention: CdsConvention
+    evidence_id: str | None = None
+
+    def __post_init__(self) -> None:
+        _text(self.reference_entity, "reference_entity")
+        _currency(self.currency)
+        quotes = tuple(sorted(self.quotes, key=lambda q: q.maturity))
+        if not quotes:
+            raise InvalidTerms("a credit curve needs at least one quote")
+        for quote in quotes:
+            if not isinstance(quote, (CdsSpreadQuote, CdsUpfrontQuote)):
+                raise TypeError("credit quotes must be CdsSpreadQuote or CdsUpfrontQuote")
+        _unique([q.maturity.isoformat() for q in quotes], "credit quote maturity")
+        object.__setattr__(self, "quotes", quotes)
+        recovery = finite_money(self.recovery_rate, "recovery_rate")
+        if not 0.0 <= recovery < 1.0:
+            raise InvalidTerms("a credit curve recovery must be in [0, 1)")
+        if not isinstance(self.convention, CdsConvention):
+            raise TypeError("convention must be a CdsConvention")
+
+
+@dataclass(frozen=True)
+class FuturesQuote:
+    """Market price of a futures contract and the price positions were last margined at.
+
+    Both in the contract's price units (FX futures: RUB per ``price_quote_units`` foreign
+    units; RUON: 100 - rate; index futures: index points; OFZ futures: RUB per lot).
+    ``price`` is the settlement price or mark the basis is calibrated to;
+    ``margined_price`` is the settlement price of the last clearing, so pending variation
+    margin is the contract's margin per point times ``price - margined_price``.
+    """
+
+    contract_id: str
+    price: float
+    margined_price: float
+    evidence_id: str | None = None
+
+    def __post_init__(self) -> None:
+        _text(self.contract_id, "contract_id")
+        object.__setattr__(self, "price", positive_money(self.price, "futures price"))
+        object.__setattr__(
+            self, "margined_price", positive_money(self.margined_price, "margined price")
+        )
+
+
+@dataclass(frozen=True)
+class RuoniaFixingsEntry:
+    """RUONIA fixings with the declared unpublished days (rate futures, BACKLOG #87).
+
+    ``fixings`` must be dated the snapshot business date. A business day without a
+    fixing that is not in ``unpublished_dates`` is an undeclared gap and rejects the
+    positions that read it (``UNDECLARED_FIXING_GAP``); nothing is filled.
+    """
+
+    fixing_id: str
+    fixings: RuoniaFixings
+
+    def __post_init__(self) -> None:
+        _text(self.fixing_id, "fixing_id")
+        if not isinstance(self.fixings, RuoniaFixings):
+            raise TypeError("fixings must be RuoniaFixings")
+
+
+@dataclass(frozen=True)
+class IndexFixingEntry:
+    """Published fixings of a foreign overnight index (XCCY floating foreign legs)."""
+
+    fixing_id: str
+    fixings: IndexFixings
+
+    def __post_init__(self) -> None:
+        _text(self.fixing_id, "fixing_id")
+        if not isinstance(self.fixings, IndexFixings):
+            raise TypeError("fixings must be IndexFixings")
+
+
 @dataclass(frozen=True)
 class MarketSnapshot:
     """Everything market-side that positions share for one valuation.
@@ -554,6 +858,14 @@ class MarketSnapshot:
     fx: tuple[FxRate, ...] = ()
     quotes: tuple[BondPriceObservation, ...] = ()
     evidence: tuple[SnapshotEvidence, ...] = ()
+    cpi: tuple[CpiSeries, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
+    fx_spots: tuple[FxSpot, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
+    fx_bases: tuple[FxBasis, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
+    credit_curves: tuple[CreditCurveEntry, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
+    futures_quotes: tuple[FuturesQuote, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
+    index_fixings: tuple[IndexFixingEntry, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
+    ruonia_fixings: tuple[RuoniaFixingsEntry, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
+    ruonia_index: tuple[RuoniaIndexValue, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
 
     def __post_init__(self) -> None:
         _text(self.snapshot_id, "snapshot_id")
@@ -576,8 +888,69 @@ class MarketSnapshot:
         _unique([e.currency for e in self.fx], "FX currency")
         _unique([e.instrument_id for e in self.quotes], "quote instrument_id")
         _unique([e.snapshot_id for e in self.evidence], "evidence snapshot_id")
+        object.__setattr__(self, "cpi", tuple(sorted(self.cpi, key=lambda e: e.series_id)))
+        _unique([e.series_id for e in self.cpi], "CPI series_id")
+        for series in self.cpi:
+            if not isinstance(series, CpiSeries):
+                raise TypeError("cpi entries must be CpiSeries")
+            if series.as_of > self.business_date:
+                raise InvalidTerms(
+                    f"CPI series {series.series_id} is cut after the snapshot business date"
+                )
         if any(e.currency == "RUB" for e in self.fx):
             raise InvalidTerms("RUB has no FX rate against itself")
+        self._check_derivative_inputs()
+
+    def _check_derivative_inputs(self) -> None:
+        """Sort and validate the inputs of derivative positions (all empty by default)."""
+        object.__setattr__(self, "fx_spots", tuple(sorted(self.fx_spots, key=lambda e: e.currency)))
+        _unique([e.currency for e in self.fx_spots], "FX spot currency")
+        for spot in self.fx_spots:
+            if not isinstance(spot, FxSpot):
+                raise TypeError("fx_spots entries must be FxSpot")
+            if spot.value_date < self.business_date:
+                raise InvalidTerms(f"FX spot {spot.currency} has a value date before the snapshot")
+        object.__setattr__(
+            self,
+            "fx_bases",
+            tuple(sorted(self.fx_bases, key=lambda e: (e.currency, e.foreign_curve_id))),
+        )
+        _unique([f"{e.currency}|{e.foreign_curve_id}" for e in self.fx_bases], "FX basis")
+        object.__setattr__(
+            self,
+            "credit_curves",
+            tuple(sorted(self.credit_curves, key=lambda e: (e.reference_entity, e.currency))),
+        )
+        _unique([f"{e.reference_entity}|{e.currency}" for e in self.credit_curves], "credit curve")
+        object.__setattr__(
+            self,
+            "futures_quotes",
+            tuple(sorted(self.futures_quotes, key=lambda e: e.contract_id)),
+        )
+        _unique([e.contract_id for e in self.futures_quotes], "futures quote contract_id")
+        object.__setattr__(
+            self, "index_fixings", tuple(sorted(self.index_fixings, key=lambda e: e.fixing_id))
+        )
+        _unique([e.fixing_id for e in self.index_fixings], "index fixing_id")
+        object.__setattr__(
+            self, "ruonia_fixings", tuple(sorted(self.ruonia_fixings, key=lambda e: e.fixing_id))
+        )
+        _unique([e.fixing_id for e in self.ruonia_fixings], "RUONIA fixing_id")
+        fixing_ids = [
+            *(e.fixing_id for e in self.fixings),
+            *(e.fixing_id for e in self.index_fixings),
+            *(e.fixing_id for e in self.ruonia_fixings),
+        ]
+        _unique(fixing_ids, "fixing_id across fixing collections")
+        object.__setattr__(
+            self, "ruonia_index", tuple(sorted(self.ruonia_index, key=lambda e: e.index_date))
+        )
+        _unique([e.index_date.isoformat() for e in self.ruonia_index], "RUONIA index date")
+        for value in self.ruonia_index:
+            if not isinstance(value, RuoniaIndexValue):
+                raise TypeError("ruonia_index entries must be RuoniaIndexValue")
+            if value.index_date > self.business_date:
+                raise InvalidTerms("a RUONIA index value cannot postdate the snapshot")
 
     def curve(self, curve_id: str) -> CurveEntry:
         for entry in self.curves:
@@ -597,6 +970,64 @@ class MarketSnapshot:
                 return entry.history
         raise MissingMarketData(f"fixings {fixing_id!r} are not in snapshot {self.snapshot_id}")
 
+    def point_in_time_fixing(self, fixing_id: str) -> FixingHistory:
+        """The fixings under ``fixing_id`` as known at this snapshot's ``known_at``.
+
+        The history must be dated the business date and say when it was known: a
+        ``known_at_utc`` after ``known_at`` is rejected, and with per-row
+        ``published_at`` every row published after ``known_at`` is dropped (a dropped
+        RUONIA day is then missing or unpublished, never filled). A history with
+        neither is not point-in-time and is rejected.
+        """
+        history = self.fixing(fixing_id)
+        label = f"fixings {fixing_id!r}"
+        if history.valuation_date != self.business_date:
+            raise InvalidTerms(f"{label} are not dated the snapshot business date")
+        try:
+            known = history.known_at
+        except ValueError as exc:
+            raise InvalidTerms(f"{label}: {exc}") from exc
+        if known is None and not history.published_at:
+            raise InvalidTerms(f"{label} carry neither known_at_utc nor publication times")
+        if known is not None and known > self.known_at:
+            raise InvalidTerms(f"{label} were known after the snapshot cut {self.known_at}")
+        return history.published_by(self.known_at) if history.published_at else history
+
+    def projection_curve(
+        self, curve_id: str, index: FixingIndex
+    ) -> DiscountCurve | CurveBootstrapRequest:
+        """The curve under ``curve_id`` checked as a projection curve for ``index``.
+
+        RUONIA projects off a RUONIA OIS spec (quotes or the built curve), the key rate
+        off a ``rub_key_rate_projection_v1`` curve; both must be dated the business date.
+        """
+        entry = self.curve(curve_id)
+        spec = get_curve_spec(entry.spec_id)
+        source = entry.curve
+        expected = {"ruonia": CurveKind.OIS_BOOTSTRAP, "key_rate": CurveKind.KEY_RATE_PROJECTION}
+        if spec.kind is not expected[index]:
+            raise InvalidTerms(f"curve {curve_id} ({spec.spec_id}) cannot project the {index}")
+        if spec.kind is CurveKind.OIS_BOOTSTRAP and isinstance(
+            source, (CurveBootstrapRequest, DiscountCurve)
+        ):
+            _check_ois_spec_convention(curve_id, spec.spec_id, source.convention)
+        if isinstance(source, CurveBootstrapRequest) and spec.kind is CurveKind.OIS_BOOTSTRAP:
+            if source.convention.fixed_leg_schedule is not None:
+                raise InvalidTerms(
+                    f"curve {curve_id}: {spec.spec_id} uses the legacy fixed-leg schedule"
+                )
+        elif not (isinstance(source, DiscountCurve) and source.model_version == spec.model_version):
+            raise InvalidTerms(f"curve {curve_id} does not match spec {spec.spec_id}")
+        if source.curve_date != self.business_date:
+            raise InvalidTerms(f"curve {curve_id} is not dated the snapshot business date")
+        return source
+
+    def cpi_series(self, series_id: str) -> CpiSeries:
+        for series in self.cpi:
+            if series.series_id == series_id:
+                return series
+        raise MissingMarketData(f"CPI series {series_id!r} is not in snapshot {self.snapshot_id}")
+
     def fx_rate(self, currency: str) -> float:
         if currency == "RUB":
             return 1.0
@@ -604,6 +1035,71 @@ class MarketSnapshot:
             if entry.currency == currency:
                 return entry.rub_per_unit
         raise MissingMarketData(f"FX rate for {currency} is not in snapshot {self.snapshot_id}")
+
+    def fx_spot(self, currency: str) -> FxSpot:
+        for entry in self.fx_spots:
+            if entry.currency == currency:
+                return entry
+        raise MissingMarketData(
+            f"FX spot with a value date for {currency} is not in snapshot {self.snapshot_id}"
+        )
+
+    def fx_basis(self, currency: str, foreign_curve_id: str) -> FxBasis:
+        for entry in self.fx_bases:
+            if entry.currency == currency and entry.foreign_curve_id == foreign_curve_id:
+                return entry
+        raise MissingMarketData(
+            f"no FX basis for {currency} on curve {foreign_curve_id!r} in snapshot "
+            f"{self.snapshot_id}"
+        )
+
+    def credit_curve(self, reference_entity: str, currency: str) -> CreditCurveEntry:
+        for entry in self.credit_curves:
+            if entry.reference_entity == reference_entity and entry.currency == currency:
+                return entry
+        raise MissingMarketData(
+            f"no {currency} credit curve for {reference_entity!r} in snapshot {self.snapshot_id}"
+        )
+
+    def futures_quote(self, contract_id: str) -> FuturesQuote:
+        for entry in self.futures_quotes:
+            if entry.contract_id == contract_id:
+                return entry
+        raise MissingMarketData(
+            f"no futures price for {contract_id!r} in snapshot {self.snapshot_id}"
+        )
+
+    def index_fixing(self, fixing_id: str) -> IndexFixings:
+        """Foreign index fixings under ``fixing_id``, dated the business date."""
+        for entry in self.index_fixings:
+            if entry.fixing_id == fixing_id:
+                if entry.fixings.valuation_date != self.business_date:
+                    raise InvalidTerms(
+                        f"index fixings {fixing_id!r} are not dated the snapshot business date"
+                    )
+                return entry.fixings
+        raise MissingMarketData(
+            f"index fixings {fixing_id!r} are not in snapshot {self.snapshot_id}"
+        )
+
+    def ruonia_fixing(self, fixing_id: str) -> RuoniaFixings:
+        """RUONIA fixings (with declared unpublished days) under ``fixing_id``."""
+        for entry in self.ruonia_fixings:
+            if entry.fixing_id == fixing_id:
+                if entry.fixings.valuation_date != self.business_date:
+                    raise InvalidTerms(
+                        f"RUONIA fixings {fixing_id!r} are not dated the snapshot business date"
+                    )
+                return entry.fixings
+        raise MissingMarketData(
+            f"RUONIA fixings {fixing_id!r} are not in snapshot {self.snapshot_id}"
+        )
+
+    def latest_ruonia_index(self) -> RuoniaIndexValue:
+        """The latest published RUONIA index value (on or before the business date)."""
+        if not self.ruonia_index:
+            raise MissingMarketData(f"no RUONIA index value in snapshot {self.snapshot_id}")
+        return self.ruonia_index[-1]
 
     def quote(self, instrument_id: str) -> BondPriceObservation:
         for entry in self.quotes:

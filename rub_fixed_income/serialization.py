@@ -19,7 +19,7 @@ from decimal import Decimal, InvalidOperation
 from enum import Enum
 from typing import Any, Literal, TypeVar, Union, cast, get_args, get_origin, get_type_hints
 
-from .canonical import _canonical_value
+from .canonical import _canonical_value, is_omittable
 
 __all__ = ["from_dict", "to_dict"]
 
@@ -159,10 +159,15 @@ def _decode_dataclass(kind: type, value: object, path: str) -> object:
     hints = get_type_hints(kind)
     declared = fields(kind)
     names = {f.name for f in declared}
-    if value.keys() != names:
+    # A field declared ``omitted_when_default`` may be absent: it then takes its default.
+    optional = {f.name for f in declared if is_omittable(f)}
+    present = set(value)
+    if not (names - optional <= present <= names):
         raise ValueError(f"{path}: fields do not match {kind.__name__}")
     init = {
-        f.name: decode(hints[f.name], value[f.name], f"{path}.{f.name}") for f in declared if f.init
+        f.name: decode(hints[f.name], value[f.name], f"{path}.{f.name}")
+        for f in declared
+        if f.init and f.name in value
     }
     instance = kind(**init)
     for f in declared:

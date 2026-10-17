@@ -1,4 +1,4 @@
-"""Golden tests against MOEX end-of-day bond analytics (roadmap 0.10, BACKLOG #36).
+"""Golden tests against MOEX end-of-day bond analytics (roadmap 0.10, BACKLOG #36, #38).
 
 Fixtures and provenance: ``tests/fixtures/moex_eod/README.md``. The history rows are the
 exchange's EOD figures for trade date 2026-10-15 (settlement T+1, 2026-10-16). In them
@@ -26,7 +26,10 @@ from rub_fixed_income import (
     CashflowKind,
     CouponPeriod,
     CurveEntry,
+    DayCount,
+    DiscountCurve,
     FixedCouponLeg,
+    FxRate,
     Instrument,
     MarketSnapshot,
     Offer,
@@ -38,6 +41,7 @@ from rub_fixed_income import (
     RateCouponPeriod,
     Redemption,
     ValuationPolicy,
+    YieldConvention,
     YieldRequest,
     bond_duration,
     g_spread_bp,
@@ -81,9 +85,15 @@ def next_offer(secid: str, after: date) -> date:
 
 
 def instrument(
-    secid: str, basis: AccrualBasis | None, offer: date | None = None, currency: str = "RUB"
+    secid: str,
+    basis: AccrualBasis | None,
+    offer: date | None = None,
+    currency: str = "RUB",
+    yield_basis: DayCount = DayCount.ACT_365_FIXED,
 ) -> Instrument:
     """Known coupons and principal from bondization; ``basis`` None is the Minfin rule.
+
+    ``yield_basis`` is the yield time basis of the issue terms (default ACT/365F).
 
     A rate-accrual leg keeps the coupons that publish a rate (RU000A105RH2's first,
     short coupon of 2023 does not; it is long paid).
@@ -129,20 +139,32 @@ def instrument(
         PrincipalLeg(redemptions),
         "MOEX_STOCK",
         offers=offers,
+        yield_convention=YieldConvention(day_count=yield_basis),
     )
+
+
+DAYS_PER_YEAR = {DayCount.ACT_365_FIXED: 365.0, DayCount.ACT_360: 360.0}
 
 
 def yield_and_duration(
     bond: Instrument, clean_pct: float, settle: date, *, to_offer: bool = False
 ) -> tuple[float, float]:
-    """Effective annual yield (%) and Macaulay duration (days) at a clean price."""
+    """Effective annual yield (%) and Macaulay duration (days) at a clean price.
+
+    Both are on the bond's own yield time basis (``Instrument.yield_convention``).
+    """
     horizon, chosen = bond.horizon("confirmed_put" if to_offer else "maturity", settle)
     flows = bond.cashflows(after=settle, horizon=horizon, offer=chosen)
     dirty = clean_pct / 100.0 * bond.outstanding_face(settle) + bond.accrued(settle)
-    annual = solve_effective_annual_yield(YieldRequest(settle, dirty, flows)).effective_annual_yield
+    convention = bond.yield_convention
+    annual = solve_effective_annual_yield(
+        YieldRequest(settle, dirty, flows, convention)
+    ).effective_annual_yield
     pairs = tuple((f.payment_date, f.amount) for f in flows)
-    years = bond_duration(annual_yield=annual, settlement_date=settle, cashflows=pairs)
-    return annual * 100.0, years.macaulay_years * 365.0
+    years = bond_duration(
+        annual_yield=annual, settlement_date=settle, cashflows=pairs, convention=convention
+    )
+    return annual * 100.0, years.macaulay_years * DAYS_PER_YEAR[convention.day_count]
 
 
 ACCRUED = [
@@ -308,17 +330,48 @@ def test_value_portfolio_reproduces_eod_ofz_figures_on_the_eod_kbd() -> None:
         assert row.macaulay_duration_years * 365.0 == pytest.approx(moex["DURATION"], abs=1.0)
 
 
-def test_usd_bond_yield_time_basis_is_a_known_gap() -> None:
-    """RU000A105RH2: accrual matches on 30/360, but MOEX discounts on ACT/360 (BACKLOG #36).
+# Yield time basis of the USD replacement bonds on TQOD, from their issue terms (BACKLOG
+# #38; ISS does not publish it, the backend's static data carries it). All of them accrue
+# 30/360, so the accrual and the yield basis are independent terms.
+USD_YIELD_BASIS = [
+    ("RU000A105RH2", DayCount.ACT_360),
+    ("RU000A108P79", DayCount.ACT_360),
+    ("RU000A105R62", DayCount.ACT_360),
+    ("RU000A105JT4", DayCount.ACT_360),
+    ("RU000A105A95", DayCount.ACT_360),
+    ("RU000A1059N9", DayCount.ACT_360),
+    ("RU000A1059P4", DayCount.ACT_360),
+    ("RU000A10A877", DayCount.ACT_365_FIXED),
+    ("RU000A108Y11", DayCount.ACT_365_FIXED),
+    ("RU000A107B43", DayCount.ACT_365_FIXED),
+    ("RU000A106G56", DayCount.ACT_365_FIXED),
+]
+OTHER_BASIS = {DayCount.ACT_360: DayCount.ACT_365_FIXED, DayCount.ACT_365_FIXED: DayCount.ACT_360}
 
-    Core's yield is ACT/365F. Re-solving on ACT/360 reproduces MOEX, so the gap is the
-    time basis only. Other USD bonds (RU000A10A877) are quoted on ACT/365F, so the basis
-    is a per-bond term that core does not carry yet (package 3).
-    """
+
+@pytest.mark.parametrize(("secid", "yield_basis"), USD_YIELD_BASIS)
+def test_usd_bond_yield_on_its_issue_time_basis_matches_moex(
+    secid: str, yield_basis: DayCount
+) -> None:
+    """``ACCINT`` on 30/360, ``YIELDATWAP`` and ``DURATION`` on the issue's time basis."""
+    published = history(secid, "TQOD")
+    assert published["FACEUNIT"] == "USD"
+    bond = instrument(secid, THIRTY_360, currency="USD", yield_basis=yield_basis)
+    assert bond.accrued(TRADE) == pytest.approx(published["ACCINT"], abs=1e-9)
+    at_wap, duration = yield_and_duration(bond, published["WAPRICE"], SETTLE)
+    assert at_wap == pytest.approx(published["YIELDATWAP"], abs=0.005)
+    assert duration == pytest.approx(published["DURATION"], abs=1.0)
+    # The basis is a real term: the other one misses MOEX by 5 to 40 bp.
+    other = instrument(secid, THIRTY_360, currency="USD", yield_basis=OTHER_BASIS[yield_basis])
+    wrong, _ = yield_and_duration(other, published["WAPRICE"], SETTLE)
+    assert abs(wrong - published["YIELDATWAP"]) > 0.05
+
+
+def test_act_360_effective_yield_is_independently_reproduced() -> None:
+    """RU000A105RH2: core's ACT/360 yield equals a hand-rolled bisection on days / 360."""
     published = history("RU000A105RH2", "TQOD")
-    bond = instrument("RU000A105RH2", THIRTY_360, currency="USD")
+    bond = instrument("RU000A105RH2", THIRTY_360, currency="USD", yield_basis=DayCount.ACT_360)
     ours, _ = yield_and_duration(bond, published["WAPRICE"], SETTLE)
-    assert published["YIELDATWAP"] == 9.59 and ours == pytest.approx(9.728, abs=0.001)
     flows = bond.cashflows(after=SETTLE)
     dirty = published["WAPRICE"] / 100.0 * bond.outstanding_face(SETTLE) + bond.accrued(SETTLE)
     low, high = 0.0, 1.0
@@ -328,4 +381,54 @@ def test_usd_bond_yield_time_basis_is_a_known_gap() -> None:
             f.amount / (1.0 + mid) ** ((f.payment_date - SETTLE).days / 360.0) for f in flows
         )
         low, high = (mid, high) if pv > dirty else (low, mid)
-    assert low * 100.0 == pytest.approx(published["YIELDATWAP"], abs=0.005)
+    assert ours == pytest.approx(low * 100.0, abs=1e-9)
+    assert published["YIELDATWAP"] == 9.59 and ours == pytest.approx(9.5887, abs=1e-4)
+
+
+def test_value_portfolio_reports_usd_bond_yields_on_their_issue_basis() -> None:
+    """End to end on a synthetic USD curve and FX rate: yields do not depend on either."""
+    usd_curve = DiscountCurve(
+        TRADE,
+        tuple((date(TRADE.year + n, TRADE.month, TRADE.day), 1.045**-n) for n in range(1, 31)),
+    )
+    published = {s: history(s, "TQOD") for s, _ in USD_YIELD_BASIS}
+    snapshot = MarketSnapshot(
+        "moex-2026-10-15-eod-usd",
+        TRADE,
+        datetime(2026, 10, 15, 16, 0, tzinfo=UTC),
+        curves=(CurveEntry("USD_SYNTHETIC", "usd_discount_factors_v1", usd_curve),),
+        calendars=(CalendarEntry("MOEX_STOCK", CALENDAR),),
+        fx=(FxRate("USD", 81.0),),
+        quotes=tuple(
+            BondPriceObservation(s, published[s]["WAPRICE"], "waprice") for s in published
+        ),
+    )
+    result = value_portfolio(
+        run_id="moex-eod-usd-golden",
+        as_of=snapshot.known_at,
+        snapshot=snapshot,
+        instruments=tuple(
+            instrument(s, THIRTY_360, currency="USD", yield_basis=b) for s, b in USD_YIELD_BASIS
+        ),
+        positions=tuple(
+            Position(s, s, 1, "EUROBONDS", AccountingCategory.TRADING, "USD")
+            for s, _ in USD_YIELD_BASIS
+        ),
+        policy=ValuationPolicy(
+            "RUB_UNUSED", foreign_curves=(("USD", "USD_SYNTHETIC"),), include_second_order=False
+        ),
+    )
+    assert result.status == "complete"
+    basis = dict(USD_YIELD_BASIS)
+    for row in result.positions:
+        moex = published[row.position_id]
+        assert row.yield_convention == YieldConvention(day_count=basis[row.position_id]).identifier
+        assert row.effective_yield * 100.0 == pytest.approx(moex["YIELDATWAP"], abs=0.005)
+        days = row.macaulay_duration_years * DAYS_PER_YEAR[basis[row.position_id]]
+        assert days == pytest.approx(moex["DURATION"], abs=1.0)
+        assert row.currency_amounts is not None
+        accrued = instrument(row.position_id, THIRTY_360, currency="USD").accrued(SETTLE)
+        assert row.currency_amounts.accrued_interest == accrued
+        assert row.factor_risk.first_order_by_factor()["FX|USD"] == pytest.approx(
+            row.currency_amounts.pv * 81.0 / 100.0
+        )
