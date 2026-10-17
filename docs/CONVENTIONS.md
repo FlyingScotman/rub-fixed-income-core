@@ -466,6 +466,32 @@ See [xccy](xccy.md); sources in [sources/xccy_cnyrub](sources/xccy_cnyrub/README
     the curve with the quotes, the spot and the notional rate held.
   - Spot moves hold the curve.
 
+## Repo legs (package 6)
+
+See [repo](repo.md); sources in [sources/repo_moex](sources/repo_moex/README.md).
+
+- **Interest days** are the calendar days `i` of `(start, end]` (NFA «Срок РЕПО»), each
+  weighted by `RepoDayBasis`: `ACT/365-366` (1/366 in a leap year, else 1/365: MOEX
+  `T365/365 + T366/366`, NFA's RUB default), `ACT/365F` or `ACT/360` (NFA's default for
+  foreign currencies). Not ACT/ACT ISDA, which counts `[start, end)`.
+- **Fixed:** `S2 = S1 * (1 + R * sum_i w_i)` (MOEX Part III 1.5.8.5), rounded once to
+  `amount_rounding_decimals`. **Start amount** `S1 = (1 - D/100) * Q * (P0 + a0)`
+  (1.5.8.2).
+- **Floating:** day `i` takes RUSFAR / RUONIA of the latest settlement day before it
+  (the last published fixing on or before that day), or the key rate in force on day
+  `i`; plus a simple spread. Simple: `S2 = S1 * (1 + sum_i (r_i + s) w_i)`, rounded once
+  when known. Capitalised: on each settlement day the interest of its days on the
+  previous balance, rounded to the kopeck when known; weekends accrue simply.
+  Optional KSU rule: `r + s <= 0` gives `nonpositive_rate_replacement` (0.0001); a
+  projected rate at or below zero is rejected.
+- **Projection:** overnight forwards `(DF(o)/DF(next) - 1) / tau` on
+  `projection_day_count`, `next` the next publication day (key rate: next calendar
+  day). Observations before the valuation date are fixings, never projected.
+- **PV** = `sign * sum CF * DF_discount(t)` over flows after the valuation date (start
+  leg if forward, end leg, explicit adjustments). The collateral is not in it.
+- **Risk:** `IR|<discount>|*` and, for a two-curve floating repo, `IR|<projection>|*`;
+  central (DEC08). A lender's discount DV01 is negative.
+
 ## Horizon valuation: carry and rolldown (0.14.0)
 
 Start at settlement `S0` of business date `d0`; horizon at settlement `S1` of `d1` (the
@@ -558,6 +584,10 @@ accrual on default as in the Standard Model code (half-day bias); hazard time AC
 `constant_daily_accumulation_periods(start, horizon, boundaries, r)`: factor per period
 `(1 + r/365)^(days)`. `project_financed_bond`: `B_{k+1} = B_k · factor_k − cash_event_k`,
 starting from the initial dirty cash; cash events must terminate accumulation periods.
+This daily compounding is neither a repo contract (simple, or credited on settlement
+days: [repo legs](#repo-legs-package-6)) nor the desk's TRADING funding rule (simple
+interest on the previous day's clean MV, backend `desk_rules`; local audit F13). It is
+kept unchanged for compatibility.
 
 ## KRS (MOEX IRS KEYRATE)
 

@@ -232,3 +232,15 @@ the factors, not as one.
 JTD follows the bond rule, value after default minus value before (DEC07):
 `side · N · ((1 - R) - c · accrued) - pv`, with the recovery an explicit argument. A
 protection seller (long credit) has negative JTD like a long bond; a buyer positive.
+
+## Repo and reverse-repo legs (package 6)
+
+`RepoRiskEngine` (`docs/repo.md`) reports `IR|<discount curve>|<bucket>` on the remaining
+cash legs and, for a floating repo on a separate projection curve,
+`IR|<projection curve>|<bucket>` on the projected overnight benchmark days; a
+single-curve floating repo has one set of factors. Central differences by default; the
+Hessian covers 11 or 22 factors with the same bump (DEC08). Known fixings and the fixed
+rate never move. A cash lender (`reverse_repo`) has negative discount DV01 and positive
+projection DV01; the borrower the reverse. The collateral carries no risk here: the bond
+stays a position of the cash borrower and is risked by the bond engines, so the repo
+leg and the bond are never counted twice. There is no `CS`, JTD or FX factor.

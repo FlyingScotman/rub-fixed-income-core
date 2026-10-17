@@ -192,6 +192,29 @@ Money is signed RUB of daily variation margin (not discounted).
 
 `benchmarks/rate_futures_bench.py --positions 2000` times a book of 12 contracts.
 
+## Repo and reverse-repo legs (package 6)
+
+Module `rub_fixed_income.repo`; see [repo](repo.md). Instrument valuation only: money
+is signed RUB of PV of the remaining cash legs (+ for the cash lender); the collateral
+is a reference, never in the PV. Desk funding economics stay in the backend.
+
+| Name | Description |
+| --- | --- |
+| `RepoTrade(trade_id, side, start_date, end_date, start_amount_rub, rate, amount_rounding_decimals, collateral=None, cash_adjustments=(), currency="RUB")` | `side` `reverse_repo` (lends cash) or `repo`; `end_date=None` is an open repo. `.sign`, `.is_open`. Non-RUB raises `UnsupportedProduct`. |
+| `FixedRepoRate(rate, day_basis, interest="simple")` | Decimal rate; `interest` `simple` (MOEX Part III 1.5.8.5) or `capitalised` (credited on settlement days). |
+| `FloatingRepoRate(benchmark, spread, day_basis, observation, projection_day_count, interest="simple", nonpositive_rate_replacement=None)` | `RUSFAR` / `RUONIA` with `previous_settlement_day`, `KEY_RATE` with `calendar_day`; other pairs, capitalised key rate raise `UnsupportedProduct`. The replacement is the MOEX KSU 0.01 % rule. |
+| `RepoDayBasis` (`ACT_365_366`, `ACT_365_FIXED`, `ACT_360`) | `.day_weight(day)`, `.year_fraction(start, end)` over the days of `(start, end]`; `ACT/365-366` = `T365/365 + T366/366`. |
+| `RepoCollateral(instrument_id, quantity, initial_discount_pct=None, pool=None)`, `RepoCashAdjustment(payment_date, amount_rub, kind)` | Collateral reference; explicit cash flows signed for the lender (`margin_call`, `income_compensation`, `repurchase_adjustment`). |
+| `RepoRiskRequest(trade, calendar, discount_curve, projection_curve=None, fixings=None, assumed_end_date=None, collateral_dirty_price_rub_per_bond=None)` | Valuation date = discount curve date; `calendar` = settlement days; RUSFAR and RUONIA fixings in a `FixingHistory(index="ruonia")` on the benchmark's publication calendar, the key rate in `index="key_rate"`; `assumed_end_date` required for, and only for, an open repo. |
+| `RepoRiskEngine(request, curve_cache=ShockedCurveCache())` | `.valuation() -> RepoValuation` (PV and legs, `S1`, `S2` and its source, known and accrued interest, current repurchase amount, repurchase price per bond, `RepoCashflow`s, `RepoCollateralReference`), `.risk(bump_bp=1, difference="central") -> RepoRiskResult` (`RepoCurveRisk` per role), `.reprice(RepoScenario) -> RepoScenarioResult`, `.second_order(bump_bp=1) -> RepoSecondOrderRisk` (11 or 22 factors), `.carry(horizon_date) -> RepoCarry`. |
+| `RepoScenario(discount_shifts_bp, projection_shifts_bp)`, `.parallel(discount_bp=0, projection_bp=0)` | Absolute bp bucket shifts; a fixed or single-curve repo rejects projection shifts. |
+| `repo_factor_risk(risk, *, discount_curve_id, projection_curve_id=None, second_order=None) -> FactorRisk` | `IR\|<discount>\|<bucket>` (and `IR\|<projection>\|<bucket>`); central only. |
+| `repo_carry(request, *, horizon_date, curve_cache=None) -> RepoCarry` | Interest carry over `(valuation, horizon]`, received flows, forward PV and PV carry. |
+| `repo_start_amount(quantity, dirty_price_rub_per_bond, discount_pct, *, decimals=2)`, `repo_initial_discount_pct(start_amount_rub, quantity, dirty_price_rub_per_bond)`, `repo_end_amount(start_amount_rub, rate, start_date, end_date, day_basis, *, decimals)` | MOEX Part III 1.5.8.2 and 1.5.8.5. |
+| `REPO_MODEL_VERSION`, `REPO_SECOND_ORDER_MODEL_VERSION` | `rub-repo-leg-v1`, `rub-repo-leg-second-order-v1`. |
+
+`benchmarks/repo_bench.py --positions 2000` times 1000 fixed and 1000 RUSFAR repos.
+
 ## Cross-currency swaps (package 7)
 
 CNY/RUB swaps against RUONIA, module `rub_fixed_income.xccy`; see [xccy](xccy.md).

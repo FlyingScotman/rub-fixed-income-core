@@ -1,5 +1,61 @@
 # Changelog
 
+## 0.28.0 — repo and reverse-repo legs
+
+Package 6 (core part), instrument valuation only: desk funding economics stay in the
+backend's `desk_rules`. No pinned hash or existing number changes. Repo legs are not yet
+in `value_portfolio` (BACKLOG #94).
+
+- **Repo and reverse-repo legs** (`rub_fixed_income.repo`, package 6, instrument
+  valuation only; `docs/repo.md`).
+  - `RepoTrade(trade_id, side, start_date, end_date, start_amount_rub, rate, amount_rounding_decimals, collateral=None, cash_adjustments=(), currency="RUB")`:
+    `reverse_repo` lends cash, `repo` borrows it; `end_date=None` is an open repo,
+    valued to an explicit `RepoRiskRequest(assumed_end_date=)`.
+  - `FixedRepoRate(rate, day_basis, interest="simple")`: MOEX Trading Rules Part III
+    1.5.8.5, `S2 = S1 (1 + R (T365/365 + T366/366))`; `interest="capitalised"` credits
+    the interest on every settlement day.
+  - `FloatingRepoRate(benchmark, spread, day_basis, observation, projection_day_count, interest="simple", nonpositive_rate_replacement=None)`:
+    RUSFAR or RUONIA of the previous settlement day (the last published value on days
+    without one), or the key rate in force on each calendar day, plus a simple spread;
+    simple (`S2 = S1 (1 + sum (r_i + s) w_i)`) or capitalised on settlement days
+    (MOEX FRPO open repo); the MOEX KSU rule `r + s <= 0 -> 0.01 %`. Known fixings come
+    from a read-only `FixingHistory` (RUSFAR in `index="ruonia"`, its daily-publication
+    rules, on the RUSFAR calculation calendar); the rest are projection-curve overnight
+    forwards, memoised on shared shocked curves with `floating`'s keys.
+  - `RepoDayBasis`: `ACT/365-366` (each day of `(start, end]` over its calendar year:
+    MOEX `T365/T366`, NFA's RUB default), `ACT/365F`, `ACT/360`.
+  - `RepoCollateral(instrument_id, quantity, initial_discount_pct, pool)` and
+    `RepoCollateralReference` (market value, exposure, coverage): a separate position
+    reference, never in the PV or risk; `RepoCashAdjustment` for explicit margin calls,
+    income compensation and repurchase adjustments (NFA 8, 10.1, 10.2).
+  - `RepoRiskEngine`: `.valuation()` (PV of the remaining cash legs on the RUB discount
+    curve, `S1`, `S2` and its source, known and accrued interest, current repurchase
+    amount, repurchase price per bond, cashflows), `.risk()` (bucket DV01 per curve
+    role, central), `.reprice(RepoScenario)`, `.second_order()` (11 or 22 factors),
+    `.carry(horizon)` (accrual and forward-PV carry); `repo_factor_risk` to
+    `IR|<discount>|<bucket>` and `IR|<projection>|<bucket>`; `repo_carry`.
+  - `repo_start_amount`, `repo_initial_discount_pct` (MOEX 1.5.8.2,
+    `S = (1 - D/100) Q (P0 + a0)`), `repo_end_amount` (1.5.8.5).
+  - Model versions `rub-repo-leg-v1`, `rub-repo-leg-second-order-v1`.
+- **MOEX repo goldens** (`tests/test_moex_repo_goldens.py`, fixture
+  `tests/fixtures/moex_repo/`): the compounding RUSFAR open repo of MOEX's 10 September
+  2026 presentation on the ISS RUSFAR history to the kopeck (credits 3 884,93,
+  3 905,63, 11 885,96; `S2` 10 019 676,52), its slide 4 balances and slide 10
+  «сумма к исполнению» 30 011 580,82; the EQM06 key-rate CCP repo example (known parts
+  and `S2` of report days 1–3 and 6–8 within half a kopeck).
+- `benchmarks/repo_bench.py` (2k positions). Sources with SHA-256 in
+  `docs/sources/repo_moex/README.md`.
+
+### Documented
+
+- `project_financed_bond` compounds daily (`(1 + r/365)^days`) and is neither a repo
+  contract nor the desk's TRADING funding rule (simple interest on the previous clean
+  MV, backend `desk_rules`; local audit F13). Unchanged; `docs/CONVENTIONS.md`,
+  `docs/repo.md`.
+- Booking rule: the cash borrower keeps the bond as an ordinary bond position, the cash
+  lender has none; the collateral reference never enters PV or risk, so nothing is
+  counted twice.
+
 ## 0.27.0 — OFZ, RUONIA and key-rate futures
 
 Package 5 (rest, core part). New modules `rate_futures` and `ofz_futures`

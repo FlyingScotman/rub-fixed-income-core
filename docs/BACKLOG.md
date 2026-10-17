@@ -435,3 +435,29 @@ other repositories and must be changed there, not in this core.
 93. **First KEYRATE expiry (KKV6, 2026-10-23).** Add its final settlement to the goldens:
     it should equal the key rate decided that day.
 
+## Repo legs — 0.28.0
+
+94. **Repo in `value_portfolio`.** Needs a repo instrument form (trade, collateral
+    reference), discount and projection curve, calendar and fixing IDs, an open-repo end
+    policy, one engine per trade on the shared shocked-curve cache, result fields (S1,
+    S2, accrued interest, repurchase amount, collateral exposure and coverage), the
+    booking rule (the collateral bond is booked separately by the cash borrower) and
+    coverage codes; result contract `v3`.
+95. **A typed RUSFAR fixing index.** `FixingHistory.index` names only `ruonia` and
+    `key_rate`; repo takes RUSFAR as `index="ruonia"` with its publication rules. Add
+    `rusfar` (and `rusfar_cny`); it changes no number. *(downstream)* The hub needs the
+    RUSFAR calculation calendar (none on non-trading days, trading weekends and the last
+    trading day of the year).
+96. **Term RUSFAR and other currencies.** RUSFAR 1W / 2W / 1M / 3M resets; RUSFARCNY and
+    USD / EUR / CNY repos (ACT/360 per NFA) with FX on the cash leg.
+97. **Capitalised key-rate repo (MOEX FKPO).** Its compounding applies the key rate of the
+    closing settlement day to the whole period; rejected today.
+98. **NCC Clearing Rules** (`nkcbank.ru`, refused): compounding repo clause 21.12.2,
+    margin calls, income transfers on CCP repo, the forecast rate of the risk parameters.
+    Margins and income are explicit inputs today.
+99. **Repo optionality.** Early termination, the open-repo end (an explicit assumption
+    today), the value of the KSU 0.01 % floor near zero (rejected today).
+100. **Floating repo Hessian speed and carry explain.** 22 factors cost about 10.7 ms per
+     position warm; the interest is linear in the forwards, so an analytic or sparse
+     projection block would cut it. Carry has no rolldown term or P&L explain.
+

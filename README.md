@@ -33,6 +33,7 @@ linear guardrail; they do not call the exact solver.
 - [CDS](docs/cds.md) — ISDA Standard Model single-name CDS: hazard bootstrap, CS01, JTD
 - [XCCY](docs/xccy.md) — CNY/RUB cross-currency swaps vs RUONIA and the CNY curve bootstrap
 - [Rate futures](docs/rate-futures.md) — RUONIA, RUONIA index, KEYRATE and OFZ basket futures
+- [Repo](docs/repo.md) — repo and reverse-repo legs: fixed, RUSFAR / RUONIA / key-rate floating, collateral reference
 - [Backlog](docs/BACKLOG.md) — remaining fixes and downstream migrations
 - [Changelog](CHANGELOG.md)
 
