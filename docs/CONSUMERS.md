@@ -24,6 +24,16 @@ The desk backend is the target runtime consumer (`docs/SYSTEM_CONTEXT.md`). Its 
 is `value_portfolio` over `Instrument`, `MarketSnapshot` and `Position`, which its hub adapter
 builds; results are stored as `rub-portfolio-risk-result.v2`. It pins a tagged release.
 
+**From 0.17.0** the adapter should choose the coupon leg by board, or MOEX accrued interest
+is missed by a kopeck on about one corporate bond in ten:
+
+- OFZ: `FixedCouponLeg` (pro rata on the amount);
+- corporate bonds: `RateAccrualCouponLeg` with `AccrualBasis.RATE_ACT_365` and each
+  coupon's bondization `valueprc / 100` as `RateCouponPeriod.rate`;
+- ACT/360 or 30/360 issues: the matching basis, from the issue terms.
+
+Existing `FixedCouponLeg` instruments keep their serialised form and hashes.
+
 ## Deprecations in 0.12.0 and what consumers should move to
 
 Nothing is removed before 1.0. Each call below now emits a `DeprecationWarning` (hidden by

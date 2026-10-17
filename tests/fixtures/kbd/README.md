@@ -10,6 +10,7 @@ Raw public MOEX ISS responses of `/iss/engines/stock/zcyc.json?iss.only=params,y
 | `zcyc_2022-01-03.json` | `zcyc_2022-01-03.json` | 2022-01-03 18:39:54, EOD |
 | `zcyc_2026-10-15.json` | `zcyc_2026-10-15.json` | 2026-10-15 18:54:59, EOD |
 | `zcyc_2026-10-16_intraday.json` | `zcyc_current.json` | 2026-10-16 10:23:52, intraday |
+| `zcyc_2026-10-16.json` | fetched from ISS on 2026-10-17 (`date=2026-10-16`), not from the hub | 2026-10-16 18:54:59, EOD |
 
 `yearyields` are MOEX's published effective annual yields (%, 4 decimals = 0.01 bp). Core
 keeps its own copies so its CI never checks out the hub (system doc 02 §7). Core

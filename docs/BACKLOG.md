@@ -164,24 +164,37 @@ other repositories and must be changed there, not in this core.
     the `clean_price_pct_to_dirty_amount` alias. Its `price_cashflows`/`solve_z_spread`
     calls without `settlement_date` still warn; moving them is a behaviour change for the
     store's owner before core 1.0.
-36. **MOEX golden gaps (0.15.0).** `tests/test_moex_goldens.py` records two differences:
-    - **USD bond RU000A0JXTS9 (board TQOD).** MOEX accrues 30/360 (116 of 180 days:
-      2738.89); core's split accrual counts actual days (2740.44). A day-count field on
-      the coupon leg would close this. It matters only for non-RUB bonds (package 3).
-    - **Short put bond RU000A0JS4Z7.** MOEX gives 9.51 % to the offer at
-      `PREVWAPRICE` 107.93; core gives 9.30–9.39 % on the same flows. Durations agree.
-      Find MOEX's method for bonds under a year to the offer (simple yield? offer-date
-      lag?) before relying on core yields for such bonds.
-    - **Coverage.** The golden set should grow to about 12 bonds on fixed EOD dates once
-      the hub archives EOD ISS bond snapshots.
+36. *(done in 0.17.0)* **MOEX golden gaps (0.15.0).**
+    - **USD bond RU000A0JXTS9 (30/360).** Closed: `RateAccrualCouponLeg` with
+      `AccrualBasis.RATE_30_360` gives MOEX's 2738.89. EOD data showed the wider rule:
+      corporate bonds accrue on the rate (ACT/365, a kopeck off pro rata in about one
+      case in ten), OFZ pro rata on the amount.
+    - **Short put bond RU000A0JS4Z7.** Not a core error. For put bonds MOEX's `YIELD` and
+      `YIELDATWAP` / `YIELDATPREVWAPRICE` are a different, higher measure. The effective
+      yield to the offer is `YIELDTOOFFER` (at `CLOSE`) and `trades_yields.EFFECTIVEYIELD`,
+      and core reproduces both. The other measure is still unidentified; do not compare
+      core yields with it.
+    - **Coverage.** 18 bonds on the 2026-10-15 EOD (`tests/test_moex_eod_goldens.py`).
+      The backend adapter must choose the leg type by board: `FixedCouponLeg` for OFZ,
+      `RateAccrualCouponLeg` with the bondization `valueprc` for corporates.
 37. **RUONIA OIS exchange spec (`rub_ruonia_ois_moex_v2`, audit F08).**
     - **What is known.** Only a summary survives in this checkout: TOM start, modified
       following, ACT/ACT with a stub, +1 business-day payment lag. The fixed-leg
       frequency, float compounding (lookback or lockout) and the stub side are not stated.
     - **What is missing.** The MOEX methodology files (`fs.moex.com/files/26130`,
-      `27002`) and NFA standard terms could not be fetched from the build environment.
+      `27002`) and NFA standard terms. On 2026-10-17 the build environment reaches
+      `iss.moex.com` and `www.cbr.ru`, but `fs.moex.com`, `www.moex.com` and `nfa.ru`
+      are still refused, and ISS does not carry the specification text.
     - **To do.** With the text: add spot and payment lags and stub handling to the
       bootstrap's par-rate leg. New convention fields must stay out of existing curve
       identities. Then register the spec and test par repricing on the hub's ratescalcs
       snapshot (17 tenors, `ois_quotes`).
-
+38. **Yield time basis of non-RUB bonds (package 3).** On the 2026-10-15 EOD, some USD
+    replacement bonds on TQOD are quoted on an ACT/360 time basis (RU000A105RH2,
+    RU000A108P79, RU000A105R62, RU000A105JT4, RU000A105A95, RU000A1059N9, RU000A1059P4),
+    others on ACT/365F (RU000A10A877, RU000A108Y11, RU000A107B43, RU000A106G56). Accrual
+    and yield basis do not coincide: several ACT/360-quoted bonds accrue 30/360. Core
+    solves yields on ACT/365F only, so it is about 1.4 % of the yield high on the first
+    group (`test_usd_bond_yield_time_basis_is_a_known_gap`). ISS does not publish the
+    basis; it has to come from the issue terms (backend static data), then be a yield
+    convention input.

@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.17.0 — rate-based accrued interest and MOEX end-of-day goldens
+
+Roadmap item 0.10 (the golden bond set) and BACKLOG #36. New API only; existing instruments,
+their serialised form and every pinned hash are unchanged.
+
+- **Accrued interest on the coupon rate.** MOEX EOD data show two accrual rules:
+  - OFZ accrue pro rata on the coupon amount (the Minfin rule, as `FixedCouponLeg` already
+    does);
+  - corporate bonds accrue `face * rate * days / 365` on the face outstanding at the period
+    start. When the coupon amount was rounded, that can be a kopeck away from pro rata. In
+    a sample of 145 RUB corporates on 2026-10-15, 144 match this rule, and 16 of them were
+    a kopeck off under the old one.
+
+  New types:
+  - `RateCouponPeriod`: a `CouponPeriod` plus its annual `rate`;
+  - `RateAccrualCouponLeg(periods, accrual_basis)`;
+  - `AccrualBasis`: `RATE_ACT_365` (MOEX corporates), `RATE_ACT_360`, and `RATE_30_360`
+    (30/360 bond basis, used by replacement bonds of USD eurobonds).
+
+  `Instrument.accrued` uses the leg's basis, and so do `value_portfolio` and the horizon
+  functions. Cash flows are the same as with `FixedCouponLeg`. These are new types, not
+  new fields, so a 0.16.0 `Instrument` decodes and hashes exactly as before.
+- **MOEX end-of-day goldens** (`tests/test_moex_eod_goldens.py`, fixtures in
+  `tests/fixtures/moex_eod/` fetched from ISS). 18 bonds, trade date 2026-10-15:
+  - `ACCINT` to the kopeck for all of them: 5 OFZ-PD, corporates, 2 amortizers, a call
+    bond, 5 put bonds, an ACT/360 bond, 2 USD bonds on 30/360. Each board needs its own
+    rule, and the tests show the other rule a kopeck off.
+  - `YIELDATWAP` within 0.5 bp and `DURATION` within a day for 12 bonds to maturity (a
+    call is not assumed exercised, as on MOEX). For OFZ, also `YIELDCLOSE` at `CLOSE`, and
+    end to end through `value_portfolio` on the EOD KBD.
+  - Put bonds: `YIELDTOOFFER` at `CLOSE` within 0.06 bp and `DURATION` to the offer.
+  - Per trade (RU000A10C5Y0, session of 17 October): `EFFECTIVEYIELD` to the offer within
+    0.006 bp, `DURATION`, and `GSPREADBP` within 0.5 bp on the KBD the exchange used
+    (`tests/fixtures/kbd/zcyc_2026-10-16.json`).
+- **BACKLOG #36 resolved.**
+  - The 30/360 gap on RU000A0JXTS9 is closed with `RATE_30_360`.
+  - The short put "gap" is not a core error. For put bonds, MOEX's `YIELD` and
+    `YIELDATWAP` / `YIELDATPREVWAPRICE` are a different, higher measure. The effective
+    yield to the offer is published as `YIELDTOOFFER` and `trades_yields.EFFECTIVEYIELD`,
+    and core reproduces both.
+  - Recorded, not built: some USD bonds are quoted on an ACT/360 time basis, others on
+    ACT/365F, and ISS does not say which (BACKLOG #38, package 3).
+
 ## 0.16.0 — tenor resolver
 
 Roadmap item 0.5, part. New API only.

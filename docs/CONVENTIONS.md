@@ -140,6 +140,23 @@ coupon whose `[accrual_start, accrual_end)` contains the settlement date:
 period end gives 0. A settlement before the first accrual period is rejected
 (`InvalidTerms`); one after the last coupon gives 0.
 
+### Rate-based accrued interest (0.17.0)
+
+MOEX accrues bonds by two rules, and they can differ by a kopeck when the coupon amount
+was rounded:
+
+| Bonds | Rule | Core type |
+|---|---|---|
+| OFZ (Minfin) | `amount * elapsed / period days` | `FixedCouponLeg` |
+| Corporate bonds | `face * rate * elapsed / 365` | `RateAccrualCouponLeg(..., AccrualBasis.RATE_ACT_365)` |
+| Issues with ACT/360 terms | `face * rate * elapsed / 360` | `AccrualBasis.RATE_ACT_360` |
+| Replacement bonds of USD eurobonds | `face * rate * days30 / 360`, 30/360 bond basis | `AccrualBasis.RATE_30_360` |
+
+`face` is the face outstanding at the period start, after any amortization paid on or
+before it. `rate` is the decimal annual rate of the period (`RateCouponPeriod.rate`, the
+bondization `valueprc` / 100). The result is rounded half-up to 0.01. The coupon paid is
+always the period's `amount`. Evidence: `tests/fixtures/moex_eod/README.md`.
+
 ## `analyze_bond` conventions
 
 - `analyze_bond` (V1, frozen): yield = effective annual ACT/365F; Z = **continuous** ACT/365F

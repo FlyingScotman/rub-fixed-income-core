@@ -7,6 +7,7 @@ from the exchange's bondization data the way a backend adapter would.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,7 @@ from test_kbd import load
 
 from rub_fixed_income import (
     AccountingCategory,
+    AccrualBasis,
     BondPriceObservation,
     BusinessCalendar,
     CalendarEntry,
@@ -30,6 +32,8 @@ from rub_fixed_income import (
     Position,
     PrincipalLeg,
     ProductType,
+    RateAccrualCouponLeg,
+    RateCouponPeriod,
     Redemption,
     ValuationPolicy,
     YieldRequest,
@@ -109,10 +113,29 @@ def test_accrued_interest_matches_moex_to_the_kopeck(secid: str, board: str) -> 
     assert instrument(secid).accrued(SETTLE) == pytest.approx(published["ACCRUEDINT"], abs=1e-9)
 
 
-def test_thirty_360_dollar_bond_is_a_known_accrual_gap() -> None:
+def test_thirty_360_dollar_bond_accrues_on_the_rate() -> None:
+    """MOEX accrues RU000A0JXTS9 on 30/360 (116 of 360 days at 8.5 %), not pro rata."""
     published = SECURITIES[("RU000A0JXTS9", "TQOD")]["ACCRUEDINT"]
-    ours = instrument("RU000A0JXTS9").accrued(SETTLE)
-    assert published == 2738.89 and ours == 2740.44  # 30/360 vs actual days (BACKLOG #36)
+    assert instrument("RU000A0JXTS9").accrued(SETTLE) == 2740.44  # pro rata on actual days
+    fixed = instrument("RU000A0JXTS9")
+    raw = json.loads((FIXTURES / "bondization" / "RU000A0JXTS9.json").read_text(encoding="utf-8"))
+    rates = {c["coupondate"]: c["valueprc"] for c in rows(raw["coupons"])}
+    assert isinstance(fixed.coupon_leg, FixedCouponLeg)
+    leg = RateAccrualCouponLeg(
+        tuple(
+            RateCouponPeriod(
+                p.accrual_start,
+                p.accrual_end,
+                p.payment_date,
+                p.amount,
+                rates[p.payment_date.isoformat()] / 100.0,
+            )
+            for p in fixed.coupon_leg.periods
+        ),
+        AccrualBasis.RATE_30_360,
+    )
+    thirty_360 = replace(fixed, currency="USD", coupon_leg=leg)
+    assert thirty_360.accrued(SETTLE) == published == 2738.89
 
 
 def yield_and_duration(
@@ -145,7 +168,9 @@ def test_put_bond_duration_to_the_offer_matches_moex() -> None:
     md = MARKETDATA[("RU000A0JS4Z7", "TQCB")]
     _, duration = yield_and_duration(bond, md["MARKETPRICE"], SETTLE, offer)
     assert duration == pytest.approx(md["DURATION"], abs=1.0)
-    # Yield to the offer is a known gap: MOEX 9.51 % at PREVWAPRICE, core ~9.3-9.4 %.
+    # MOEX's YIELDATPREVWAPRICE (9.51 %) is not the effective yield to the offer for a
+    # put bond; that one is YIELDTOOFFER / trades_yields.EFFECTIVEYIELD, which core
+    # reproduces (tests/test_moex_eod_goldens.py, BACKLOG #36).
     at_prev, _ = yield_and_duration(bond, 107.93, PREV_SETTLE, offer)
     assert 9.2 < at_prev < 9.45
 
