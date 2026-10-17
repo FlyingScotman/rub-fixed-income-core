@@ -10,8 +10,10 @@ through :func:`rub_fixed_income.serialization.to_dict` / ``from_dict``.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
+from decimal import ROUND_HALF_UP, Decimal
 from enum import Enum
 from itertools import pairwise
 from typing import Literal
@@ -26,6 +28,7 @@ from .kbd import ZcycParameters
 
 __all__ = [
     "AccountingCategory",
+    "AccrualBasis",
     "BondPriceObservation",
     "CalendarEntry",
     "CouponPeriod",
@@ -41,6 +44,8 @@ __all__ = [
     "Position",
     "PrincipalLeg",
     "ProductType",
+    "RateAccrualCouponLeg",
+    "RateCouponPeriod",
     "Redemption",
     "SnapshotEvidence",
 ]
@@ -118,6 +123,26 @@ class SnapshotEvidence:
             raise ValueError("snapshot is stale, future-known or has inconsistent timestamps")
 
 
+def _check_coupon_period(
+    accrual_start: date, accrual_end: date, payment_date: date, amount: float
+) -> None:
+    finite_money(amount, "coupon amount")
+    if amount < 0.0:
+        raise InvalidTerms("coupon amount cannot be negative")
+    if accrual_end <= accrual_start:
+        raise InvalidTerms("coupon accrual period must have positive length")
+    if payment_date < accrual_end:
+        raise InvalidTerms("a coupon cannot be paid before its accrual period ends")
+
+
+def _check_coupon_order(periods: Sequence[CouponPeriod | RateCouponPeriod]) -> None:
+    for left, right in pairwise(periods):
+        if right.accrual_start < left.accrual_end:
+            raise InvalidTerms("coupon periods must be ordered and must not overlap")
+        if right.payment_date <= left.payment_date:
+            raise InvalidTerms("coupon payment dates must increase")
+
+
 @dataclass(frozen=True)
 class CouponPeriod:
     """A coupon known as a fact: amount per bond for ``[accrual_start, accrual_end)``."""
@@ -128,26 +153,86 @@ class CouponPeriod:
     amount: float
 
     def __post_init__(self) -> None:
-        finite_money(self.amount, "coupon amount")
-        if self.amount < 0.0:
-            raise InvalidTerms("coupon amount cannot be negative")
-        if self.accrual_end <= self.accrual_start:
-            raise InvalidTerms("coupon accrual period must have positive length")
-        if self.payment_date < self.accrual_end:
-            raise InvalidTerms("a coupon cannot be paid before its accrual period ends")
+        _check_coupon_period(self.accrual_start, self.accrual_end, self.payment_date, self.amount)
 
 
 @dataclass(frozen=True)
 class FixedCouponLeg:
+    """Known coupons accruing pro rata on the amount: ``amount * elapsed / period days``.
+
+    This is the Minfin rule for OFZ. MOEX accrues corporate bonds from the coupon
+    rate instead; use :class:`RateAccrualCouponLeg` for those.
+    """
+
     periods: tuple[CouponPeriod, ...]
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "periods", tuple(self.periods))
-        for left, right in pairwise(self.periods):
-            if right.accrual_start < left.accrual_end:
-                raise InvalidTerms("coupon periods must be ordered and must not overlap")
-            if right.payment_date <= left.payment_date:
-                raise InvalidTerms("coupon payment dates must increase")
+        _check_coupon_order(self.periods)
+
+
+class AccrualBasis(Enum):
+    """How a :class:`RateAccrualCouponLeg` accrues inside a period.
+
+    Each accrues ``face * rate * days / year`` on the face outstanding at the period
+    start, rounded half-up to 0.01:
+
+    - ``RATE_ACT_365``: actual days over 365 (MOEX corporate bonds);
+    - ``RATE_ACT_360``: actual days over 360 (a few bonds whose terms say so);
+    - ``RATE_30_360``: 30/360 bond basis days over 360 (replacement bonds of USD
+      eurobonds).
+    """
+
+    RATE_ACT_365 = "rate:ACT/365F"
+    RATE_ACT_360 = "rate:ACT/360"
+    RATE_30_360 = "rate:30/360"
+
+    def days(self, start: date, end: date) -> tuple[int, int]:
+        """Accrued days from ``start`` to ``end`` and the days in a year."""
+        if self is AccrualBasis.RATE_ACT_365:
+            return (end - start).days, 365
+        if self is AccrualBasis.RATE_ACT_360:
+            return (end - start).days, 360
+        # 30/360 bond basis (ISDA 2006 4.16(f)): D1 31 -> 30; D2 31 -> 30 when D1 is 30.
+        d1 = min(start.day, 30)
+        d2 = 30 if end.day == 31 and d1 == 30 else end.day
+        return 360 * (end.year - start.year) + 30 * (end.month - start.month) + d2 - d1, 360
+
+
+@dataclass(frozen=True)
+class RateCouponPeriod:
+    """A known coupon with its annual ``rate`` (decimal), which drives the accrual."""
+
+    accrual_start: date
+    accrual_end: date
+    payment_date: date
+    amount: float
+    rate: float
+
+    def __post_init__(self) -> None:
+        _check_coupon_period(self.accrual_start, self.accrual_end, self.payment_date, self.amount)
+        finite_money(self.rate, "coupon rate")
+        if self.rate < 0.0:
+            raise InvalidTerms("coupon rate cannot be negative")
+
+
+@dataclass(frozen=True)
+class RateAccrualCouponLeg:
+    """Known coupons whose accrued interest comes from the rate, not the amount.
+
+    Coupons are paid as their ``amount``; accrued interest is computed by
+    ``accrual_basis``. MOEX accrues corporate bonds this way, so a period whose coupon
+    amount was rounded can accrue a kopeck away from ``amount * elapsed / period``.
+    """
+
+    periods: tuple[RateCouponPeriod, ...]
+    accrual_basis: AccrualBasis
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "periods", tuple(self.periods))
+        if not isinstance(self.accrual_basis, AccrualBasis):
+            raise TypeError("accrual_basis must be an AccrualBasis")
+        _check_coupon_order(self.periods)
 
 
 @dataclass(frozen=True)
@@ -225,7 +310,7 @@ class Instrument:
     product: ProductType
     currency: str
     initial_face: float
-    coupon_leg: FixedCouponLeg | FloatingCouponLeg | None
+    coupon_leg: FixedCouponLeg | RateAccrualCouponLeg | FloatingCouponLeg | None
     principal_leg: PrincipalLeg
     calendar_id: str
     offers: tuple[Offer, ...] = ()
@@ -314,8 +399,8 @@ class Instrument:
             if horizon is not None and horizon != offer.offer_date:
                 raise ValueError("an offer horizon must be the offer date")
             horizon = offer.offer_date
-        coupons: dict[date, CouponPeriod] = {}
-        if isinstance(self.coupon_leg, FixedCouponLeg):
+        coupons: dict[date, CouponPeriod | RateCouponPeriod] = {}
+        if isinstance(self.coupon_leg, (FixedCouponLeg, RateAccrualCouponLeg)):
             coupons = {p.payment_date: p for p in self.coupon_leg.periods}
         principal: dict[date, Redemption] = {
             r.payment_date: r for r in self.principal_leg.redemptions
@@ -358,10 +443,29 @@ class Instrument:
         return tuple(flows)
 
     def accrued(self, settlement: date) -> float:
-        """Accrued coupon per bond at ``settlement``, rounded half-up to 0.01."""
+        """Accrued coupon per bond at ``settlement``, rounded half-up to 0.01.
+
+        A :class:`FixedCouponLeg` accrues pro rata on the coupon amount; a
+        :class:`RateAccrualCouponLeg` by its ``accrual_basis``. Settlement on a period
+        end gives 0, as does settlement after the last period.
+        """
         if isinstance(self.coupon_leg, FloatingCouponLeg):
             raise InvalidTerms("floating accrued interest needs fixings; use the floating leg")
+        if isinstance(self.coupon_leg, RateAccrualCouponLeg):
+            return self._rate_accrued(self.coupon_leg, settlement)
         return accrued_interest(self.cashflows(), settlement)
+
+    def _rate_accrued(self, leg: RateAccrualCouponLeg, settlement: date) -> float:
+        periods = [p for p in leg.periods if p.amount > 0.0]
+        for period in periods:
+            if period.accrual_start <= settlement < period.accrual_end:
+                days, year = leg.accrual_basis.days(period.accrual_start, settlement)
+                face = Decimal(repr(self.outstanding_face(period.accrual_start)))
+                raw = face * Decimal(repr(period.rate)) * days / year
+                return float(raw.quantize(Decimal("0.01"), ROUND_HALF_UP))
+        if not periods or settlement >= periods[-1].accrual_end:
+            return 0.0
+        raise InvalidTerms("no coupon accrual period contains the settlement date")
 
 
 @dataclass(frozen=True)

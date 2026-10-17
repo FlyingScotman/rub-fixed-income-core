@@ -77,6 +77,7 @@ from .dates import BusinessCalendar
 from .discount import CurveBootstrapRequest, DiscountCurve, OisQuote, bootstrap_discount_curve
 from .domain import (
     AccountingCategory,
+    AccrualBasis,
     BondPriceObservation,
     CalendarEntry,
     CouponPeriod,
@@ -92,6 +93,8 @@ from .domain import (
     Position,
     PrincipalLeg,
     ProductType,
+    RateAccrualCouponLeg,
+    RateCouponPeriod,
     Redemption,
     SnapshotEvidence,
 )
@@ -246,6 +249,7 @@ __all__ = [
     "V1_YIELD_CONVENTION",
     "V1_Z_SPREAD_CONVENTION",
     "AccountingCategory",
+    "AccrualBasis",
     "AccumulationPeriod",
     "BondAnalyticsResultV1",
     "BondAnalyticsResultV2",
@@ -344,6 +348,8 @@ __all__ = [
     "PreparedLocalBondRisk",
     "PrincipalLeg",
     "ProductType",
+    "RateAccrualCouponLeg",
+    "RateCouponPeriod",
     "Redemption",
     "Rejection",
     "RiskRunContext",
