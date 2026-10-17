@@ -252,6 +252,26 @@ are omitted from the canonical JSON while at their defaults (`canonical.OMIT_IF_
 so RUB-only results, policies, scenarios and instruments keep their bytes and hashes.
 See `CONVENTIONS.md` (Non-RUB bonds and FX) and `risk.md`.
 
+## Inflation-linked bonds (package 9a)
+
+Details, evidence and gaps: [linkers.md](linkers.md).
+
+| Name | Description |
+| --- | --- |
+| `CpiObservation(month, value, published_on)`, `CpiSeries(series_id, source_id, as_of, observations)` | Point-in-time monthly CPI levels; `.level(month)` (`MissingMarketData` when unpublished), `.known_on(date)`, `.first_month`, `.last_month`, `.content_sha256`. |
+| `CpiIndexation(series_id, base_date, lag_months, base_index=None, interpolation="daily_linear", nominal_quantum=Decimal("0.01"))` | OFZ-IN rule: `INDEX = CPI(M-lag-1) + (CPI(M-lag) - CPI(M-lag-1)) * (n-1)/d`, face `= initial * INDEX / INDEX_base`. `.reference_months`, `.reference_index`, `.index_ratio`, `.nominal`, `.identifier`. |
+| `IndexedCouponPeriod(accrual_start, accrual_end, payment_date, rate)`, `IndexedCouponLeg(periods, day_count)`, `IndexedPrincipalLeg(maturity_date, indexation, floor_at_initial_face)` | New `Instrument` legs, for `ProductType.INFLATION_LINKED_BOND` only. `Instrument.is_indexed`; `cashflows()` / `accrued()` / `outstanding_face()` raise `InvalidTerms` for these. |
+| `indexed_coupon_amount(nominal, period, day_count)`, `indexed_accrued(nominal, period, date, day_count)` | Formulas (4) and (5), rounded half-up to 0.01. |
+| `linker_nominal`, `linker_accrued`, `linker_coupon`, `linker_redemption`, `real_cashflows` | Face, accrued, coupons and real flows (at the settlement-date face) of an indexed instrument from a `CpiSeries`. |
+| `MarketSnapshot(..., cpi=())`, `.cpi_series(id)` | CPI series in the snapshot; omitted from the hash when empty. |
+| `real_factor(curve_id, bucket)`, `linker_factor_risk(risk, real_curve_id, second_order=None)` | New factor type `REAL\|<curve_id>\|<bucket>`. |
+| `CpiUse`, `PortfolioRiskResult.cpi` | CPI provenance of a valuation (omitted when empty). |
+| `INFLATION_MODEL_VERSION` | `rub-cpi-indexation-v1`. |
+
+`value_portfolio` values a linker on the real curve (`rub_real_discount_factors_v1`) that
+`curve_overrides` names for it; nominal scenarios report linker rows as
+`UNSUPPORTED_PRODUCT`. `benchmarks/linker_bench.py` times 2k linkers.
+
 ## Callables, perpetuals and pass-throughs (package 9b)
 
 Details and formulas: [callables.md](callables.md).

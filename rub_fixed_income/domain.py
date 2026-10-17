@@ -26,6 +26,7 @@ from .dates import BusinessCalendar
 from .discount import CurveBootstrapRequest, DiscountCurve
 from .errors import InvalidTerms, MissingMarketData
 from .floating import FixingHistory, FloatingCouponPeriod, FloatingCouponRule
+from .inflation import CpiSeries, IndexedCouponLeg, IndexedPrincipalLeg
 from .kbd import ZcycParameters
 
 __all__ = [
@@ -307,6 +308,10 @@ class Instrument:
     leg whose redemptions sum to ``initial_face`` (empty for a perpetual), offers,
     and the calendar ID under which settlement is computed.
 
+    An inflation-linked bond (package 9a) carries an :class:`IndexedPrincipalLeg` and an
+    :class:`IndexedCouponLeg` instead: its face grows with a CPI series, so its flows,
+    face and accrued need market data and come from :mod:`rub_fixed_income.linkers`.
+
     ``yield_convention`` is the issue's yield quote basis, independent of the accrual
     basis: the default is MOEX's effective annual ACT/365F. Some USD replacement bonds
     are quoted on ACT/360 time while they accrue 30/360 (BACKLOG #38). It comes from
@@ -318,8 +323,10 @@ class Instrument:
     product: ProductType
     currency: str
     initial_face: float
-    coupon_leg: FixedCouponLeg | RateAccrualCouponLeg | FloatingCouponLeg | None
-    principal_leg: PrincipalLeg
+    coupon_leg: (
+        FixedCouponLeg | RateAccrualCouponLeg | FloatingCouponLeg | IndexedCouponLeg | None
+    )
+    principal_leg: PrincipalLeg | IndexedPrincipalLeg
     calendar_id: str
     offers: tuple[Offer, ...] = ()
     settlement_lag_days: int = 1
@@ -345,6 +352,13 @@ class Instrument:
             raise TypeError("settlement_lag_days must be an int")
         if self.settlement_lag_days < 0:
             raise InvalidTerms("settlement lag cannot be negative")
+        if isinstance(self.principal_leg, IndexedPrincipalLeg) or isinstance(
+            self.coupon_leg, IndexedCouponLeg
+        ):
+            self._check_indexed()
+            return
+        if self.product is ProductType.INFLATION_LINKED_BOND:
+            raise InvalidTerms("an inflation-linked bond needs an indexed principal leg")
         redemptions = self.principal_leg.redemptions
         if redemptions:
             total = math.fsum(r.amount for r in redemptions)
@@ -359,18 +373,49 @@ class Instrument:
         ):
             raise InvalidTerms("a floating bond needs a floating coupon leg")
 
+    def _check_indexed(self) -> None:
+        principal = self.principal_leg
+        if not isinstance(principal, IndexedPrincipalLeg):
+            raise InvalidTerms("coupons on an indexed nominal need an indexed principal leg")
+        if self.product is not ProductType.INFLATION_LINKED_BOND:
+            raise InvalidTerms("an indexed principal leg belongs to an inflation-linked bond")
+        if not isinstance(self.coupon_leg, (IndexedCouponLeg, type(None))):
+            raise InvalidTerms("an indexed principal pays coupons from an indexed coupon leg")
+        if self.offers:
+            raise InvalidTerms("offers on an indexed nominal are not modelled")
+        if self.coupon_leg is not None:
+            periods = self.coupon_leg.periods
+            if periods[0].accrual_start < principal.indexation.base_date:
+                raise InvalidTerms("coupons cannot accrue before the indexation base date")
+            if periods[-1].payment_date > principal.maturity_date:
+                raise InvalidTerms("coupons cannot be paid after maturity")
+
+    @property
+    def is_indexed(self) -> bool:
+        """True when the face grows with an index (an :class:`IndexedPrincipalLeg`)."""
+        return isinstance(self.principal_leg, IndexedPrincipalLeg)
+
+    def _redemptions(self) -> tuple[Redemption, ...]:
+        if isinstance(self.principal_leg, IndexedPrincipalLeg):
+            raise InvalidTerms(
+                "an indexed nominal needs a CPI series; use rub_fixed_income.linkers"
+            )
+        return self.principal_leg.redemptions
+
     @property
     def maturity_date(self) -> date | None:
+        if isinstance(self.principal_leg, IndexedPrincipalLeg):
+            return self.principal_leg.maturity_date
         redemptions = self.principal_leg.redemptions
         return redemptions[-1].payment_date if redemptions else None
 
     @property
     def is_perpetual(self) -> bool:
-        return not self.principal_leg.redemptions
+        return self.maturity_date is None
 
     def outstanding_face(self, on: date) -> float:
         """Face per bond after every redemption paid on or before ``on``."""
-        paid = math.fsum(r.amount for r in self.principal_leg.redemptions if r.payment_date <= on)
+        paid = math.fsum(r.amount for r in self._redemptions() if r.payment_date <= on)
         return max(self.initial_face - paid, 0.0)
 
     def horizon(self, policy: HorizonPolicy, settlement: date) -> tuple[date, Offer | None]:
@@ -415,15 +460,13 @@ class Instrument:
         coupons: dict[date, CouponPeriod | RateCouponPeriod] = {}
         if isinstance(self.coupon_leg, (FixedCouponLeg, RateAccrualCouponLeg)):
             coupons = {p.payment_date: p for p in self.coupon_leg.periods}
-        principal: dict[date, Redemption] = {
-            r.payment_date: r for r in self.principal_leg.redemptions
-        }
+        principal: dict[date, Redemption] = {r.payment_date: r for r in self._redemptions()}
         if offer is not None:
             principal = {d: r for d, r in principal.items() if d < offer.offer_date}
             # Face outstanding just before the offer date, including any redemption due on it.
             remaining = self.outstanding_face(offer.offer_date) + math.fsum(
                 r.amount
-                for r in self.principal_leg.redemptions
+                for r in self._redemptions()
                 if r.payment_date == offer.offer_date
             )
             principal[offer.offer_date] = Redemption(
@@ -464,6 +507,8 @@ class Instrument:
         """
         if isinstance(self.coupon_leg, FloatingCouponLeg):
             raise InvalidTerms("floating accrued interest needs fixings; use the floating leg")
+        if isinstance(self.coupon_leg, IndexedCouponLeg):
+            raise InvalidTerms("indexed accrued interest needs a CPI series; use the linkers module")
         if isinstance(self.coupon_leg, RateAccrualCouponLeg):
             return self._rate_accrued(self.coupon_leg, settlement)
         return accrued_interest(self.cashflows(), settlement)
@@ -567,6 +612,7 @@ class MarketSnapshot:
     fx: tuple[FxRate, ...] = ()
     quotes: tuple[BondPriceObservation, ...] = ()
     evidence: tuple[SnapshotEvidence, ...] = ()
+    cpi: tuple[CpiSeries, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
 
     def __post_init__(self) -> None:
         _text(self.snapshot_id, "snapshot_id")
@@ -589,6 +635,15 @@ class MarketSnapshot:
         _unique([e.currency for e in self.fx], "FX currency")
         _unique([e.instrument_id for e in self.quotes], "quote instrument_id")
         _unique([e.snapshot_id for e in self.evidence], "evidence snapshot_id")
+        object.__setattr__(self, "cpi", tuple(sorted(self.cpi, key=lambda e: e.series_id)))
+        _unique([e.series_id for e in self.cpi], "CPI series_id")
+        for series in self.cpi:
+            if not isinstance(series, CpiSeries):
+                raise TypeError("cpi entries must be CpiSeries")
+            if series.as_of > self.business_date:
+                raise InvalidTerms(
+                    f"CPI series {series.series_id} is cut after the snapshot business date"
+                )
         if any(e.currency == "RUB" for e in self.fx):
             raise InvalidTerms("RUB has no FX rate against itself")
 
@@ -609,6 +664,12 @@ class MarketSnapshot:
             if entry.fixing_id == fixing_id:
                 return entry.history
         raise MissingMarketData(f"fixings {fixing_id!r} are not in snapshot {self.snapshot_id}")
+
+    def cpi_series(self, series_id: str) -> CpiSeries:
+        for series in self.cpi:
+            if series.series_id == series_id:
+                return series
+        raise MissingMarketData(f"CPI series {series_id!r} is not in snapshot {self.snapshot_id}")
 
     def fx_rate(self, currency: str) -> float:
         if currency == "RUB":

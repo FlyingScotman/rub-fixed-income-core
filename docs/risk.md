@@ -192,3 +192,15 @@ separate `cpr_sensitivity` (central difference per 1 pp of CPR, forward at CPR b
 bump) and is not a desk factor. Extension risk is reported by `extension_risk`
 (duration to maturity minus duration to the call, and the value change if the call is
 skipped at the yield to call).
+
+## Inflation-linked bonds (package 9a)
+
+An OFZ-IN position is a fixed-flow risk in **real** terms (`docs/linkers.md`). Its flows
+are taken at the settlement-date indexed face, held constant, and discounted on a
+caller-built real curve (`rub_real_discount_factors_v1`). Shifts of that curve's
+continuous zero rates give `REAL|<curve_id>|<bucket>`, and the own spread over it gives
+`CS`. Both are central, with the Hessian from the same bump. The identity
+`ΣREAL = −τ·PV·10⁻⁴` holds for a single-flow bond with a continuous spread
+(`tests/test_inflation.py`). CPI is not a bumped factor. Breakeven inflation is not
+modelled: the real curve absorbs it. Nominal `PortfolioScenario` shocks do not move
+linkers; their rows are `UNSUPPORTED_PRODUCT`.

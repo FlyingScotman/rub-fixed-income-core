@@ -49,6 +49,7 @@ class CurveKind(Enum):
     OIS_BOOTSTRAP = "ois_bootstrap"
     KEY_RATE_SWAP = "key_rate_swap"
     DISCOUNT_FACTORS = "discount_factors"
+    REAL_DISCOUNT_FACTORS = "real_discount_factors"
 
 
 @dataclass(frozen=True)
@@ -172,7 +173,25 @@ _FOREIGN_SPECS = tuple(
     for currency, source in _DISCOUNT_SOURCES.items()
 )
 
-CURVE_SPECS = MappingProxyType({spec.spec_id: spec for spec in (*_SPECS, *_FOREIGN_SPECS)})
+_REAL_SPECS = (
+    CurveSpec(
+        spec_id="rub_real_discount_factors_v1",
+        kind=CurveKind.REAL_DISCOUNT_FACTORS,
+        currency="RUB",
+        time_day_count=DayCount.ACT_365_FIXED,
+        interpolation="log-linear-df between the caller's nodes, flat-forward extrapolation",
+        model_version="ois-logdf-v1",
+        description="RUB real (CPI-adjusted) discount factors built upstream and passed as a "
+        "DiscountCurve dated the snapshot business date, ACT/365F curve time. Discounts the "
+        "real cash flows of inflation-linked bonds (flows at the settlement-date indexed "
+        "nominal); risk shifts its continuous zero rates as REAL|<curve_id>|<bucket>. "
+        "Core does not build or certify it, and never discounts a nominal bond on it",
+    ),
+)
+
+CURVE_SPECS = MappingProxyType(
+    {spec.spec_id: spec for spec in (*_SPECS, *_FOREIGN_SPECS, *_REAL_SPECS)}
+)
 
 
 def get_curve_spec(spec_id: str) -> CurveSpec:

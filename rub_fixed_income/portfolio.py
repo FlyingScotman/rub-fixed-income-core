@@ -51,9 +51,16 @@ from .domain import (
     ProductType,
 )
 from .errors import CoreRejection, InvalidTerms, MissingMarketData, UnsupportedProduct
-from .factors import FactorRisk, bond_factor_risk, fx_translated_factor_risk
+from .factors import (
+    FactorRisk,
+    bond_factor_risk,
+    fx_translated_factor_risk,
+    linker_factor_risk,
+)
 from .horizon import HORIZON_MODEL_VERSION, HorizonValuation, horizon_valuation
+from .inflation import IndexedPrincipalLeg
 from .kbd import KBD_MODEL_VERSION, ZcycParameters, g_spread_bp, kbd_discount_curve
+from .linkers import linker_accrued, linker_nominal, real_cashflows
 from .local_risk import (
     FixedRubBondInput,
     PreparedLocalBondRisk,
@@ -68,6 +75,7 @@ __all__ = [
     "SUPPORTED_CURRENCIES",
     "SUPPORTED_PRODUCTS",
     "CalendarUse",
+    "CpiUse",
     "CurrencyAmounts",
     "CurveUse",
     "FactorTotal",
@@ -306,6 +314,17 @@ class CalendarUse:
 
 
 @dataclass(frozen=True)
+class CpiUse:
+    """A CPI series that indexed an inflation-linked position (package 9a)."""
+
+    series_id: str
+    source_id: str
+    as_of: date
+    first_month: date
+    last_month: date
+
+
+@dataclass(frozen=True)
 class FactorTotal:
     factor: str
     first_order_rub: float
@@ -332,6 +351,7 @@ class PortfolioRiskResult:
     schema_version: str = PORTFOLIO_RESULT_SCHEMA
     result_sha256: str = ""
     fx_rates: tuple[FxRate, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
+    cpi: tuple[CpiUse, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
 
 
 @dataclass(frozen=True)
@@ -341,6 +361,8 @@ class _BuiltCurve:
     kbd: ZcycParameters | None
     model_version: str
     currency: str
+    # A real (CPI-adjusted) curve: discounts only inflation-linked bonds (package 9a).
+    real: bool = False
 
 
 def _build_curve(entry: CurveEntry, business_date: date) -> _BuiltCurve:
@@ -368,7 +390,7 @@ def _build_curve(entry: CurveEntry, business_date: date) -> _BuiltCurve:
         if isinstance(source, DiscountCurve) and source.model_version == spec.model_version:
             return _BuiltCurve(entry, source, None, spec.model_version, spec.currency)
         raise InvalidTerms(f"curve {entry.curve_id} does not match spec {spec.spec_id}")
-    if spec.kind is CurveKind.DISCOUNT_FACTORS:
+    if spec.kind in (CurveKind.DISCOUNT_FACTORS, CurveKind.REAL_DISCOUNT_FACTORS):
         if (
             isinstance(source, DiscountCurve)
             and source.model_version == spec.model_version
@@ -378,7 +400,14 @@ def _build_curve(entry: CurveEntry, business_date: date) -> _BuiltCurve:
                 raise InvalidTerms(
                     f"curve {entry.curve_id} is not dated the snapshot business date"
                 )
-            return _BuiltCurve(entry, source, None, spec.model_version, spec.currency)
+            return _BuiltCurve(
+                entry,
+                source,
+                None,
+                spec.model_version,
+                spec.currency,
+                spec.kind is CurveKind.REAL_DISCOUNT_FACTORS,
+            )
         raise InvalidTerms(f"curve {entry.curve_id} does not match spec {spec.spec_id}")
     raise InvalidTerms(f"spec {spec.spec_id} is not a bond discount curve")
 
@@ -474,6 +503,8 @@ def value_portfolio(
     used_calendars: dict[str, CalendarUse] = {}
     used_fx: dict[str, FxRate] = {}
     fx_currency: dict[str, str] = {}
+    used_cpi: dict[str, CpiUse] = {}
+    real_curve_positions: set[str] = set()
 
     def curve(curve_id: str) -> _BuiltCurve:
         if curve_id not in built:
@@ -510,6 +541,7 @@ def value_portfolio(
                 run_id,
                 used_calendars,
                 used_fx,
+                used_cpi,
             )
         except CoreRejection as exc:
             rejections.append(
@@ -527,11 +559,20 @@ def value_portfolio(
         prepared_by_position[position.position_id] = prepared
         if valuation.currency_amounts is not None:
             fx_currency[position.position_id] = valuation.currency_amounts.currency
+        if get_curve_spec(valuation.spec_id).kind is CurveKind.REAL_DISCOUNT_FACTORS:
+            real_curve_positions.add(position.position_id)
 
     coverage = _coverage(positions, rejections)
     scenario_results = [
         _run_scenario(
-            scenario, positions, prepared_by_position, fx_currency, rejections, job_id, stopped
+            scenario,
+            positions,
+            prepared_by_position,
+            fx_currency,
+            rejections,
+            job_id,
+            stopped,
+            frozenset(real_curve_positions),
         )
         for scenario in scenarios
     ]
@@ -572,6 +613,7 @@ def value_portfolio(
         factor_totals,
         interruption,
         fx_rates=tuple(used_fx[k] for k in sorted(used_fx)),
+        cpi=tuple(used_cpi[k] for k in sorted(used_cpi)),
     )
     return replace(result, result_sha256=canonical_sha256(portfolio_result_hash_projection(result)))
 
@@ -625,6 +667,7 @@ def _value_position(
     run_id: str,
     used_calendars: dict[str, CalendarUse],
     used_fx: dict[str, FxRate],
+    used_cpi: dict[str, CpiUse] | None = None,
 ) -> tuple[PositionValuation, PreparedLocalBondRisk]:
     """Value one bond position.
 
@@ -632,7 +675,22 @@ def _value_position(
     Its flows, nominal and accrued enter the RUB risk adapter converted at the snapshot
     FX rate, so PV, DV01, CS01, the Hessian and JTD come out in RUB; the FX delta and
     the FX cross terms are added from them (``fx_translated_factor_risk``).
+    An inflation-linked bond (package 9a) goes to :func:`_value_linker_position`.
     """
+    linker = instruments.get(position.instrument_id)
+    if linker is not None and linker.product is ProductType.INFLATION_LINKED_BOND:
+        return _value_linker_position(
+            position,
+            linker,
+            snapshot,
+            policy,
+            curve,
+            cache,
+            job_id,
+            run_id,
+            used_calendars,
+            {} if used_cpi is None else used_cpi,
+        )
     instrument = _supported_instrument(position, instruments, SUPPORTED_CURRENCIES)
     convention = instrument.yield_convention
     if convention.compounding != ANNUAL:
@@ -643,6 +701,10 @@ def _value_position(
     settlement = calendar.add_business_days(snapshot.business_date, instrument.settlement_lag_days)
     curve_id = policy.discount_curve_for(instrument)
     built = curve(curve_id)
+    if built.real:
+        raise InvalidTerms(
+            f"curve {curve_id} is a real curve; only inflation-linked bonds are discounted on it"
+        )
     currency = instrument.currency
     if built.currency != currency:
         raise InvalidTerms(
@@ -767,6 +829,138 @@ def _value_position(
     return valuation, prepared
 
 
+def _value_linker_position(
+    position: Position,
+    instrument: Instrument,
+    snapshot: MarketSnapshot,
+    policy: ValuationPolicy,
+    curve: Callable[[str], _BuiltCurve],
+    cache: ShockedCurveCache,
+    job_id: str,
+    run_id: str,
+    used_calendars: dict[str, CalendarUse],
+    used_cpi: dict[str, CpiUse],
+) -> tuple[PositionValuation, PreparedLocalBondRisk]:
+    """Value an inflation-linked bond on a real curve (package 9a, ``docs/linkers.md``).
+
+    The indexed nominal and accrued of the settlement date come from the snapshot's CPI
+    series; the real cash flows hold that nominal (:func:`linkers.real_cashflows`) and
+    are discounted on the real curve that ``curve_overrides`` names for the bond. The
+    quote is % of the indexed nominal. Risk is ``REAL|<curve>|<bucket>`` and ``CS``;
+    ``effective_yield`` is the real yield. There is no G-spread (the KBD is nominal).
+    """
+    if instrument.currency != "RUB":
+        raise UnsupportedProduct("inflation-linked bonds are supported in RUB only")
+    if position.currency != instrument.currency:
+        raise InvalidTerms("position currency differs from the instrument currency")
+    principal = instrument.principal_leg
+    if not isinstance(principal, IndexedPrincipalLeg):
+        raise UnsupportedProduct("an inflation-linked bond needs an indexed principal leg")
+    convention = instrument.yield_convention
+    if convention != DEFAULT_YIELD_CONVENTION:
+        raise UnsupportedProduct("linker real yields are effective annual ACT/365F")
+    calendar = _use_calendar(snapshot, instrument, used_calendars)
+    settlement = calendar.add_business_days(snapshot.business_date, instrument.settlement_lag_days)
+    series = snapshot.cpi_series(principal.indexation.series_id)
+    used_cpi[series.series_id] = CpiUse(
+        series.series_id, series.source_id, series.as_of, series.first_month, series.last_month
+    )
+    curve_id = policy.curve_for(instrument.instrument_id)
+    built = curve(curve_id)
+    if not built.real or built.currency != "RUB":
+        raise InvalidTerms(
+            f"curve {curve_id} is not a RUB real curve; name one for the linker in "
+            "ValuationPolicy.curve_overrides"
+        )
+    nominal = linker_nominal(instrument, series, settlement)
+    flows = real_cashflows(instrument, series, settlement)
+    if not flows:
+        raise InvalidTerms("no cashflows remain after settlement")
+    quote = snapshot.quote(instrument.instrument_id)
+    accrued = (
+        quote.accrued_per_bond
+        if quote.accrued_per_bond is not None
+        else linker_accrued(instrument, series, settlement)
+    )
+    maturity = principal.maturity_date
+    prepared = prepare_local_bond_risk(
+        FixedRubBondInput(
+            context=RiskRunContext(
+                run_id,
+                instrument.instrument_id,
+                snapshot.snapshot_id,
+                snapshot.snapshot_id,
+                f"{snapshot.snapshot_id}:{curve_id}",
+                "continuous_zero",
+            ),
+            # Real flows: fixed in settlement-date money, discounted on the real curve.
+            cashflows=flows,
+            settlement_date=settlement,
+            horizon_date=maturity,
+            horizon="maturity",
+            cashflow_currency="RUB",
+            coupon_model="fixed",
+            current_nominal_rub=nominal,
+            clean_price_pct=quote.clean_price_pct,
+            accrued_interest_rub=accrued,
+            quantity=position.quantity,
+            curve=built.curve,
+            spread_convention=policy.spread_convention,
+            spread_kind=policy.spread_kind,
+        ),
+        curve_cache=cache,
+    )
+    engine = prepared.engine
+    risk = engine.risk(bump_bp=policy.bump_bp, difference="central")
+    second = engine.second_order(bump_bp=policy.bump_bp) if policy.include_second_order else None
+    dirty = cast(float, engine.request.dirty_price_rub)
+    real_yield, duration = _yield_and_duration(settlement, dirty, flows, convention)
+    jtd = (
+        None
+        if position.recovery_rate is None
+        else engine.jump_to_default(
+            outstanding_nominal_rub_per_bond=nominal, recovery_rate=position.recovery_rate
+        ).jtd_pnl_rub
+    )
+    calculation_id = canonical_sha256(
+        {
+            "job_id": job_id,
+            "position_id": position.position_id,
+            "adapter_id": prepared.calculation_id,
+            "indexation": principal.indexation.identifier,
+            "cpi": series.content_sha256,
+        }
+    )
+    valuation = PositionValuation(
+        position.position_id,
+        instrument.instrument_id,
+        position.book,
+        position.accounting_category,
+        calculation_id,
+        curve_id,
+        built.entry.spec_id,
+        "continuous_zero",
+        settlement,
+        "maturity",
+        maturity,
+        position.quantity,
+        nominal,
+        quote.clean_price_pct,
+        accrued,
+        dirty,
+        risk.pv_rub,
+        policy.spread_kind,
+        policy.spread_convention.identifier,
+        engine.spread_bp,
+        real_yield,
+        duration,
+        None,
+        linker_factor_risk(risk, curve_id, second),
+        jtd,
+    )
+    return valuation, prepared
+
+
 def _yield_and_duration(
     settlement: date,
     dirty: float,
@@ -794,7 +988,14 @@ def _run_scenario(
     rejections: list[Rejection],
     job_id: str,
     stopped: Callable[[], Interruption | None],
+    real_curve_positions: frozenset[str] = frozenset(),
 ) -> PortfolioScenarioResult:
+    """Reprice every computed position under ``scenario``.
+
+    Bucket shifts are nominal-curve moves, so positions discounted on a real curve
+    (inflation-linked bonds) are reported as ``UNSUPPORTED_PRODUCT`` rather than moved
+    by a nominal shock: a real-curve scenario is not defined yet (package 9a).
+    """
     rows: list[PositionScenarioPnl] = []
     failed: list[Rejection] = []
     base_failures = {r.position_id: r for r in rejections}
@@ -810,6 +1011,18 @@ def _run_scenario(
             rows.append(PositionScenarioPnl(position.position_id, None, code))
             failed.append(
                 Rejection(position.position_id, position.instrument_id, code, "job stopped")
+            )
+            continue
+        if position.position_id in real_curve_positions:
+            code = UnsupportedProduct.code
+            rows.append(PositionScenarioPnl(position.position_id, None, code))
+            failed.append(
+                Rejection(
+                    position.position_id,
+                    position.instrument_id,
+                    code,
+                    "scenario shifts are nominal; real-curve scenarios are not defined",
+                )
             )
             continue
         engine = prepared[position.position_id].engine

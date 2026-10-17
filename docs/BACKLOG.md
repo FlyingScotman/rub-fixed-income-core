@@ -302,3 +302,26 @@ other repositories and must be changed there, not in this core.
     `float_amount_scale`, then derive the convention. v2 bootstraps cost about four times
     the legacy one (coupled refinement passes; see #12).
 
+## OFZ-IN linkers — 0.23.0
+
+62. **Official CPI levels and the terms text.** Minfin order No. 80n, the per-issue
+    orders and Rosstat's CPI levels (`minfin.gov.ru`, `rosstat.gov.ru`, legal databases)
+    are refused by the proxy. Re-run the face golden on the official levels to confirm
+    kopeck agreement, confirm the half-up rounding of the face and the precision of
+    `INDEX_base`. *(downstream)* The hub needs a point-in-time CPI dataset with
+    publication dates, ideally with Minfin's monthly nominal table as a cross-check.
+63. **Linker risk beyond the real curve.** A real-curve builder (from OFZ-IN real yields
+    or nominal KBD minus breakeven) with a registered spec; a breakeven / inflation
+    factor (`INFL|<series>`) and projected-CPI valuation on the nominal curve; real-curve
+    scenario vectors; linker carry and rolldown (`horizon_portfolio` rejects them); the
+    option value of the deflation floor (intrinsic only today); MOEX `IRICPICLOSE` /
+    `BEICLOSE`, whose meaning is not identified.
+64. **Gold-linked corporates** (Seligdar RU000A1062M5, RU000A108RQ7). The face tracks the
+    CBR gold accounting price per gram with an offset of 1–3 business days that is not
+    stable in the data; the terms on `e-disclosure.ru` are refused. Model them as a
+    daily-index rule once the terms are available.
+65. *(downstream)* **Adapter mapping for linkers.** Map `SU52…` (`FACEVALUE_TYPE`
+    "Индексированный", `BONDTYPE` "Линкер") to `INFLATION_LINKED_BOND` with
+    `IndexedCouponLeg` / `IndexedPrincipalLeg`, base date = `ISSUEDATE`, and give each
+    linker a real-curve override (`docs/CONSUMERS.md`).
+

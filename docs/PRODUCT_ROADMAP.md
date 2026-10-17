@@ -4,7 +4,7 @@
 
 Written against core v0.6.0 (HEAD `454a78c`, 16 October 2026), then reconciled with **0.8.1** and updated release by release from 0.9.0.
 
-## Status after 0.7.0–0.22.0
+## Status after 0.7.0–0.23.0
 
 | Release | Delivered | Roadmap item | Remaining |
 |---|---|---|---|
@@ -25,6 +25,7 @@ Written against core v0.6.0 (HEAD `454a78c`, 16 October 2026), then reconciled w
 | 0.20.0 | `callables` (yield to call / worst, price to worst, explicit exercise assumptions, extension risk), perpetuals to an explicit call, `pass_through` (deterministic constant CPR, WAL, CPR sensitivity), `value_assumed_portfolio` / `horizon_assumed_portfolio` with recorded assumptions; MOEX `CALLOPTIONYIELD` / `CALLOPTIONDURATION` and perpetual-yield goldens | Package 9: callables, perpetuals, MBS/ABS (core part) | Native assumption fields in `value_portfolio` (BACKLOG #50); non-par calls in the portfolio (#51); OAS (#52); prepayment models beyond constant CPR and a CPR factor (#53) |
 | 0.21.0 | `swaps`: seasoned RUONIA OIS and key-rate swaps; explicit conventions or registered specs; known resets from point-in-time fixings; separate discount and projection curves; bucket DV01 per curve, 11/22-factor Hessian, exact scenarios, carry and rolldown; `IR\|curve\|bucket` factors; par swaps reprice the OIS and KRS quotes, seasoned PVs match an independent reconstruction | Package 2 (core part) | `value_portfolio` integration (BACKLOG #55); key-rate quote-basis risk (#56); confirmation schedules, amortizing notionals (#57); a bank-system golden (#58) |
 | 0.22.0 | `rub_ruonia_ois_moex_v2` from the MOEX SPFI curve methodology and NFA `RUB-RUONIA-OIS-COMPOUND`: TOM start, MODFOL, single period to 1Y then annual with a short initial stub, Act/Act ISDA, +1 business-day payment lag, compounded RUONIA without lookback; `OisSwapConvention` in the bootstrap; legacy spec unchanged | 0.5 (exchange OIS spec, resolves F08) | NCC contract text (BACKLOG #59); par repricing on live MOEX curve values, subscriber-only on ISS (#60); the swap side of v2 in `swaps` (#61); `cny_ruonia_xccy_v1` |
+| 0.23.0 | OFZ-IN: point-in-time `CpiSeries`, `CpiIndexation` (3-month lag, linear by day), indexed coupon and principal legs with the deflation floor, valuation on a caller-built real curve with the new factor type `REAL\|curve\|bucket`; MOEX goldens over the whole history of SU52002–52005 (`ACCINT` and 45 coupons exact, face within 2.6e-4 from CBR CPI, real yield within 0.5 bp) | Package 9: OFZ-IN linkers (core part) | Official CPI levels and terms text (BACKLOG #62); real-curve builder, breakeven factor, linker scenarios and horizon (#63); gold-linked corporates (#64) |
 
 The sections below keep the original 0.6.0 baseline for traceability. Where they conflict with this table, **this table is current**.
 

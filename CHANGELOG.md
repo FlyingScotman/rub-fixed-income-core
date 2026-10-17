@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.23.0 — OFZ-IN inflation linkers
+
+Package 9, OFZ-IN (core part). The indexation rule is Minfin order No. 80n of 22.05.2015
+as restated by the Bank of Russia's January 2021 methodological comment (the order
+itself and Rosstat's index levels are not reachable from the build environment). Books
+without linkers keep their factor set, bytes and hashes.
+
+- `rub_fixed_income.inflation`: `CpiObservation` and `CpiSeries` (point-in-time monthly
+  CPI levels: consecutive months, publication dates, no look-ahead, `MissingMarketData`
+  for an unpublished month, `known_on`); `CpiIndexation` (the OFZ-IN rule of Minfin order
+  No. 80n of 22.05.2015 as restated by the Bank of Russia: `INDEX = CPI(M-4) +
+  (CPI(M-3) - CPI(M-4)) * (n-1)/d`, face `= initial * INDEX / INDEX_base` in kopecks,
+  explicit `base_index` when published); `IndexedCouponPeriod`, `IndexedCouponLeg`,
+  `IndexedPrincipalLeg` (deflation floor at the initial face); `indexed_coupon_amount`
+  and `indexed_accrued` (formulas 4 and 5); `INFLATION_MODEL_VERSION`.
+- `rub_fixed_income.linkers`: `linker_nominal`, `linker_accrued`, `linker_coupon`,
+  `linker_redemption`, `real_cashflows` (flows at the settlement-date face held constant).
+- `Instrument` accepts the indexed legs for `ProductType.INFLATION_LINKED_BOND` (new
+  union members, no new fields; existing instruments serialize and hash unchanged);
+  `Instrument.is_indexed`.
+- `MarketSnapshot.cpi` and `.cpi_series(id)` (omitted from canonical JSON when empty).
+- Curve spec `rub_real_discount_factors_v1` (`CurveKind.REAL_DISCOUNT_FACTORS`).
+- **New desk factor type** `REAL|<curve_id>|<bucket>` (`real_factor`,
+  `linker_factor_risk`). It appears only for computed linkers.
+- `value_portfolio` values inflation-linked bonds on the real curve named in
+  `curve_overrides`: indexed face and accrued from the snapshot CPI, real yield and
+  duration, `REAL|…` + `CS` risk with the Hessian, JTD on the indexed face. It records
+  `PortfolioRiskResult.cpi` (`CpiUse`; omitted when empty).
+- MOEX/CBR goldens (`tests/test_ofz_in_goldens.py`, fixtures `tests/fixtures/ofz_in/`):
+  the four OFZ-IN in circulation over their whole history (5,927 EOD rows). `ACCINT` is
+  exact on every row and every paid coupon (45) is exact. The 3-month lag is confirmed
+  (lags 2 and 4 rejected by the data). The face from CBR CPI is within 2.6e-4. The
+  2026-10-16 accrued from CPI is exact. Real yield at `CLOSE` matches `YIELDCLOSE`
+  within 0.5 bp and `DURATION` within 0.2 days.
+- `benchmarks/linker_bench.py`: 2k linkers, 2.7 ms/position first order and 11.6 ms with
+  the Hessian (Linux, Python 3.13); 3.2 / 11.8 ms on Python 3.11.
+- **Face accuracy.** The face is within 2.6e-4 of MOEX (worst 0.36 RUB), not to the
+  kopeck, because the only reachable official CPI (CBR) is month-on-month rounded to
+  0.01 pp; Minfin indexes on Rosstat's levels (BACKLOG #62). Accrued interest, coupons,
+  the lag and the real yield match.
+
+### Changed
+
+- `PortfolioScenario` P&L of a linker position is `UNSUPPORTED_PRODUCT` (scenario shifts
+  are nominal); a nominal bond on a real curve and a linker on a nominal curve are
+  `INVALID_TERMS`.
+- `callables` rejects indexed instruments with `UNSUPPORTED_PRODUCT` (it could not
+  receive one before: linkers did not construct).
+- Contract: books without linkers keep their factor set, bytes and hashes (pinned
+  fixtures unchanged). With linkers, `factor_totals` gains `REAL|…` keys and the result
+  carries `cpi`. Schema id unchanged (`rub-portfolio-risk-result.v2`; new fields are
+  omitted at their defaults).
+
 ## 0.22.0 — the MOEX RUONIA OIS spec
 
 Roadmap item 0.5, audit F08, BACKLOG #37. The legacy spec `rub_ruonia_ois_legacy_v1`, the

@@ -201,7 +201,9 @@ Macaulay duration at that yield).
 OFZ spread), `FX|<ccy>` (1 % against RUB) and `FXBASIS|<ccy>` (1 bp of an FX futures or forward basis).
 Portfolio results report first order and the sparse upper-triangle Hessian from central
 differences with the same bump (DEC08). Signs: DV01 is PV(+1 bp) − PV(0), negative for a
-long bond.
+long bond. Inflation-linked bonds (package 9a) carry `REAL|<curve_id>|<bucket>` (1 bp at a
+pillar of a real discount curve) instead of `IR|…`; it appears only when a linker is
+computed.
 
 ## Non-RUB bonds and FX (package 3)
 
@@ -381,6 +383,28 @@ instrument's settlement lag in its calendar). The Z-spread is held.
   The parts sum exactly to `V(end, s1) + received - PV(S0)`.
 - **Put bonds:** `redemption_horizon="confirmed_put"` values to the first confirmed put
   (yield-to-offer), as the desk quotes them.
+
+## Inflation-linked bonds: OFZ-IN (package 9a)
+
+From the Minfin terms (order No. 80n of 22.05.2015) as restated by the Bank of Russia
+(January 2021 methodological comment), each confirmed on MOEX data
+([linkers.md](linkers.md), [sources/ofz_in](sources/ofz_in/README.md)):
+
+- **Reference index** on day `n` of month `M` with `d` days:
+  `INDEX = CPI(M-4) + (CPI(M-3) - CPI(M-4)) * (n-1)/d`. This is a 3-month lag: the face
+  grows during month `M` by the CPI change of month `M-3`. `CpiIndexation(lag_months=3)`.
+- **Face** `N = initial * INDEX(date) / INDEX(placement date)`, in kopecks (half up; the
+  rounding is not confirmed from the text). A published `INDEX_base` is an explicit term.
+- **Coupon** `round(N(payment date) * rate * days / 365, 0.01)`; **accrued**
+  `round(N(date) * rate * elapsed / 365, 0.01)`, on the face of the same date. MOEX
+  `ACCINT` is on the trade date with the trade-date face, and `FACEVALUE` in the history
+  is the trade-date face.
+- **Redemption** `max(N(maturity), initial face)` (`floor_at_initial_face=True`).
+- **Real yield** (MOEX `YIELDCLOSE` for OFZ-IN): effective annual ACT/365F yield at
+  settlement of the flows at the settlement-date face held constant (`real_cashflows`);
+  Macaulay duration on the same flows (`DURATION`, days).
+- **Real curve** `rub_real_discount_factors_v1`: caller-built RUB real discount factors,
+  ACT/365F, log-linear DF. Risk factor `REAL|<curve_id>|<bucket>`.
 
 ## Callables, perpetuals and pass-throughs (package 9b)
 

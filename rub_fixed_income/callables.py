@@ -56,6 +56,7 @@ from .domain import (
     Redemption,
 )
 from .errors import InvalidTerms, UnsupportedProduct
+from .inflation import IndexedCouponLeg
 
 __all__ = [
     "CALL_MODEL_VERSION",
@@ -280,6 +281,8 @@ def _extended(instrument: Instrument, assumed: tuple[AssumedCoupon, ...]) -> Ins
     leg = instrument.coupon_leg
     if isinstance(leg, FloatingCouponLeg):
         raise UnsupportedProduct("callable floaters are not supported (package 1 and 9)")
+    if instrument.is_indexed or isinstance(leg, IndexedCouponLeg):
+        raise UnsupportedProduct("callable inflation-linked bonds are not supported (package 9a)")
     if not assumed:
         return instrument
     if leg is None:
@@ -304,7 +307,7 @@ def _check_coupons(instrument: Instrument, settlement: date, redemption: date) -
     leg = instrument.coupon_leg
     if leg is None:
         return
-    assert not isinstance(leg, FloatingCouponLeg)
+    assert not isinstance(leg, (FloatingCouponLeg, IndexedCouponLeg))
     periods: Sequence[CouponPeriod | RateCouponPeriod] = leg.periods
     future = [p for p in periods if settlement < p.payment_date <= redemption]
     for left, right in pairwise(future):
@@ -644,6 +647,7 @@ def exercised_instrument(instrument: Instrument, resolved: ResolvedExercise) -> 
         )
     else:
         new_leg = None
+    assert isinstance(bond.principal_leg, PrincipalLeg)  # _extended rejects indexed legs
     earlier = tuple(r for r in bond.principal_leg.redemptions if r.payment_date < redemption)
     remaining = bond.initial_face - math.fsum(r.amount for r in earlier)
     principal = PrincipalLeg((*earlier, Redemption(redemption, remaining, CashflowKind.MATURITY)))

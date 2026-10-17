@@ -38,6 +38,7 @@ from rub_fixed_income import (
     PortfolioScenario,
     Position,
     PrepaymentAssumption,
+    PrincipalLeg,
     canonical_sha256,
     horizon_assumed_portfolio,
     horizon_portfolio,
@@ -70,7 +71,7 @@ def perpetual() -> Instrument:
     plain = bond("PERP", periods(date(2026, 6, 1), 6, 60.0))
     return replace(
         plain,
-        principal_leg=replace(plain.principal_leg, redemptions=()),
+        principal_leg=PrincipalLeg(()),
         offers=(Offer(date(2028, 12, 1), OfferKind.CALL, confirmed=False),),
     )
 

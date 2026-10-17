@@ -29,6 +29,7 @@ linear guardrail; they do not call the exact solver.
 - [FX forwards and swaps](docs/fx-forwards.md) — OTC FX forwards and FX swap legs by covered parity
 - [Swaps](docs/swaps.md) — seasoned RUONIA OIS and key-rate swaps
 - [Callables](docs/callables.md) — exercise assumptions, perpetuals and constant-CPR pass-throughs
+- [Linkers](docs/linkers.md) — OFZ-IN indexation, real-curve valuation and the `REAL` factor
 - [Backlog](docs/BACKLOG.md) — remaining fixes and downstream migrations
 - [Changelog](CHANGELOG.md)
 

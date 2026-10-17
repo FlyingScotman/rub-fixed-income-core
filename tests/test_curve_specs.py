@@ -23,6 +23,7 @@ def test_registered_specs() -> None:
         "cny_discount_factors_v1",
         "usd_discount_factors_v1",
         "eur_discount_factors_v1",
+        "rub_real_discount_factors_v1",
     }
     kbd = get_curve_spec("rub_ofz_kbd_v1")
     assert kbd.kind is CurveKind.KBD_PARAMETRIC and kbd.model_version == KBD_MODEL_VERSION

@@ -257,7 +257,7 @@ def test_perpetual_is_priced_to_a_named_call_only() -> None:
     resolved = resolve_exercise(perp, SETTLE, late)
     bond = exercised_instrument(perp, resolved)
     assert bond.instrument.maturity_date == date(2036, 1, 1)
-    assert bond.instrument.principal_leg.redemptions == (Redemption(date(2036, 1, 1), 1000.0),)
+    assert bond.instrument.principal_leg == PrincipalLeg((Redemption(date(2036, 1, 1), 1000.0),))
     assert bond.source_sha256 == canonical_sha256(perp)
     flows = bond.instrument.cashflows(after=SETTLE)
     assert [f.coupon for f in flows] == [120.0] * 3 + [90.0] * 4
@@ -300,9 +300,11 @@ def test_exercised_call_keeps_earlier_puts_amortization_and_the_call_flows() -> 
     resolved = resolve_exercise(bond, SETTLE, ExerciseAssumption.to_call(FIRST_CALL))
     exercised = exercised_instrument(bond, resolved).instrument
     assert exercised.offers == (put,)
-    assert exercised.principal_leg.redemptions == (
-        Redemption(date(2030, 1, 1), 400.0, CashflowKind.AMORTIZATION),
-        Redemption(FIRST_CALL, 600.0),
+    assert exercised.principal_leg == PrincipalLeg(
+        (
+            Redemption(date(2030, 1, 1), 400.0, CashflowKind.AMORTIZATION),
+            Redemption(FIRST_CALL, 600.0),
+        )
     )
     (scenario,) = (s for s in redemption_scenarios(bond, SETTLE) if s.redemption_date == FIRST_CALL)
     assert [(f.payment_date, f.amount) for f in exercised.cashflows(after=SETTLE)] == [

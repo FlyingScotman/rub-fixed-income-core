@@ -5,7 +5,10 @@ Factor keys:
 - ``IR|<curve_id>|<bucket>``: a 1 bp shift of one of the 11 bucket pillars of a curve;
 - ``CS``: a 1 bp move of the position's own spread (credit or OFZ spread);
 - ``FX|<ccy>``: a 1 % move of the currency against RUB;
-- ``FXBASIS|<ccy>``: a 1 bp move of a calibrated FX-futures basis.
+- ``FXBASIS|<ccy>``: a 1 bp move of a calibrated FX-futures basis;
+- ``REAL|<curve_id>|<bucket>``: a 1 bp shift of one of the 11 bucket pillars of a *real*
+  (inflation-adjusted) discount curve. Only inflation-linked bonds carry it (package 9a),
+  so books without linkers report exactly the factors they did before.
 
 A non-RUB bond's risk is in RUB at the snapshot FX rate; ``FX|<ccy>`` and its cross terms
 with the rates and spread factors come from :func:`fx_translated_factor_risk`.
@@ -35,6 +38,8 @@ __all__ = [
     "fx_futures_factor_risk",
     "fx_translated_factor_risk",
     "ir_factor",
+    "linker_factor_risk",
+    "real_factor",
 ]
 
 CS_FACTOR = "CS"
@@ -50,6 +55,13 @@ def ir_factor(curve_id: str, bucket: str) -> str:
     if bucket not in RISK_BUCKETS:
         raise InvalidTerms(f"unknown risk bucket {bucket!r}")
     return f"IR|{_component(curve_id, 'curve_id')}|{bucket}"
+
+
+def real_factor(curve_id: str, bucket: str) -> str:
+    """``REAL|<curve_id>|<bucket>``: 1 bp at a bucket pillar of a real discount curve."""
+    if bucket not in RISK_BUCKETS:
+        raise InvalidTerms(f"unknown risk bucket {bucket!r}")
+    return f"REAL|{_component(curve_id, 'curve_id')}|{bucket}"
 
 
 def fx_factor(currency: str) -> str:
@@ -209,3 +221,23 @@ def fx_futures_factor_risk(
         risk.fx_delta_rub_per_pct,
     )
     return FactorRisk(factors, first, (), "central", risk.bump_bp, False)
+
+
+def linker_factor_risk(
+    risk: BondRiskResult, real_curve_id: str, second_order: BondSecondOrderRisk | None = None
+) -> FactorRisk:
+    """Desk factors of an inflation-linked bond valued on a real curve (package 9a).
+
+    The same numbers as :func:`bond_factor_risk` (central first order, the Hessian from
+    the same bump), keyed ``REAL|<real_curve_id>|<bucket>`` and ``CS``.
+    """
+    nominal = bond_factor_risk(risk, real_curve_id, second_order)
+    renamed = (*(real_factor(real_curve_id, b) for b in RISK_BUCKETS), CS_FACTOR)
+    return FactorRisk(
+        renamed,
+        nominal.first_order,
+        nominal.hessian,
+        nominal.difference,
+        nominal.bump_bp,
+        nominal.has_second_order,
+    )
