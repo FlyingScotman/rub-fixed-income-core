@@ -189,7 +189,7 @@ other repositories and must be changed there, not in this core.
       bootstrap's par-rate leg. New convention fields must stay out of existing curve
       identities. Then register the spec and test par repricing on the hub's ratescalcs
       snapshot (17 tenors, `ois_quotes`).
-38. **Yield time basis of non-RUB bonds (package 3).** On the 2026-10-15 EOD, some USD
+38. *(done in 0.18.0: `Instrument.yield_convention`, 11 USD goldens)* **Yield time basis of non-RUB bonds (package 3).** On the 2026-10-15 EOD, some USD
     replacement bonds on TQOD are quoted on an ACT/360 time basis (RU000A105RH2,
     RU000A108P79, RU000A105R62, RU000A105JT4, RU000A105A95, RU000A1059N9, RU000A1059P4),
     others on ACT/365F (RU000A10A877, RU000A108Y11, RU000A107B43, RU000A106G56). Accrual
@@ -198,3 +198,25 @@ other repositories and must be changed there, not in this core.
     group (`test_usd_bond_yield_time_basis_is_a_known_gap`). ISS does not publish the
     basis; it has to come from the issue terms (backend static data), then be a yield
     convention input.
+
+## Non-RUB bonds — 0.18.0
+
+39. *(downstream)* **Yield basis in the backend's static data.** The adapter must set
+    `Instrument.yield_convention` from the issue terms of every non-RUB bond. The seven
+    ACT/360 bonds in the goldens are evidence, not a rule; ISS does not publish the basis.
+40. **Bootstrapped foreign curve specs.** SOFR / €STR OIS and the hub's CNY quote sets as
+    registered specs once their quote conventions (spot and payment lags, fixed frequency,
+    day counts) are confirmed from primary sources. Until then the backend builds the
+    discount factors (`*_discount_factors_v1`).
+41. **Non-RUB horizon and local worker.** FX forward carry in `horizon_portfolio`, and
+    non-RUB bonds in `local_worker.run_local_risk`; both still reject them.
+42. *(downstream)* **FX rate semantics.** Core values at the snapshot's `FxRate` as given,
+    with no FX settlement lag or forward points. The backend chooses the CBR official or
+    the market TOM rate and records it in the evidence.
+43. **Per-curve scenario shocks.** A `PortfolioScenario` shifts every position's own
+    discount curve; desk scenarios that move only the RUB or one foreign curve need
+    per-curve shift vectors.
+44. *(downstream decision)* **Result schema for non-RUB rows.** 0.18.0 keeps
+    `rub-portfolio-risk-result.v2` with optional keys, so RUB-only output is
+    byte-identical; a 0.17 reader rejects a result with non-RUB rows. Bump to `v3` if the
+    backend needs every result readable by older releases.

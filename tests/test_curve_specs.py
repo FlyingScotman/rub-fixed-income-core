@@ -19,6 +19,9 @@ def test_registered_specs() -> None:
         "rub_ofz_kbd_v1",
         "rub_ruonia_ois_legacy_v1",
         "rub_key_rate_swap_v1",
+        "cny_discount_factors_v1",
+        "usd_discount_factors_v1",
+        "eur_discount_factors_v1",
     }
     kbd = get_curve_spec("rub_ofz_kbd_v1")
     assert kbd.kind is CurveKind.KBD_PARAMETRIC and kbd.model_version == KBD_MODEL_VERSION
@@ -34,3 +37,11 @@ def test_unknown_spec_is_a_typed_rejection() -> None:
         get_curve_spec("rub_ruonia_ois_moex_v2")
     with pytest.raises(TypeError):
         CURVE_SPECS["x"] = CURVE_SPECS["rub_ofz_kbd_v1"]  # type: ignore[index]
+
+
+def test_foreign_discount_specs_are_caller_built_curves_per_currency() -> None:
+    for currency in ("CNY", "USD", "EUR"):
+        spec = get_curve_spec(f"{currency.lower()}_discount_factors_v1")
+        assert spec.kind is CurveKind.DISCOUNT_FACTORS and spec.currency == currency
+        assert spec.model_version == "ois-logdf-v1"
+        assert spec.fixed_leg_frequency_months is None  # no bootstrap conventions assumed

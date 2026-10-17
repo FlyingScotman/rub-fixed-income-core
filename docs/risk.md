@@ -170,3 +170,14 @@ products or an independent desk pricer.
 ## Extensions in 0.5.0
 
 Full fixed-RUB gamma, exact-versus-Taylor comparison, explicit-recovery JTD and a pure local input adapter are documented in [second-order-local-risk.md](second-order-local-risk.md). The limitations above describe the original 0.4.0 interface.
+
+## Non-RUB bonds in the portfolio (package 3)
+
+`BondRiskRequest` still accepts RUB only. `value_portfolio` values a CNY, USD or EUR bond
+by converting its flows, nominal and accrued at the snapshot FX rate *explicitly* and
+discounting them on the bond's own currency curve (never the RUB curve). PV, bucket DV01,
+CS01, the Hessian, scenarios and JTD are therefore RUB at today's rate. Because the RUB
+value is `FX · PV_ccy`, the FX factor is added analytically:
+`FX delta = PV_ccy · FX / 100`, cross terms `dV/dx_i / 100`, no FX gamma (see
+`CONVENTIONS.md`). The tests check this against an independent USD-only engine converted
+afterwards and against central differences of exact rates-and-FX scenarios.

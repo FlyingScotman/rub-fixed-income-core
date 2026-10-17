@@ -91,7 +91,22 @@ Default `m = 1`, `t = days/365` (`day_count_basis=365.0`). Alternatives: keyword
 `compounding_frequency`, `day_count_basis` (legacy) **or** `convention=YieldConvention(...)`
 (not both). Root must satisfy `y > −0.99·m`, otherwise "not bracketed".
 
-`solve_effective_annual_yield` (forward horizon): `P = Σ CF_i/(1+y)^{t_i}`, ACT/365F.
+`solve_effective_annual_yield` (forward horizon): `P = Σ CF_i/(1+y)^{t_i}`, ACT/365F by
+default; `YieldRequest(..., convention=YieldConvention(day_count=...))` sets another time
+basis (annual compounding only).
+
+### Yield time basis is an issue term (BACKLOG #38)
+
+The time basis of a quoted yield is independent of the accrual basis. MOEX quotes most
+bonds effective annual on ACT/365F, but some USD replacement bonds on TQOD on ACT/360
+while they accrue 30/360 (RU000A105RH2 and six others in `tests/test_moex_eod_goldens.py`).
+ISS does not publish which, so the backend takes it from the issue terms and sets
+`Instrument.yield_convention` (default `YieldConvention()`, effective annual ACT/365F,
+`DEFAULT_YIELD_CONVENTION`). Core never infers it. `value_portfolio` reports
+`effective_yield` and `macaulay_duration_years` on that basis (ACT/360 years are
+`days / 360`; Macaulay duration in days does not depend on the basis). The G-spread to
+the KBD always uses the ACT/365F yield and duration, the KBD's own basis. Left at the
+default, the field is not serialized, so instruments and their hashes are unchanged.
 
 `bond_duration`: Macaulay `D = Σ t_i·PV_i / Σ PV_i`; modified `D / (1 + y/m)`.
 
@@ -184,6 +199,31 @@ OFZ spread), `FX|<ccy>` (1 % against RUB) and `FXBASIS|<ccy>` (1 bp of a futures
 Portfolio results report first order and the sparse upper-triangle Hessian from central
 differences with the same bump (DEC08). Signs: DV01 is PV(+1 bp) − PV(0), negative for a
 long bond.
+
+## Non-RUB bonds and FX (package 3)
+
+- **FX rate.** `FxRate.rub_per_unit` is RUB per one unit of the currency, from the
+  snapshot. `FX|<ccy>` is a relative 1 % move: the rate goes to `FX · 1.01`.
+- **Curve.** A CNY, USD or EUR bond is discounted on the curve that
+  `ValuationPolicy.foreign_curves` names for its currency (`curve_overrides` win for an
+  instrument). The curve's spec must be of that currency: `cny_/usd_/eur_discount_factors_v1`,
+  a caller-built `DiscountCurve` (log-linear DF nodes, model `ois-logdf-v1`, ACT/365F,
+  dated the snapshot business date). Core registers no foreign bootstrap.
+- **Valuation.** The bond is priced in its currency, with the spread calibrated to its
+  quote on its own curve. Every `_rub` amount is the currency amount times `FX`:
+  `PV_rub = FX · PV_ccy`; DV01, CS01, the Hessian and JTD likewise.
+  `PositionValuation.currency_amounts` keeps nominal, accrued, dirty price and PV in the
+  currency. Accrued interest in RUB is not rounded again.
+- **FX delta and cross terms.** `FX delta = PV_ccy · FX / 100` RUB per 1 %. The cross
+  term of FX with a rates or spread factor is that factor's RUB first order divided by
+  100, so for a long bond it has the sign of its DV01 (negative). The FX gamma is zero:
+  the RUB value is linear in the rate. These are the exact central differences with a
+  1 % FX bump and the rates bump, so first order and Hessian stay consistent (DEC08).
+- **Scenarios.** `PortfolioScenario.fx_shocks_pct` moves listed currencies by a percent;
+  a position in one is revalued as `FX · (1 + s / 100) · PV_ccy(shocked curve)`. The
+  bucket shifts apply to every position's own discount curve, foreign ones included.
+- **Not covered.** FX carry and horizon valuation of non-RUB bonds (`horizon_portfolio`
+  rejects them), quanto or FX-linked payments, a cross-currency basis, other currencies.
 
 ## Tenor codes (0.16.0)
 

@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.18.0 — non-RUB bonds, FX delta and the yield time basis
+
+Package 3 (core part) and BACKLOG #38. RUB-only instruments, policies, scenarios and
+results serialize and hash exactly as before.
+
+- **Yield time basis as an issue term (BACKLOG #38).** `Instrument.yield_convention`
+  (default `DEFAULT_YIELD_CONVENTION`, effective annual ACT/365F) and
+  `YieldRequest(..., convention=...)` set the time basis of the effective annual yield
+  independently of the accrual basis. ACT/360 and ACT/ACT-ISDA apply only when given
+  explicitly, and only annual compounding is accepted. The basis comes from the backend's
+  static issue terms; core never infers it.
+- **MOEX golden for USD replacement bonds.** Nine more TQOD bonds of 2026-10-15 from ISS
+  (raw, provenance in `tests/fixtures/moex_eod/README.md`). On their issue basis all 11
+  USD bonds match `YIELDATWAP` within 0.005 and `DURATION` within a day, seven on ACT/360
+  and four on ACT/365F; on the other basis they miss by 5 to 40 bp. Also end to end
+  through `value_portfolio`. The known-gap test became
+  `test_usd_bond_yield_on_its_issue_time_basis_matches_moex`.
+- **Non-RUB bonds in `value_portfolio`.** CNY, USD and EUR fixed bonds (bullet,
+  amortizing, confirmed put) are discounted on the curve that
+  `ValuationPolicy.foreign_curves` names for their currency, with no fallback, and valued
+  in RUB at the snapshot FX rate (`FxRate`, RUB per unit):
+  - PV, `IR|<curve>|<bucket>`, `CS`, the Hessian, scenarios and JTD are in RUB;
+  - `FX|<ccy>` = `PV_ccy · FX / 100` per 1 %, with FX × rates and FX × spread cross terms
+    (`first_order_i / 100`) and no FX gamma; they equal central differences exactly;
+  - new `PositionValuation.currency_amounts` (`CurrencyAmounts`),
+    `PositionValuation.yield_convention`, `PortfolioRiskResult.fx_rates`,
+    `PortfolioScenario.fx_shocks_pct`, `SUPPORTED_CURRENCIES`,
+    `fx_translated_factor_risk`.
+- Curve specs `cny_discount_factors_v1`, `usd_discount_factors_v1`,
+  `eur_discount_factors_v1` (`CurveKind.DISCOUNT_FACTORS`) take a caller-built
+  `DiscountCurve` dated the business date. No foreign bootstrap is registered: its quote
+  conventions are not in hand.
+- Typed rejections: no curve mapped for the currency, or curve or FX rate missing →
+  `MISSING_MARKET_DATA`; a curve of another currency, not dated the business date or not
+  a node curve → `INVALID_TERMS`; other currencies, non-annual yield quotes and non-RUB
+  bonds in `horizon_portfolio` → `UNSUPPORTED_PRODUCT`. `BondRiskRequest` stays RUB-only.
+- `value_portfolio` reports `effective_yield` and `macaulay_duration_years` on the issue's
+  yield basis (ACT/360 years = days / 360); the G-spread to the KBD always uses ACT/365F.
+- `canonical.OMIT_IF_DEFAULT` field metadata: a field added to an existing type is left
+  out of the canonical JSON while it holds its default, and `from_dict` accepts it as
+  absent. `canonical_json_bytes` converts dataclasses field by field (byte-identical to
+  the former `asdict` path).
+- The result schema stays `rub-portfolio-risk-result.v2`. A result with non-RUB rows
+  carries the new keys, which an older release's strict decoder rejects; whether the
+  backend needs a `v3` is its contract call.
+- Benchmark (`benchmarks/portfolio_bench.py`, new `fx` case, 2k CNY/USD/EUR positions,
+  Linux, Python 3.11): 1.91 ms per position first order, 7.52 ms with the Hessian,
+  7.85 ms with scenarios including a 10 % FX move. The RUB rows are unchanged
+  (OIS + Hessian 9.49 ms, KBD 9.51 ms).
+
 ## 0.17.0 — rate-based accrued interest and MOEX end-of-day goldens
 
 Roadmap item 0.10 (the golden bond set) and BACKLOG #36. New API only; existing instruments,

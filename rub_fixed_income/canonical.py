@@ -11,6 +11,11 @@ canonical forms for values that used to raise ``TypeError``:
 - a ``set``/``frozenset`` serializes as a list sorted by each element's canonical bytes;
 - a dataclass nested inside a mapping or a sequence serializes as its field mapping;
 - ``date`` and ``Enum`` mapping keys serialize as their ISO string or value.
+
+Fields added to an existing type after its first release are declared with
+``field(default=..., metadata=OMIT_IF_DEFAULT)``: they are left out of the canonical
+mapping while they hold their (immutable) default, so every value that does not use them
+keeps its earlier bytes and hash; ``from_dict`` then accepts them as absent.
 """
 
 from __future__ import annotations
@@ -18,13 +23,26 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from dataclasses import asdict, fields, is_dataclass
+from dataclasses import Field, fields, is_dataclass
 from datetime import date
 from decimal import Decimal
 from enum import Enum
-from typing import Any, cast
+from types import MappingProxyType
+from typing import Any
 
-__all__ = ["canonical_json_bytes", "canonical_sha256"]
+__all__ = ["OMIT_IF_DEFAULT", "canonical_json_bytes", "canonical_sha256"]
+
+_OMIT_KEY = "rub_fixed_income.omit_if_default"
+OMIT_IF_DEFAULT = MappingProxyType({_OMIT_KEY: True})
+"""Field metadata: leave the field out of canonical bytes while it holds its default."""
+
+
+def is_omittable(spec: Field[Any]) -> bool:
+    return bool(spec.metadata.get(_OMIT_KEY))
+
+
+def _kept(spec: Field[Any], value: object) -> bool:
+    return not (is_omittable(spec) and getattr(value, spec.name) == spec.default)
 
 
 def _key(value: object) -> object:
@@ -77,13 +95,18 @@ def _canonical_value(value: object) -> object:
         items = [_canonical_value(item) for item in value]
         return sorted(items, key=_dump)
     if is_dataclass(value) and not isinstance(value, type):
-        return {f.name: _canonical_value(getattr(value, f.name)) for f in fields(value)}
+        return {
+            f.name: _canonical_value(getattr(value, f.name))
+            for f in fields(value)
+            if _kept(f, value)
+        }
     return value
 
 
 def canonical_json_bytes(value: object) -> bytes:
-    raw = asdict(cast(Any, value)) if hasattr(value, "__dataclass_fields__") else value
-    return _dump(_canonical_value(raw)).encode("utf-8")
+    # A dataclass is converted field by field (the bytes equal those of ``dataclasses.asdict``,
+    # used before) so that omittable fields can be left out at every level.
+    return _dump(_canonical_value(value)).encode("utf-8")
 
 
 def canonical_sha256(value: object) -> str:

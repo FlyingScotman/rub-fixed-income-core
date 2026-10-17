@@ -250,6 +250,10 @@ class YieldConvention:
         }
 
 
+DEFAULT_YIELD_CONVENTION = YieldConvention()
+"""Effective annual on ACT/365F: the MOEX quote basis and the library default."""
+
+
 @dataclass(frozen=True)
 class ZSpreadConvention:
     """Z-spread compounding and spread-time day count. Desk default: annual, ACT/365F."""

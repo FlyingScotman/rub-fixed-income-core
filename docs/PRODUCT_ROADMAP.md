@@ -4,7 +4,7 @@
 
 Written against core v0.6.0 (HEAD `454a78c`, 16 October 2026), then reconciled with **0.8.1** and updated release by release from 0.9.0.
 
-## Status after 0.7.0–0.17.0
+## Status after 0.7.0–0.18.0
 
 | Release | Delivered | Roadmap item | Remaining |
 |---|---|---|---|
@@ -20,6 +20,7 @@ Written against core v0.6.0 (HEAD `454a78c`, 16 October 2026), then reconciled w
 | 0.15.0 | MOEX goldens (`tests/test_moex_goldens.py`, fixtures from the hub): `ACCRUEDINT` to the kopeck for 7 bonds (OFZ-PD, corporates, amortizer, OFZ-PK current coupon, CNY bond); OFZ 26238 yield at three prices within 0.5 bp and duration within a day, also end to end through `value_portfolio` on KBD; put-bond duration to offer | 0.10, partly | About 12 bonds on fixed EOD dates need EOD ISS exports (only one intraday snapshot is archived); 30/360 accrual and the MOEX short-put yield method (BACKLOG #36); the bridge and fixing tests from the untracked `implementation/` folder are not in this checkout |
 | 0.16.0 | `parse_tenor`, `add_tenor`, `resolve_tenor` (spot lag, business-day convention, `ON`/`TN`/`SN`), `ois_quotes`; KRS dates routed through it unchanged | 0.5, part | `rub_ruonia_ois_moex_v2` and spot / payment lags and stubs in the OIS bootstrap: blocked on the MOEX RUONIA OIS specification text (BACKLOG #37) |
 | 0.17.0 | `RateAccrualCouponLeg`, `RateCouponPeriod`, `AccrualBasis` (rate ACT/365 for MOEX corporates, ACT/360, 30/360); EOD goldens for 18 bonds on 2026-10-15 from ISS: `ACCINT` to the kopeck, yield and duration to maturity, put bonds' `YIELDTOOFFER` and per-trade `EFFECTIVEYIELD` / `GSPREADBP`; BACKLOG #36 resolved | 0.10 (golden bonds completed) | Yield time basis of non-RUB bonds (BACKLOG #38, package 3); the bridge and fixing tests from the untracked `implementation/` folder are still not in this checkout |
+| 0.18.0 | Non-RUB bonds (CNY, USD, EUR) in `value_portfolio` on caller-built foreign discount curves (`*_discount_factors_v1`), RUB valuation at the snapshot FX rate, `FX\|ccy` delta = PV_ccy × FX / 100 with FX × rates and FX × spread cross terms, FX scenarios, typed coverage; yield time basis as an issue term (`Instrument.yield_convention`) with 11 USD MOEX goldens (BACKLOG #38 resolved) | Package 3 (core part) | Bootstrapped foreign curve specs (SOFR / €STR / CNY conventions, BACKLOG #40); non-RUB horizon and local worker (#41); per-curve scenario shocks (#43) |
 
 The sections below keep the original 0.6.0 baseline for traceability. Where they conflict with this table, **this table is current**.
 

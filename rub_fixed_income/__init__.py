@@ -51,6 +51,7 @@ from .compatibility import (
 from .conventions import (
     ANNUAL,
     CONTINUOUS,
+    DEFAULT_YIELD_CONVENTION,
     MONTHLY,
     QUARTERLY,
     SEMI_ANNUAL,
@@ -114,6 +115,7 @@ from .factors import (
     fx_basis_factor,
     fx_factor,
     fx_futures_factor_risk,
+    fx_translated_factor_risk,
     ir_factor,
 )
 from .floating import (
@@ -174,8 +176,10 @@ from .local_risk import (
 )
 from .portfolio import (
     PORTFOLIO_RESULT_SCHEMA,
+    SUPPORTED_CURRENCIES,
     SUPPORTED_PRODUCTS,
     CalendarUse,
+    CurrencyAmounts,
     CurveUse,
     FactorTotal,
     PortfolioCoverage,
@@ -232,6 +236,7 @@ __all__ = [
     "CONTINUOUS",
     "CS_FACTOR",
     "CURVE_SPECS",
+    "DEFAULT_YIELD_CONVENTION",
     "FLOATING_MODEL_VERSION",
     "FLOATING_RISK_MODEL_VERSION",
     "FX_FUTURES_RISK_MODEL_VERSION",
@@ -245,6 +250,7 @@ __all__ = [
     "RISK_MODEL_VERSION",
     "RISK_PILLARS",
     "SEMI_ANNUAL",
+    "SUPPORTED_CURRENCIES",
     "SUPPORTED_PRODUCTS",
     "V1_YIELD_CONVENTION",
     "V1_Z_SPREAD_CONVENTION",
@@ -278,6 +284,7 @@ __all__ = [
     "Compounding",
     "CoreRejection",
     "CouponPeriod",
+    "CurrencyAmounts",
     "CurveBootstrapRequest",
     "CurveConvention",
     "CurveEntry",
@@ -395,6 +402,7 @@ __all__ = [
     "fx_basis_factor",
     "fx_factor",
     "fx_futures_factor_risk",
+    "fx_translated_factor_risk",
     "g_spread_bp",
     "generate_schedule",
     "get_curve_spec",

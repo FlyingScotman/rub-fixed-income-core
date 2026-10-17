@@ -11,6 +11,13 @@ audit's summary (F08: TOM start, modified following, ACT/ACT with a stub, +1 bus
 payment lag) leaves the fixed-leg frequency and float compounding open, and the MOEX
 specification text was not available to confirm it (BACKLOG #37). Until then
 ``rub_ruonia_ois_legacy_v1`` names today's bootstrap exactly.
+
+Foreign discount curves (package 3) are registered as caller-built discount factors,
+one spec per currency (``cny_discount_factors_v1``, ``usd_discount_factors_v1``,
+``eur_discount_factors_v1``). The backend builds them from the hub's data (CNY quote
+sets, SOFR, ESTR) and passes a :class:`~rub_fixed_income.discount.DiscountCurve`; core
+only reads, interpolates and shifts it. Their quote conventions are the builder's, so
+core registers no foreign bootstrap.
 """
 
 from __future__ import annotations
@@ -31,6 +38,7 @@ class CurveKind(Enum):
     KBD_PARAMETRIC = "kbd_parametric"
     OIS_BOOTSTRAP = "ois_bootstrap"
     KEY_RATE_SWAP = "key_rate_swap"
+    DISCOUNT_FACTORS = "discount_factors"
 
 
 @dataclass(frozen=True)
@@ -98,7 +106,28 @@ _SPECS = (
     ),
 )
 
-CURVE_SPECS = MappingProxyType({spec.spec_id: spec for spec in _SPECS})
+_DISCOUNT_SOURCES = {
+    "CNY": "the hub's CNY quote sets",
+    "USD": "SOFR data",
+    "EUR": "ESTR data",
+}
+_FOREIGN_SPECS = tuple(
+    CurveSpec(
+        spec_id=f"{currency.lower()}_discount_factors_v1",
+        kind=CurveKind.DISCOUNT_FACTORS,
+        currency=currency,
+        time_day_count=DayCount.ACT_365_FIXED,
+        interpolation="log-linear-df between the caller's nodes, flat-forward extrapolation",
+        model_version="ois-logdf-v1",
+        description=f"{currency} discount factors built upstream (by the backend from "
+        f"{source}) and passed as a DiscountCurve dated the snapshot business date, "
+        "ACT/365F curve time. Core does not bootstrap or certify it; risk shifts its "
+        "continuous zero rates",
+    )
+    for currency, source in _DISCOUNT_SOURCES.items()
+)
+
+CURVE_SPECS = MappingProxyType({spec.spec_id: spec for spec in (*_SPECS, *_FOREIGN_SPECS)})
 
 
 def get_curve_spec(spec_id: str) -> CurveSpec:

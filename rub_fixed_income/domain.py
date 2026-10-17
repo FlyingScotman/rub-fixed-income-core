@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from enum import Enum
@@ -19,7 +19,9 @@ from itertools import pairwise
 from typing import Literal
 
 from ._money import finite_money, positive_money
+from .canonical import OMIT_IF_DEFAULT
 from .cashflows import Cashflow, CashflowKind, accrued_interest
+from .conventions import DEFAULT_YIELD_CONVENTION, YieldConvention
 from .dates import BusinessCalendar
 from .discount import CurveBootstrapRequest, DiscountCurve
 from .errors import InvalidTerms, MissingMarketData
@@ -304,6 +306,12 @@ class Instrument:
     For bonds: a coupon leg (known fixed periods or a floater formula), a principal
     leg whose redemptions sum to ``initial_face`` (empty for a perpetual), offers,
     and the calendar ID under which settlement is computed.
+
+    ``yield_convention`` is the issue's yield quote basis, independent of the accrual
+    basis: the default is MOEX's effective annual ACT/365F. Some USD replacement bonds
+    are quoted on ACT/360 time while they accrue 30/360 (BACKLOG #38). It comes from
+    the issue terms (backend static data); core never infers it. Left at the default
+    it is not part of the instrument's serialized form or hash.
     """
 
     instrument_id: str
@@ -317,9 +325,14 @@ class Instrument:
     settlement_lag_days: int = 1
     isin: str | None = None
     issuer_id: str | None = None
+    yield_convention: YieldConvention = field(
+        default=DEFAULT_YIELD_CONVENTION, metadata=OMIT_IF_DEFAULT
+    )
 
     def __post_init__(self) -> None:
         _text(self.instrument_id, "instrument_id")
+        if not isinstance(self.yield_convention, YieldConvention):
+            raise TypeError("yield_convention must be a YieldConvention")
         _text(self.calendar_id, "calendar_id")
         _currency(self.currency)
         if not isinstance(self.product, ProductType):

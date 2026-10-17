@@ -7,6 +7,9 @@ Factor keys:
 - ``FX|<ccy>``: a 1 % move of the currency against RUB;
 - ``FXBASIS|<ccy>``: a 1 bp move of a calibrated FX-futures basis.
 
+A non-RUB bond's risk is in RUB at the snapshot FX rate; ``FX|<ccy>`` and its cross terms
+with the rates and spread factors come from :func:`fx_translated_factor_risk`.
+
 ``first_order`` is RUB per factor unit. ``hessian`` holds the sparse upper triangle
 ``(i, j, d2PV)`` with ``i <= j`` over ``factors`` (RUB per unit squared); exact zeros
 are omitted. First order and Hessian both come from central differences with the same
@@ -30,6 +33,7 @@ __all__ = [
     "fx_basis_factor",
     "fx_factor",
     "fx_futures_factor_risk",
+    "fx_translated_factor_risk",
     "ir_factor",
 ]
 
@@ -124,6 +128,43 @@ def bond_factor_risk(
     spread = risk.cs01_rub if risk.cs01_rub != 0.0 else risk.ofz_spr01_rub
     first = (*(b.dv01_rub for b in risk.buckets), spread)
     return FactorRisk(factors, first, (), "central", risk.bump_bp, False)
+
+
+def fx_translated_factor_risk(
+    risk: FactorRisk, currency: str, fx_delta_rub_per_pct: float
+) -> FactorRisk:
+    """Add ``FX|<ccy>`` to the RUB risk of a position whose RUB value is ``FX * PV_ccy``.
+
+    ``risk`` is already in RUB at the spot rate ``FX`` (each factor's sensitivity in
+    currency times ``FX``) and ``fx_delta_rub_per_pct`` is ``PV_ccy * FX / 100``. A 1 %
+    move of the rate scales every RUB amount by 1.01, so the cross term of FX with each
+    factor is ``first_order_i / 100`` (only when ``risk`` has a Hessian) and the FX gamma
+    is zero. Central differences of this bilinear form with a 1 % FX bump and the rates
+    bump give exactly these numbers, so the Hessian stays consistent (DEC08).
+    """
+    factor = fx_factor(currency)
+    if currency == "RUB":
+        raise InvalidTerms("RUB has no FX factor against itself")
+    if factor in risk.factors:
+        raise InvalidTerms(f"{factor} is already a factor of this risk")
+    fx_index = len(risk.factors)
+    cross = (
+        tuple(
+            HessianEntry(i, fx_index, value / 100.0)
+            for i, value in enumerate(risk.first_order)
+            if value != 0.0
+        )
+        if risk.has_second_order
+        else ()
+    )
+    return FactorRisk(
+        (*risk.factors, factor),
+        (*risk.first_order, fx_delta_rub_per_pct),
+        tuple(sorted((*risk.hessian, *cross), key=lambda e: (e.i, e.j))),
+        risk.difference,
+        risk.bump_bp,
+        risk.has_second_order,
+    )
 
 
 def fx_futures_factor_risk(

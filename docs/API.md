@@ -184,3 +184,25 @@ writes the table to the job summary (informational, never gating).
 ## Fixed-RUB risk extensions (0.5.0)
 
 See [second-order and local API](second-order-local-risk.md) for `BondRiskEngine.second_order`, `approximate`, `jump_to_default`, and `prepare_local_bond_risk`.
+
+## Non-RUB bonds and FX delta (package 3)
+
+| Name | Description |
+| --- | --- |
+| `ValuationPolicy(..., foreign_curves=(("USD", "USD_SOFR"), ...))` | Discount curve ID per non-RUB currency; no fallback. `discount_curve_for(instrument)` raises `MissingMarketData` for an unmapped currency. |
+| `SUPPORTED_CURRENCIES` | `RUB`, `CNY`, `USD`, `EUR`. Other bond currencies are `UNSUPPORTED_PRODUCT`. |
+| `cny_discount_factors_v1`, `usd_discount_factors_v1`, `eur_discount_factors_v1`, `CurveKind.DISCOUNT_FACTORS` | Caller-built foreign `DiscountCurve`s (log-linear DF nodes, ACT/365F, dated the business date). |
+| `PositionValuation.currency_amounts: CurrencyAmounts \| None` | `currency`, `rub_per_unit`, `current_nominal`, `accrued_interest`, `dirty_price` (per bond) and signed `pv`, in the bond currency. The `_rub` fields are these at the snapshot rate. `None` for RUB bonds. |
+| `PositionValuation.yield_convention` | Identifier of the issue's yield basis (`Instrument.yield_convention`), on which `effective_yield` and `macaulay_duration_years` are quoted. |
+| `PortfolioRiskResult.fx_rates: tuple[FxRate, ...]` | FX rates used, by currency. |
+| `PortfolioScenario(name, shock, fx_shocks_pct=(("USD", 10.0), ...))` | Exact revaluation with FX moved by a percent against RUB. |
+| `fx_translated_factor_risk(risk, currency, fx_delta_rub_per_pct)` | Adds `FX|<ccy>` and its cross terms (`first_order_i / 100`) to RUB factor risk. |
+| `Instrument(..., yield_convention=YieldConvention(day_count=DayCount.ACT_360))`, `YieldRequest(..., convention)`, `DEFAULT_YIELD_CONVENTION` | Yield time basis from the issue terms (BACKLOG #38); default effective annual ACT/365F. |
+
+Rejections: an unmapped currency, a curve or FX rate missing from the snapshot are
+`MISSING_MARKET_DATA`; a curve of another currency, a foreign curve not dated the
+business date or not a node `DiscountCurve` are `INVALID_TERMS`; a non-annual yield
+quote and non-RUB bonds in `horizon_portfolio` are `UNSUPPORTED_PRODUCT`. All new fields
+are omitted from the canonical JSON while at their defaults (`canonical.OMIT_IF_DEFAULT`),
+so RUB-only results, policies, scenarios and instruments keep their bytes and hashes.
+See `CONVENTIONS.md` (Non-RUB bonds and FX) and `risk.md`.
