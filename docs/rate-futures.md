@@ -128,6 +128,46 @@ delivers over the delivery day's three periods; with deterministic rates and spr
 cheapest bond is certain, so the model price is the price without option value (an upper
 bound of the true futures price). No option model is stated or applied.
 
+## Horizon (carry, rolldown, theta)
+
+`engine.horizon(horizon_date)` (`rate_futures_horizon(request, *, horizon_date,
+curve_cache=None)`) and `engine.horizon(horizon_date, *, horizon_spot_settlement_date)`
+(`ofz_futures_horizon(...)`) carry a position to a later date on the two curve views of
+[`horizon`](../rub_fixed_income/horizon.py), as for bonds and swaps: **forward** reads
+today's curves forward (`forward_curve`, `DF(t)/DF(h)`: today's forwards realised) and
+**rolled** keeps their shape in calendar days (`roll_curve`, `roll_key_rate_curve`; the
+desk theta). Base curves only (an OIS request uses the engine's built curve); the
+calibrated basis and bond spreads are held. `horizon_date` must follow the valuation date.
+
+A futures position is margined daily, so nothing is invested or received:
+`pv_start_rub = received_rub = 0`, and with `scale = quantity * margin_per_point`
+`carry = scale * (price_forward - price_start)`, `rolldown = scale * (price_rolled -
+price_forward)`, `horizon_pnl = scale * (price_rolled - price_start)`. Prices are model
+prices, unrounded (no final-price rounding even for a contract settled by the horizon).
+
+- **Short-rate futures** (`RateFuturesHorizonValuation`, `rub-rate-futures-horizon-v1`):
+  a RUONIA business day `T < h` (an index span starting before `h`, a key rate effective
+  before `h`) is the path to the horizon, realised at today's projection plus basis in
+  both views; later rates are projected on the view plus basis. Known fixings stay. So
+  `price_forward` equals today's price up to rounding (carry is zero: a future has no
+  carry under today's forwards) and the rolldown is the whole theta: positive for a long
+  RUON on an upward curve, negative for a long RUONIA index, positive for a long KEYRATE
+  on an easing path. A key rate already decided (before `current_rate_end`) does not
+  move. A contract whose last trading day is on or before `h` settles on the realised
+  path: `price_forward == price_rolled`.
+- **OFZ futures** (`OfzFuturesHorizonValuation`, `rub-ofz-futures-horizon-v1`): the
+  caller gives the basket's spot settlement for the horizon `s_h` (`h <= s_h`, not before
+  today's spot, **before delivery**: carry through delivery is not modelled, and no OFZ
+  futures are listed since 2022). Each bond's dirty price at `s_h` is its flows after
+  `s_h` on the bond-curve view anchored at `s_h` with its spread held; it is carried to
+  delivery on the funding view with the basis held (coupons in `(s_h, D]` removed), and
+  the price is `min_i 10 * (forward_i - AI_i(D)) / CF_i`. The carry is the spread of the
+  bond yield over funding; the cheapest bond can switch, and `cheapest_start`,
+  `cheapest_forward`, `cheapest_rolled` report it.
+
+`for_quantity` engines carry the same prices at their own scale. Tests:
+`tests/test_futures_horizon.py`.
+
 ## Desk factors
 
 - `rate_futures_factor_risk(risk, curve_id, second_order=None)`: `IR|<curve_id>|<bucket>`

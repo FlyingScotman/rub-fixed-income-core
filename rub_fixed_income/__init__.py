@@ -336,11 +336,13 @@ from .local_risk import (
     prepare_local_bond_risk,
 )
 from .ofz_futures import (
+    OFZ_FUTURES_HORIZON_MODEL_VERSION,
     OFZ_FUTURES_RISK_MODEL_VERSION,
     OFZ_FUTURES_SECOND_ORDER_MODEL_VERSION,
     DeliverableAnalysis,
     DeliverableBond,
     OfzFuturesContract,
+    OfzFuturesHorizonValuation,
     OfzFuturesRiskEngine,
     OfzFuturesRiskRequest,
     OfzFuturesRiskResult,
@@ -350,6 +352,7 @@ from .ofz_futures import (
     ofz_conversion_factor,
     ofz_default_delivery_issue,
     ofz_futures_factor_risk,
+    ofz_futures_horizon,
 )
 from .pass_through import (
     PREPAYMENT_MODEL_VERSION,
@@ -426,9 +429,11 @@ from .portfolio_products import (
     XccyPositionValuation,
 )
 from .rate_futures import (
+    RATE_FUTURES_HORIZON_MODEL_VERSION,
     RATE_FUTURES_RISK_MODEL_VERSION,
     RATE_FUTURES_SECOND_ORDER_MODEL_VERSION,
     KeyRateFuturesContract,
+    RateFuturesHorizonValuation,
     RateFuturesRiskEngine,
     RateFuturesRiskRequest,
     RateFuturesRiskResult,
@@ -443,6 +448,7 @@ from .rate_futures import (
     futures_basis_factor,
     key_rate_index_value,
     rate_futures_factor_risk,
+    rate_futures_horizon,
     rate_futures_variation_margin,
     ruonia_average_final_price,
     ruonia_average_settlement_period,
@@ -1098,4 +1104,14 @@ __all__ += [
     "cds_horizon",
     "forward_hazard_curve",
     "roll_hazard_curve",
+]
+
+# BACKLOG #101: rate and OFZ futures horizon.
+__all__ += [
+    "OFZ_FUTURES_HORIZON_MODEL_VERSION",
+    "RATE_FUTURES_HORIZON_MODEL_VERSION",
+    "OfzFuturesHorizonValuation",
+    "RateFuturesHorizonValuation",
+    "ofz_futures_horizon",
+    "rate_futures_horizon",
 ]
