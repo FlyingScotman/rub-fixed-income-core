@@ -49,6 +49,7 @@ from .errors import InvalidTerms, UnsupportedProduct
 from .factors import CS_FACTOR, FactorRisk, HessianEntry, ir_factor
 
 __all__ = [
+    "CDS_HORIZON_MODEL_VERSION",
     "CDS_MODEL_VERSION",
     "CDS_RISK_MODEL_VERSION",
     "CDS_SECOND_ORDER_MODEL_VERSION",
@@ -59,6 +60,7 @@ __all__ = [
     "CdsCurveCache",
     "CdsCurveRequest",
     "CdsDefaultResult",
+    "CdsHorizonValuation",
     "CdsPremiumPeriod",
     "CdsQuoteRisk",
     "CdsRiskEngine",
@@ -75,12 +77,15 @@ __all__ = [
     "HazardCurve",
     "bootstrap_hazard_curve",
     "cds_factor_risk",
+    "cds_horizon",
     "cds_par_spread",
     "cds_premium_schedule",
     "cds_trade_dates",
     "flat_hazard_from_spread",
     "flat_hazard_from_upfront",
+    "forward_hazard_curve",
     "previous_imm_date",
+    "roll_hazard_curve",
     "spread_from_upfront",
     "standard_cds_maturity",
     "upfront_from_spread",
@@ -90,6 +95,7 @@ __all__ = [
 CDS_MODEL_VERSION = "cds-isda-standard-v1"
 CDS_RISK_MODEL_VERSION = "cds-isda-standard-risk-v1"
 CDS_SECOND_ORDER_MODEL_VERSION = "cds-isda-standard-second-order-v1"
+CDS_HORIZON_MODEL_VERSION = "rub-cds-horizon-v1"
 
 _IMM_MONTHS = (3, 6, 9, 12)
 _LINEAR_DAY_COUNTS = (DayCount.ACT_360, DayCount.ACT_365_FIXED)
@@ -425,6 +431,30 @@ class _Segments:
         for length, rate in zip(self.lengths[:-1], rates):
             bases.append(bases[-1] - rate * length)
         return bases
+
+
+def forward_hazard_curve(curve: HazardCurve, horizon_date: date) -> HazardCurve:
+    """Today's hazard curve read forward from ``horizon_date``: ``Q_h(t) = Q(t) / Q(h)``.
+
+    The same rates on the same node dates after the horizon; the rate in force at the
+    horizon applies from it, and with no node after it the last rate is flat.
+    """
+    if horizon_date < curve.curve_date:
+        raise InvalidTerms("a hazard curve can only be read forward")
+    if horizon_date == curve.curve_date:
+        return curve
+    later = tuple((d, r) for d, r in curve.nodes if d > horizon_date)
+    if not later:
+        return HazardCurve.flat(horizon_date, curve.nodes[-1][1], curve.day_count)
+    return HazardCurve(horizon_date, later, curve.day_count)
+
+
+def roll_hazard_curve(curve: HazardCurve, horizon_date: date) -> HazardCurve:
+    """The hazard curve moved to ``horizon_date``, its shape held in calendar days."""
+    if horizon_date < curve.curve_date:
+        raise InvalidTerms("a hazard curve can only be rolled forward")
+    shift = horizon_date - curve.curve_date
+    return HazardCurve(horizon_date, tuple((d + shift, r) for d, r in curve.nodes), curve.day_count)
 
 
 # ---------------------------------------------------------------- integration plan
@@ -1327,6 +1357,46 @@ class CdsDefaultResult:
     jtd_pnl: float
 
 
+@dataclass(frozen=True)
+class CdsHorizonValuation:
+    """Carry and rolldown from the valuation date to ``horizon_date``, conditional on
+    no default before the horizon; signed for the side, contract currency.
+
+    - ``received``: premium coupons that leave the contract's value between the two
+      step-in dates (accrual ending after today's step-in and by the horizon's), as
+      undiscounted cash: negative for a buyer, who pays them;
+    - ``pv_forward``: the contract at the horizon on today's curves read forward
+      (:func:`~rub_fixed_income.horizon.forward_curve`, :func:`forward_hazard_curve`);
+    - ``pv_rolled``: the contract at the horizon on rolled curves, shape held in
+      calendar days (:func:`~rub_fixed_income.horizon.roll_curve`,
+      :func:`roll_hazard_curve`): the theta at constant spreads per tenor;
+    - ``accrued_start``/``accrued_horizon``: :attr:`CdsValuation.accrued_premium` today
+      and on the rolled valuation.
+
+    ``carry = pv_forward + received - pv_start``, ``rolldown = pv_rolled - pv_forward``
+    and ``horizon_pnl = pv_rolled + received - pv_start``. A contract whose step-in at
+    the horizon passes its maturity has every remaining coupon received and zero
+    horizon value.
+    """
+
+    base_id: str
+    contract_id: str
+    currency: str
+    side: CdsSide
+    valuation_date: date
+    horizon_date: date
+    pv_start: float
+    pv_forward: float
+    pv_rolled: float
+    received: float
+    accrued_start: float
+    accrued_horizon: float
+    carry: float
+    rolldown: float
+    horizon_pnl: float
+    model_version: str = CDS_HORIZON_MODEL_VERSION
+
+
 _Moves = tuple[tuple[float, ...], float, float]
 _NO_MOVES: _Moves = (_ZERO_SHOCK, 0.0, 0.0)
 
@@ -1591,6 +1661,63 @@ class CdsRiskEngine:
             jtd_pnl=finite_money(settlement - self.base_pv, "JTD PnL"),
         )
 
+    def horizon(self, horizon_date: date) -> CdsHorizonValuation:
+        """Carry and rolldown to ``horizon_date`` (see :class:`CdsHorizonValuation`)."""
+        from .horizon import forward_curve, roll_curve  # cycle: horizon -> domain -> cds
+
+        valuation = self.request.valuation_date
+        if not isinstance(horizon_date, date) or horizon_date <= valuation:
+            raise InvalidTerms("horizon date must be after the valuation date")
+        contract = self.request.contract
+        recovery = self.request.credit_curve.recovery_rate
+        horizon_step_in = horizon_date + timedelta(days=contract.convention.step_in_days)
+        # Coupons (a buyer pays: negative) of the periods ending by the horizon's
+        # step-in: they are in the start value and not in the horizon value.
+        premium = -contract.side.sign * contract.notional * contract.coupon
+        received = math.fsum(
+            premium * p.year_fraction
+            for p in self._dates.periods
+            if p.accrual_end <= horizon_step_in
+        )
+        pv_forward = pv_rolled = accrued_horizon = 0.0
+        if horizon_step_in <= contract.maturity_date:
+            discount, hazard = self._discount, self.hazard_curve
+
+            def value(curve: DiscountFactorCurve, credit: HazardCurve) -> CdsValuation:
+                return value_cds(
+                    contract,
+                    valuation_date=horizon_date,
+                    discount_curve=curve,
+                    hazard_curve=credit,
+                    recovery_rate=recovery,
+                )
+
+            pv_forward = value(
+                forward_curve(discount, horizon_date), forward_hazard_curve(hazard, horizon_date)
+            ).pv
+            rolled = value(
+                roll_curve(discount, horizon_date), roll_hazard_curve(hazard, horizon_date)
+            )
+            pv_rolled, accrued_horizon = rolled.pv, rolled.accrued_premium
+        base = self.base_pv
+        return CdsHorizonValuation(
+            base_id=self.base_id,
+            contract_id=contract.contract_id,
+            currency=contract.currency,
+            side=contract.side,
+            valuation_date=valuation,
+            horizon_date=horizon_date,
+            pv_start=base,
+            pv_forward=finite_money(pv_forward, "forward PV"),
+            pv_rolled=finite_money(pv_rolled, "rolled PV"),
+            received=finite_money(received, "received"),
+            accrued_start=self.valuation.accrued_premium,
+            accrued_horizon=finite_money(accrued_horizon, "horizon accrued premium"),
+            carry=finite_money(pv_forward + received - base, "carry"),
+            rolldown=finite_money(pv_rolled - pv_forward, "rolldown"),
+            horizon_pnl=finite_money(pv_rolled + received - base, "horizon P&L"),
+        )
+
 
 def cds_factor_risk(
     risk: CdsRiskResult, discount_curve_id: str, second_order: CdsSecondOrderRisk | None = None
@@ -1614,3 +1741,19 @@ def cds_factor_risk(
         raise InvalidTerms("desk factors need central-difference risk (DEC08)")
     first = (*(b.dv01 for b in risk.buckets), risk.cs01)
     return FactorRisk(factors, first, (), "central", risk.bump_bp, False)
+
+
+def cds_horizon(
+    request: CdsRiskRequest,
+    *,
+    horizon_date: date,
+    curve_cache: ShockedCurveCache | None = None,
+    cds_cache: CdsCurveCache | None = None,
+) -> CdsHorizonValuation:
+    """Carry and rolldown of a CDS to ``horizon_date`` on the request's base curves."""
+    engine = CdsRiskEngine(
+        request,
+        ShockedCurveCache() if curve_cache is None else curve_cache,
+        CdsCurveCache() if cds_cache is None else cds_cache,
+    )
+    return engine.horizon(horizon_date)

@@ -203,6 +203,38 @@ protection on the same notional nets to about zero JTD.
 It hashes inputs only, not the bootstrapped hazards. `scenario_id` hashes the scenario,
 and `default_id` hashes the base and the recovery.
 
+## Horizon (carry, rolldown, theta)
+
+`engine.horizon(horizon_date)` (or `cds_horizon(request, horizon_date=...,
+curve_cache=None, cds_cache=None)`) returns a `CdsHorizonValuation`
+(`rub-cds-horizon-v1`) with the same semantics as the bond and swap horizons. It uses
+the base curves only (no shocks) and the request's recovery. Every amount is conditional
+on **no default before the horizon**, signed for the side, in the contract currency.
+
+- `pv_start`: the engine's base `pv` (dirty).
+- `received`: the premium coupons `α · N · c` as undiscounted cash, negative for a buyer.
+  They are the periods that leave the contract's value between the two step-in dates:
+  live at today's step-in, with accrual ending by `horizon + step_in_days`. With the
+  standard one-day step-in, a coupon paid on the horizon's step-in day counts as
+  received. Pay-on-default and protection over the window are not cash: no default.
+- `pv_forward`: `value_cds` at the horizon on today's curves read forward. The discount
+  curve is `forward_curve(base, h)`. The hazard curve is `forward_hazard_curve(curve, h)`:
+  the same rates on the same node dates after `h`, the rate in force at `h` applying from
+  `h` (flat at the last rate past the last node). Survival is `Q(t)/Q(h)` exactly.
+- `pv_rolled`: `value_cds` at the horizon on rolled curves, `roll_curve(base, h)` and
+  `roll_hazard_curve(curve, h)`: every node date moved by `h - curve_date`, so the spread
+  per tenor is held. `horizon_pnl` is the desk theta.
+- `accrued_start` / `accrued_horizon`: `CdsValuation.accrued_premium` today and on the
+  rolled valuation.
+- `carry = pv_forward + received - pv_start`, `rolldown = pv_rolled - pv_forward` and
+  `horizon_pnl = pv_rolled + received - pv_start`.
+
+When the horizon's step-in date passes the maturity, every remaining coupon is received
+and `pv_forward = pv_rolled = accrued_horizon = 0`. A horizon on or before the valuation
+date raises `InvalidTerms`. On flat hazard and flat discount curves the rolldown is zero.
+On an upward credit curve a seller rolls down: the shorter contract sits at a lower
+spread. `horizon_portfolio` does not carry CDS positions yet.
+
 ## Validation
 
 **External goldens** are ISDA Standard Model values published in QuantLib's test suite

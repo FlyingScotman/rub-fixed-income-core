@@ -77,6 +77,7 @@ from .cashflows import (
     dirty_rub_to_clean_price_pct,
 )
 from .cds import (
+    CDS_HORIZON_MODEL_VERSION,
     CDS_MODEL_VERSION,
     CDS_RISK_MODEL_VERSION,
     CDS_SECOND_ORDER_MODEL_VERSION,
@@ -87,6 +88,7 @@ from .cds import (
     CdsCurveCache,
     CdsCurveRequest,
     CdsDefaultResult,
+    CdsHorizonValuation,
     CdsPremiumPeriod,
     CdsQuoteRisk,
     CdsRiskEngine,
@@ -103,12 +105,15 @@ from .cds import (
     HazardCurve,
     bootstrap_hazard_curve,
     cds_factor_risk,
+    cds_horizon,
     cds_par_spread,
     cds_premium_schedule,
     cds_trade_dates,
     flat_hazard_from_spread,
     flat_hazard_from_upfront,
+    forward_hazard_curve,
     previous_imm_date,
+    roll_hazard_curve,
     spread_from_upfront,
     standard_cds_maturity,
     upfront_from_spread,
@@ -1084,4 +1089,13 @@ __all__ += [
     "forward_curve",
     "fx_horizon",
     "roll_key_rate_curve",
+]
+
+# BACKLOG #101: CDS horizon.
+__all__ += [
+    "CDS_HORIZON_MODEL_VERSION",
+    "CdsHorizonValuation",
+    "cds_horizon",
+    "forward_hazard_curve",
+    "roll_hazard_curve",
 ]
