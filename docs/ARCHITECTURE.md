@@ -33,7 +33,7 @@ or floats.
 | `kbd.py` | MOEX KBD/G-curve evaluator, G-spread, materialised curve (0.11.0). |
 | `curve_specs.py` | Versioned curve-spec registry keyed by core spec IDs (0.11.0). |
 | `factors.py` | Desk factor vocabulary `IR\|curve\|bucket`, `CS`, `FX\|ccy`; sparse Hessian (0.11.0). |
-| `portfolio.py` | `value_portfolio`: a book against one `MarketSnapshot`, coded coverage, result contract v2 (0.11.0); `horizon_portfolio` (0.14.0). |
+| `portfolio.py` | `value_portfolio`: a book against one `MarketSnapshot`, coded coverage, result contract v2 (0.11.0); `horizon_portfolio` (0.14.0; swaps and repo legs 0.30.0). |
 | `horizon.py` | Carry, rolldown and P&L explain to a horizon date (0.14.0). |
 | `_deprecation.py` | `DeprecationWarning` helper for APIs kept until 1.0 (0.12.0). |
 | `tenors.py` | Tenor codes: `parse_tenor`, `add_tenor`, `resolve_tenor` with spot lag and business-day convention (0.16.0). |

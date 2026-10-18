@@ -398,6 +398,7 @@ from .portfolio_instruments import (
     XccyInstrument,
 )
 from .portfolio_products import (
+    HORIZON_ADAPTERS,
     PRODUCT_ADAPTERS,
     CdsPositionValuation,
     CreditCurveUse,
@@ -408,7 +409,9 @@ from .portfolio_products import (
     OfzFuturesPositionValuation,
     PositionModel,
     RateFuturesPositionValuation,
+    RepoPositionHorizon,
     RepoPositionValuation,
+    SwapPositionHorizon,
     SwapPositionValuation,
     XccyPositionValuation,
 )
@@ -1064,4 +1067,11 @@ __all__ += [
     "repo_factor_risk",
     "repo_initial_discount_pct",
     "repo_start_amount",
+]
+
+# BACKLOG #101: swap and repo carry in horizon_portfolio.
+__all__ += [
+    "HORIZON_ADAPTERS",
+    "RepoPositionHorizon",
+    "SwapPositionHorizon",
 ]

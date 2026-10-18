@@ -81,6 +81,7 @@ from .portfolio_products import (
     FxForwardPositionValuation,
     FxFuturesPositionValuation,
     HessianTotal,
+    HorizonRow,
     JtdTotal,
     OfzFuturesPositionValuation,
     PositionModel,
@@ -88,11 +89,14 @@ from .portfolio_products import (
     ProductOutcome,
     ProductRow,
     RateFuturesPositionValuation,
+    RepoPositionHorizon,
     RepoPositionValuation,
+    SwapPositionHorizon,
     SwapPositionValuation,
     XccyPositionValuation,
     adapter_for,
     hessian_totals,
+    horizon_adapter_for,
     jtd_totals,
 )
 from .risk import BondRiskEngine, BondRiskRequest, BondScenario, ShockedCurveCache
@@ -688,35 +692,10 @@ def value_portfolio(
     models: list[PositionModel] = []
     exercised_memo: dict[str, ExercisedBond | CoreRejection] = {}
 
-    def curve(curve_id: str) -> _BuiltCurve:
-        if curve_id not in built:
-            try:
-                built[curve_id] = _build_curve(snapshot.curve(curve_id), snapshot.business_date)
-            except CoreRejection as exc:
-                built[curve_id] = exc
-        outcome = built[curve_id]
-        if isinstance(outcome, CoreRejection):
-            raise outcome
-        return outcome
-
-    def projection(curve_id: str, index: FixingIndex) -> _BuiltCurve:
-        return _projection_curve(snapshot, projections, curve_id, index)
-
-    def calendar(calendar_id: str) -> BusinessCalendar:
-        return _record_calendar(snapshot, calendar_id, used_calendars)
-
-    context = ProductContext(
-        snapshot,
-        job_id,
-        policy.bump_bp,
-        policy.include_second_order,
-        cache,
-        curve,
-        projection,
-        calendar,
-        used_fx,
-        bonds_by_id,
+    context = _product_context(
+        snapshot, policy, job_id, cache, built, projections, used_calendars, used_fx, bonds_by_id
     )
+    curve, projection = context.bond_curve, context.projection
 
     for position in positions:
         reason = stopped()
@@ -901,6 +880,50 @@ def value_portfolio(
     )
     return replace(
         result_v3, result_sha256=canonical_sha256(portfolio_result_hash_projection(result_v3))
+    )
+
+
+def _product_context(
+    snapshot: MarketSnapshot,
+    policy: ValuationPolicy,
+    job_id: str,
+    cache: ShockedCurveCache,
+    built: dict[str, _BuiltCurve | CoreRejection],
+    projections: dict[str, _BuiltCurve | CoreRejection],
+    used_calendars: dict[str, CalendarUse],
+    used_fx: dict[str, FxRate],
+    bonds: Mapping[str, Instrument],
+) -> ProductContext:
+    """The derivative adapters' context; curves and calendars resolve into the job's memos."""
+
+    def curve(curve_id: str) -> _BuiltCurve:
+        if curve_id not in built:
+            try:
+                built[curve_id] = _build_curve(snapshot.curve(curve_id), snapshot.business_date)
+            except CoreRejection as exc:
+                built[curve_id] = exc
+        outcome = built[curve_id]
+        if isinstance(outcome, CoreRejection):
+            raise outcome
+        return outcome
+
+    def projection(curve_id: str, index: FixingIndex) -> _BuiltCurve:
+        return _projection_curve(snapshot, projections, curve_id, index)
+
+    def calendar(calendar_id: str) -> BusinessCalendar:
+        return _record_calendar(snapshot, calendar_id, used_calendars)
+
+    return ProductContext(
+        snapshot,
+        job_id,
+        policy.bump_bp,
+        policy.include_second_order,
+        cache,
+        curve,
+        projection,
+        calendar,
+        used_fx,
+        bonds,
     )
 
 
@@ -1708,7 +1731,12 @@ class PositionHorizon:
 
 @dataclass(frozen=True)
 class PortfolioHorizonResult:
-    """Book carry to ``horizon_date``; totals are ``None`` unless coverage is complete."""
+    """Book carry to ``horizon_date``; totals are ``None`` unless coverage is complete.
+
+    ``positions`` holds the bonds; ``swaps`` and ``repos`` the derivative rows (BACKLOG
+    #101). Covered carry and horizon P&L sum every row; covered rolldown sums the bonds
+    and swaps (a repo row has no rolldown term, its carry is its horizon P&L).
+    """
 
     snapshot_id: str
     business_date: date
@@ -1722,6 +1750,8 @@ class PortfolioHorizonResult:
     covered_horizon_pnl_rub: float
     total_horizon_pnl_rub: float | None
     model_version: str = HORIZON_MODEL_VERSION
+    swaps: tuple[SwapPositionHorizon, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
+    repos: tuple[RepoPositionHorizon, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
 
 
 def horizon_portfolio(
@@ -1737,7 +1767,9 @@ def horizon_portfolio(
 
     Positions resolve exactly as in :func:`value_portfolio` (instrument checks, curve,
     calendar, quote and accrued, horizon policy); each spread is calibrated to the
-    quoted dirty price and held. Rejections carry the same codes.
+    quoted dirty price and held. Swaps and repo legs are carried on the engines
+    ``value_portfolio`` builds for them (``swap_horizon``, ``repo_carry``); other
+    derivatives are ``UNSUPPORTED_PRODUCT``. Rejections carry the same codes.
     """
     for names, label in (
         ([i.instrument_id for i in instruments], "instrument"),
@@ -1753,16 +1785,19 @@ def horizon_portfolio(
     cache = ShockedCurveCache() if curve_cache is None else curve_cache
     built: dict[str, _BuiltCurve | CoreRejection] = {}
     used_calendars: dict[str, CalendarUse] = {}
+    # Carry rows need no calculation IDs, so the context has no job identity.
+    context = _product_context(snapshot, policy, "", cache, built, {}, used_calendars, {}, by_id)
     rows: list[PositionHorizon] = []
+    derivatives: list[HorizonRow] = []
     rejections: list[Rejection] = []
     for position in positions:
         try:
             other = every.get(position.instrument_id)
             if other is not None and not isinstance(other, Instrument):
-                raise UnsupportedProduct(
-                    f"carry of {other.product.value} positions is not supported "
-                    "(horizon_portfolio values bonds)"
+                derivatives.append(
+                    horizon_adapter_for(other)(position, other, context, horizon_date)
                 )
+                continue
             rows.append(
                 _horizon_position(
                     position,
@@ -1787,7 +1822,10 @@ def horizon_portfolio(
                 )
             )
     coverage = _coverage(positions, rejections)
-    covered = finite_money(math.fsum(r.horizon_pnl_rub for r in rows), "covered horizon P&L")
+    every_row = (*rows, *derivatives)
+    swaps = tuple(r for r in derivatives if isinstance(r, SwapPositionHorizon))
+    rolling: tuple[PositionHorizon | SwapPositionHorizon, ...] = (*rows, *swaps)
+    covered = finite_money(math.fsum(r.horizon_pnl_rub for r in every_row), "covered horizon P&L")
     return PortfolioHorizonResult(
         snapshot.snapshot_id,
         snapshot.business_date,
@@ -1796,10 +1834,12 @@ def horizon_portfolio(
         coverage,
         tuple(rows),
         tuple(used_calendars[k] for k in sorted(used_calendars)),
-        finite_money(math.fsum(r.carry_rub for r in rows), "covered carry"),
-        finite_money(math.fsum(r.rolldown_rub for r in rows), "covered rolldown"),
+        finite_money(math.fsum(r.carry_rub for r in every_row), "covered carry"),
+        finite_money(math.fsum(r.rolldown_rub for r in rolling), "covered rolldown"),
         covered,
         covered if coverage.status == "complete" else None,
+        swaps=swaps,
+        repos=tuple(r for r in derivatives if isinstance(r, RepoPositionHorizon)),
     )
 
 

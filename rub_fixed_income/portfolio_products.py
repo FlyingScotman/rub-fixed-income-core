@@ -19,6 +19,10 @@ product modules' own; nothing is re-derived here.
    :data:`ROW_FIELDS`.
 
 Factor totals, the combined Hessian, JTD totals, coverage and scenarios then include it.
+
+**Carry.** ``horizon_portfolio`` carries a derivative through a second registry,
+:data:`HORIZON_ADAPTERS` ``(position, instrument, context, horizon_date) -> row``, on the
+same engines; a position type without one is ``UNSUPPORTED_PRODUCT`` there.
 """
 
 from __future__ import annotations
@@ -59,7 +63,7 @@ from .errors import (
     UnsupportedProduct,
 )
 from .factors import FactorRisk, HessianEntry, fx_futures_factor_risk, fx_translated_factor_risk
-from .floating import FixingIndex
+from .floating import FixingHistory, FixingIndex
 from .fx_forwards import (
     FX_FORWARD_RISK_MODEL_VERSION,
     FX_IMPLIED_CURVE_MODEL_VERSION,
@@ -111,6 +115,7 @@ from .repo import (
     REPO_MODEL_VERSION,
     AmountSource,
     FloatingRepoRate,
+    RepoCarry,
     RepoCollateralReference,
     RepoRiskEngine,
     RepoRiskRequest,
@@ -120,6 +125,7 @@ from .repo import (
 )
 from .swaps import (
     SWAP_MODEL_VERSION,
+    SwapHorizonValuation,
     SwapRiskEngine,
     SwapRiskRequest,
     SwapScenario,
@@ -143,6 +149,7 @@ if TYPE_CHECKING:
     from .portfolio import _BuiltCurve
 
 __all__ = [
+    "HORIZON_ADAPTERS",
     "PRODUCT_ADAPTERS",
     "ROW_FIELDS",
     "CdsPositionValuation",
@@ -157,12 +164,15 @@ __all__ = [
     "ProductContext",
     "ProductOutcome",
     "RateFuturesPositionValuation",
+    "RepoPositionHorizon",
     "RepoPositionValuation",
     "ScenarioView",
+    "SwapPositionHorizon",
     "SwapPositionValuation",
     "XccyPositionValuation",
     "adapter_for",
     "hessian_totals",
+    "horizon_adapter_for",
     "jtd_totals",
     "scale_factor_risk",
 ]
@@ -758,8 +768,10 @@ def _money(value: float, label: str) -> float:
 # --- swaps --------------------------------------------------------------------------
 
 
-def value_swap(position: Position, instrument: object, ctx: ProductContext) -> ProductOutcome:
-    assert isinstance(instrument, SwapInstrument)
+def _swap_engine(
+    position: Position, instrument: SwapInstrument, ctx: ProductContext
+) -> tuple[SwapRiskEngine, FixingHistory | None]:
+    """The swap's engine on the job's curves (shared by valuation and carry)."""
     _check_position(position, instrument.currency)
     swap = instrument.swap
     calendar = ctx.calendar(instrument.calendar_id)
@@ -780,6 +792,15 @@ def value_swap(position: Position, instrument: object, ctx: ProductContext) -> P
     engine = SwapRiskEngine(
         SwapRiskRequest(swap, calendar, discount, projection, fixings), ctx.curve_cache
     )
+    return engine, fixings
+
+
+def value_swap(position: Position, instrument: object, ctx: ProductContext) -> ProductOutcome:
+    assert isinstance(instrument, SwapInstrument)
+    engine, fixings = _swap_engine(position, instrument, ctx)
+    swap = instrument.swap
+    discount_id = instrument.discount_curve_id
+    projection_id = instrument.projection_curve_id
     valuation = engine.valuation()
     risk = engine.risk(bump_bp=ctx.bump_bp, difference="central")
     second = engine.second_order(bump_bp=ctx.bump_bp) if ctx.include_second_order else None
@@ -1505,8 +1526,10 @@ def _collateral_price(ctx: ProductContext, instrument_id: str) -> float | None:
     return quote.clean_price_pct / 100.0 * bond.outstanding_face(settlement) + accrued
 
 
-def value_repo(position: Position, instrument: object, ctx: ProductContext) -> ProductOutcome:
-    assert isinstance(instrument, RepoInstrument)
+def _repo_engine(
+    position: Position, instrument: RepoInstrument, ctx: ProductContext
+) -> tuple[RepoRiskEngine, FixingHistory | None]:
+    """The repo leg's engine on the job's curves (shared by valuation and carry)."""
     trade = instrument.trade
     _check_position(position, instrument.currency)
     if trade.is_open and instrument.assumed_end_date is None:
@@ -1547,6 +1570,15 @@ def value_repo(position: Position, instrument: object, ctx: ProductContext) -> P
         ),
         ctx.curve_cache,
     )
+    return engine, fixings
+
+
+def value_repo(position: Position, instrument: object, ctx: ProductContext) -> ProductOutcome:
+    assert isinstance(instrument, RepoInstrument)
+    engine, fixings = _repo_engine(position, instrument, ctx)
+    trade = instrument.trade
+    projection_id = instrument.projection_curve_id
+    rate = trade.rate
     valuation = engine.valuation()
     risk = engine.risk(bump_bp=ctx.bump_bp, difference="central")
     second = engine.second_order(bump_bp=ctx.bump_bp) if ctx.include_second_order else None
@@ -1610,6 +1642,124 @@ def value_repo(position: Position, instrument: object, ctx: ProductContext) -> P
         position, instrument.instrument_id, instrument.product.value, REPO_MODEL_VERSION, *flags
     )
     return ProductOutcome(row, reprice, model)
+
+
+# --- carry (horizon_portfolio) ---------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SwapPositionHorizon:
+    """Carry and rolldown of a swap position to the horizon (``swaps.swap_horizon``).
+
+    Money is signed RUB for the position: the trade's amounts (``per_trade``) times the
+    quantity. ``carry + rolldown == horizon_pnl``.
+    """
+
+    position_id: str
+    instrument_id: str
+    book: str
+    accounting_category: AccountingCategory
+    quantity: float
+    discount_curve_id: str
+    projection_curve_id: str | None
+    carry_rub: float
+    rolldown_rub: float
+    received_rub: float
+    horizon_pnl_rub: float
+    per_trade: SwapHorizonValuation
+
+
+@dataclass(frozen=True)
+class RepoPositionHorizon:
+    """Carry of a repo leg position to the horizon (``repo.repo_carry``).
+
+    Money is signed RUB for the position: the trade's amounts (``per_trade``) times the
+    quantity. ``carry_rub`` is the PV carry (today's forwards realised) and equals
+    ``horizon_pnl_rub``: the engine has no rolldown term (BACKLOG #100), so the row has
+    none. ``interest_carry_rub`` is the leg's accrual P&L over the same days.
+    """
+
+    position_id: str
+    instrument_id: str
+    book: str
+    accounting_category: AccountingCategory
+    quantity: float
+    discount_curve_id: str
+    projection_curve_id: str | None
+    carry_rub: float
+    interest_carry_rub: float
+    received_rub: float
+    horizon_pnl_rub: float
+    per_trade: RepoCarry
+
+
+HorizonRow = SwapPositionHorizon | RepoPositionHorizon
+HorizonAdapter = Callable[[Position, object, ProductContext, date], HorizonRow]
+
+
+def horizon_swap(
+    position: Position, instrument: object, ctx: ProductContext, horizon_date: date
+) -> SwapPositionHorizon:
+    assert isinstance(instrument, SwapInstrument)
+    engine, _ = _swap_engine(position, instrument, ctx)
+    carry = engine.horizon(horizon_date)
+    q = position.quantity
+    return SwapPositionHorizon(
+        position.position_id,
+        instrument.instrument_id,
+        position.book,
+        position.accounting_category,
+        q,
+        instrument.discount_curve_id,
+        instrument.projection_curve_id,
+        _money(carry.carry_rub * q, "swap carry"),
+        _money(carry.rolldown_rub * q, "swap rolldown"),
+        _money(carry.received_rub * q, "swap received"),
+        _money(carry.horizon_pnl_rub * q, "swap horizon P&L"),
+        carry,
+    )
+
+
+def horizon_repo(
+    position: Position, instrument: object, ctx: ProductContext, horizon_date: date
+) -> RepoPositionHorizon:
+    assert isinstance(instrument, RepoInstrument)
+    engine, _ = _repo_engine(position, instrument, ctx)
+    carry = engine.carry(horizon_date)
+    q = position.quantity
+    return RepoPositionHorizon(
+        position.position_id,
+        instrument.instrument_id,
+        position.book,
+        position.accounting_category,
+        q,
+        instrument.discount_curve_id,
+        instrument.projection_curve_id,
+        _money(carry.pv_carry_rub * q, "repo carry"),
+        _money(carry.interest_carry_rub * q, "repo interest carry"),
+        _money(carry.received_rub * q, "repo received"),
+        _money(carry.pv_carry_rub * q, "repo horizon P&L"),
+        carry,
+    )
+
+
+HORIZON_ADAPTERS: Mapping[type, HorizonAdapter] = {
+    SwapInstrument: horizon_swap,
+    RepoInstrument: horizon_repo,
+}
+"""Carry adapter per derivative position type; the others are not carried yet (BACKLOG #101)."""
+
+
+def horizon_adapter_for(instrument: object) -> HorizonAdapter:
+    adapter = HORIZON_ADAPTERS.get(type(instrument))
+    if adapter is None:
+        product = getattr(instrument, "product", None)
+        name = type(instrument).__name__ if product is None else product.value
+        raise UnsupportedProduct(
+            f"carry of {name} positions is not supported "
+            "(horizon_portfolio carries bonds, swaps and repos)"
+        )
+    return adapter
 
 
 PRODUCT_ADAPTERS: Mapping[type, Adapter] = {

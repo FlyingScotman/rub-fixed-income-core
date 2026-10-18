@@ -195,7 +195,7 @@ exercised rows).
 | `EXPIRED_CONTRACT` | a future past its last trading day (FX futures: delivery), or an OFZ basket settling after delivery |
 | `SETTLED_LEG` | an FX leg settled before the business date, a repo that has ended |
 | `INVALID_TERMS` | a position currency other than the instrument's; a curve of the wrong currency, kind or date (a key-rate curve not dated the business date); XCCY quotes with a spot other than the snapshot's; a value date off the settlement calendar |
-| `UNSUPPORTED_PRODUCT` | a position type without an adapter; any product limit of its engine; derivatives in `horizon_portfolio` |
+| `UNSUPPORTED_PRODUCT` | a position type without an adapter; any product limit of its engine; in `horizon_portfolio`, derivatives other than swaps and repo legs |
 | `CALCULATION_FAILED` | a numerical failure |
 
 ## Extension point
@@ -210,6 +210,13 @@ the `DerivativeRowHeader` fields, an adapter that builds its engine from the con
 `OMIT_IF_DEFAULT` so that existing v3 results keep their bytes. Factor totals, the
 Hessian, JTD, coverage, scenarios and model records then include it. Repo legs were
 added this way after the other products.
+
+Carry has its own registry, `HORIZON_ADAPTERS` (0.30.0): an adapter
+`(position, instrument, ProductContext, horizon_date) -> row` builds the same engine as
+the valuation adapter and returns a row with `carry_rub`, `received_rub` and
+`horizon_pnl_rub` (signed RUB for the position), held in its own tuple field on
+`PortfolioHorizonResult`. Swaps (`swap_horizon`: carry + rolldown) and repo legs
+(`repo_carry`: PV carry, no rolldown term) are registered.
 
 ## Performance
 
@@ -230,8 +237,9 @@ engines dominate; the portfolio layer adds no repricing.
 
 ## Not covered
 
-- Horizon / carry of derivatives (`horizon_portfolio` rejects them; `swap_horizon`,
-  `repo_carry` exist), and derivatives in `local_worker.run_local_risk` (contract v1).
+- Carry of FX forwards and swaps, XCCY, CDS and futures (`horizon_portfolio` carries
+  swaps and repo legs since 0.30.0; the others have no carry engine, BACKLOG #101), and
+  derivatives in `local_worker.run_local_risk` (contract v1).
 - Basis shocks (`FXBASIS`, `XCCYBASIS`, `FUTBASIS`) in `PortfolioScenario`; recovery as a
   factor (`recovery01_rub` is reported beside the factors, BACKLOG #67).
 - One shared engine per FX futures contract (each position builds its own; rate and OFZ

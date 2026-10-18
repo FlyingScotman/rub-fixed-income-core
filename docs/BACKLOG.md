@@ -463,9 +463,11 @@ other repositories and must be changed there, not in this core.
 
 ## Portfolio v3 — 0.29.0
 
-101. **Derivative carry in `horizon_portfolio`.** It rejects every derivative
-     (`UNSUPPORTED_PRODUCT`); `swap_horizon` and `repo_carry` exist, FX, XCCY and CDS carry
-     do not.
+101. *(swaps and repo legs done in 0.30.0)* **Derivative carry in `horizon_portfolio`.**
+     Swaps and repo legs are carried on their engines (`HORIZON_ADAPTERS`). Open: FX
+     forwards and swaps, XCCY and CDS have no carry engine (a horizon FX rule, forwards
+     realised or spot held, must be stated first); futures carry (variation margin to the
+     horizon on today's forwards) is not defined; repo carry has no rolldown term (#100).
 102. **Derivatives in the local worker** (`run_local_risk`; its contract v1 is fixed RUB
      bonds), including FX futures (#33) and rate futures (#87).
 103. **Basis scenarios.** `PortfolioScenario` cannot shift `FXBASIS`, `XCCYBASIS` or

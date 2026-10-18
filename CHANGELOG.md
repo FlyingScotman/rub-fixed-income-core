@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.30.0 — swap and repo carry in `horizon_portfolio`
+
+BACKLOG #101, first part. `horizon_portfolio` now carries swaps and repo legs on the
+engines `value_portfolio` builds for them; the other derivatives stay
+`UNSUPPORTED_PRODUCT`. No number of a bond, a `value_portfolio` result (v2 or v3) or a
+pinned hash moves.
+
+### Added
+
+- **Derivative carry in `horizon_portfolio`.** `instruments` takes any
+  `PortfolioInstrument`. Swap positions (RUONIA OIS, two-curve OIS, key-rate swaps) get a
+  `SwapPositionHorizon` row from `SwapRiskEngine.horizon` (carry with today's forwards
+  realised, rolldown with the curve shape held, flows received to the horizon, horizon
+  P&L); repo legs get a `RepoPositionHorizon` row from `RepoRiskEngine.carry` (PV carry,
+  which is the horizon P&L, interest carry and flows received; the engine has no rolldown
+  term, BACKLOG #100). Money is signed RUB for the position, the trade's result is in
+  `per_trade`. The engines resolve curves, calendars, fixings and collateral prices
+  exactly as in `value_portfolio`, with the same rejection codes.
+- `PortfolioHorizonResult.swaps` and `.repos` (`OMIT_IF_DEFAULT`, empty for bond-only
+  books). Covered carry and horizon P&L sum bonds, swaps and repos; covered rolldown sums
+  bonds and swaps. The total is reported when coverage is complete, so a book of bonds,
+  swaps and repos now has one.
+- `HORIZON_ADAPTERS` and `horizon_adapter_for` (`portfolio_products`): the carry registry
+  beside `PRODUCT_ADAPTERS`; adapters share the engine builders of the valuation
+  adapters.
+
+### Changed
+
+- The `UNSUPPORTED_PRODUCT` message for a derivative in `horizon_portfolio` names what is
+  carried ("horizon_portfolio carries bonds, swaps and repos").
+
 ## 0.29.0 — derivatives in `value_portfolio`, result contract v3
 
 Portfolio integration of packages 2, 4, 5, 6, 7 and 8. A book with any derivative
