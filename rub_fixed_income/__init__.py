@@ -270,12 +270,17 @@ from .fx_futures import (
     FxFuturesSecondOrderRisk,
 )
 from .horizon import (
+    FX_HORIZONS,
     HORIZON_MODEL_VERSION,
+    FxHorizon,
     HorizonPnlExplain,
     HorizonValuation,
     explain_horizon_pnl,
+    forward_curve,
+    fx_horizon,
     horizon_valuation,
     roll_curve,
+    roll_key_rate_curve,
 )
 from .inflation import (
     INFLATION_MODEL_VERSION,
@@ -1069,9 +1074,14 @@ __all__ += [
     "repo_start_amount",
 ]
 
-# BACKLOG #101: swap and repo carry in horizon_portfolio.
+# BACKLOG #101: derivative carry and theta in horizon_portfolio.
 __all__ += [
+    "FX_HORIZONS",
     "HORIZON_ADAPTERS",
+    "FxHorizon",
     "RepoPositionHorizon",
     "SwapPositionHorizon",
+    "forward_curve",
+    "fx_horizon",
+    "roll_key_rate_curve",
 ]

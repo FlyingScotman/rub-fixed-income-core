@@ -64,8 +64,8 @@ from .discount import CurveBootstrapRequest, DiscountCurve, DiscountFactorCurve
 from .errors import InvalidTerms, MissingMarketData, UnsupportedProduct
 from .factors import FactorRisk, HessianEntry, ir_factor
 from .floating import FixingHistory
-from .horizon import roll_curve
-from .key_rate import KeyRateForwardCurve, KeyRateForwardSegment
+from .horizon import roll_curve, roll_key_rate_curve
+from .key_rate import KeyRateForwardCurve
 from .risk import BucketRisk
 from .tenors import parse_tenor, resolve_tenor
 
@@ -827,20 +827,6 @@ def _key_rate_shift_weights(
     return tuple(float(value) for value in row)
 
 
-def _roll_key_rate_curve(curve: KeyRateForwardCurve, horizon: date) -> KeyRateForwardCurve:
-    shift = horizon - curve.curve_date
-    return KeyRateForwardCurve(
-        horizon,
-        curve.current_rate,
-        curve.current_rate_end + shift,
-        tuple(
-            KeyRateForwardSegment(s.start_date + shift, s.end_date + shift, s.rate, s.pillar_tenor)
-            for s in curve.segments
-        ),
-        curve.model_version,
-    )
-
-
 _Vector = tuple[float, ...]
 
 
@@ -1471,7 +1457,7 @@ class SwapRiskEngine:
         elif isinstance(projection, KeyRateForwardCurve):
             if projection.horizon_date <= horizon_date:
                 raise MissingMarketData("key-rate projection curve ends before the horizon")
-            today, rolled = projection, _roll_key_rate_curve(projection, horizon_date)
+            today, rolled = projection, roll_key_rate_curve(projection, horizon_date)
         else:
             today, rolled = projection, roll_curve(projection, horizon_date)
         sign = swap.fixed_sign

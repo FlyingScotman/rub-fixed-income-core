@@ -29,6 +29,13 @@ floater has no core convention, so its accrued fields are None. P&L explain of a
 floater is not supported: it needs the fixings realised over the horizon.
 
 Amounts are RUB per bond; :func:`horizon_portfolio` scales by position quantity.
+
+Derivative engines carry to a horizon on the same two curve views (BACKLOG #101):
+:func:`forward_curve` (today's curve read forward, ``DF(t) / DF(horizon)``) and
+:func:`roll_curve` (shape held). ``horizon_pnl`` on rolled curves is the theta. An FX
+product also needs the spot at the horizon, a stated :data:`FxHorizon` rule:
+``"spot_held"`` keeps today's spot (sticky spot: forward points roll down) and
+``"forwards_realised"`` moves it to today's forward for the horizon's spot value date.
 """
 
 from __future__ import annotations
@@ -37,7 +44,7 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
-from typing import Literal
+from typing import Literal, cast
 
 from ._money import finite_money, positive_money
 from ._risk_common import ShockedCurveCache, _base_curve
@@ -48,18 +55,34 @@ from .discount import CurveBootstrapRequest, DiscountCurve
 from .domain import FloatingCouponLeg, Instrument, ProductType
 from .errors import InvalidTerms, UnsupportedProduct
 from .floating import FixingHistory, FloatingLeg
+from .key_rate import KeyRateForwardCurve, KeyRateForwardSegment
 
 __all__ = [
+    "FX_HORIZONS",
     "HORIZON_MODEL_VERSION",
+    "FxHorizon",
     "HorizonPnlExplain",
     "HorizonValuation",
     "explain_horizon_pnl",
+    "forward_curve",
+    "fx_horizon",
     "horizon_valuation",
     "roll_curve",
+    "roll_key_rate_curve",
 ]
 
 HORIZON_MODEL_VERSION = "rub-horizon-carry-v1"
 HorizonPolicy = Literal["maturity", "confirmed_put"]
+FxHorizon = Literal["spot_held", "forwards_realised"]
+FX_HORIZONS: tuple[FxHorizon, ...] = ("spot_held", "forwards_realised")
+"""The FX spot at a horizon: today's spot, or today's forward for the horizon spot date."""
+
+
+def fx_horizon(value: object) -> FxHorizon:
+    """``value`` checked as an :data:`FxHorizon`."""
+    if value not in FX_HORIZONS:
+        raise InvalidTerms(f"fx_horizon must be one of {', '.join(FX_HORIZONS)}")
+    return cast(FxHorizon, value)
 
 
 def roll_curve(curve: DiscountCurve, horizon_date: date) -> DiscountCurve:
@@ -71,6 +94,52 @@ def roll_curve(curve: DiscountCurve, horizon_date: date) -> DiscountCurve:
         curve,
         curve_date=horizon_date,
         nodes=tuple((node + shift, df) for node, df in curve.nodes),
+    )
+
+
+def forward_curve(curve: DiscountCurve, horizon_date: date) -> DiscountCurve:
+    """Today's curve read forward from ``horizon_date``: ``DF_h(t) = DF(t) / DF(horizon)``.
+
+    Exact for ``t`` up to the last node (log-DF interpolation is linear in calendar
+    days); beyond it the flat forward is kept, which is exact for curve time bases
+    linear in days (ACT/365F, ACT/360).
+    """
+    if horizon_date < curve.curve_date:
+        raise InvalidTerms("a curve can only be read forward")
+    if horizon_date == curve.curve_date:
+        return curve
+    flat = curve.flat_continuous_rate
+    if flat is not None:
+        return DiscountCurve.flat(horizon_date, flat, convention=curve.convention)
+    anchor = curve.discount_factor(horizon_date)
+    later = tuple((node, df / anchor) for node, df in curve.nodes if node > horizon_date)
+    if later:
+        return replace(curve, curve_date=horizon_date, nodes=later)
+    if len(curve.nodes) == 1:
+        prior_date, prior_log_df = curve.curve_date, 0.0
+    else:
+        prior_date, prior_df = curve.nodes[-2]
+        prior_log_df = math.log(prior_df)
+    last_date, last_df = curve.nodes[-1]
+    years = curve.convention.time_day_count.year_fraction(prior_date, last_date)
+    rate = -(math.log(last_df) - prior_log_df) / years
+    return DiscountCurve.flat(horizon_date, rate, convention=curve.convention)
+
+
+def roll_key_rate_curve(curve: KeyRateForwardCurve, horizon_date: date) -> KeyRateForwardCurve:
+    """A key-rate forward curve moved to ``horizon_date`` with its dates shifted alike."""
+    if horizon_date < curve.curve_date:
+        raise InvalidTerms("a curve can only be rolled forward")
+    shift = horizon_date - curve.curve_date
+    return KeyRateForwardCurve(
+        horizon_date,
+        curve.current_rate,
+        curve.current_rate_end + shift,
+        tuple(
+            KeyRateForwardSegment(s.start_date + shift, s.end_date + shift, s.rate, s.pillar_tenor)
+            for s in curve.segments
+        ),
+        curve.model_version,
     )
 
 
