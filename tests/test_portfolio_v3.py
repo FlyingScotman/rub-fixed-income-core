@@ -909,6 +909,14 @@ def test_horizon_portfolio_fx_products_follow_the_fx_rule() -> None:
         horizon_book(fx_horizon="sticky")
 
 
+def test_horizon_holds_the_key_rate_decision_date() -> None:
+    """KK-10.26 settles on the 26 October decision: a 1-day roll leaves it alone (#109)."""
+    only = tuple(p for p in positions() if p.position_id == "p-kk")
+    for horizon in (date(2026, 10, 16), date(2026, 10, 19)):
+        (kk,) = horizon_book(positions=only, horizon_date=horizon).rate_futures
+        assert kk.horizon_pnl_rub == 0.0  # the decided rate path does not move
+
+
 def test_horizon_portfolio_derivative_rejections_carry_codes() -> None:
     no_end = tuple(
         replace(i, assumed_end_date=None)

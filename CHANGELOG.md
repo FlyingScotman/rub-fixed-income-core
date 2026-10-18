@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.32.0 — CBR decision dates held in the key-rate roll
+
+BACKLOG #109 completed (owner decision: a CBR meeting date does not move with the
+roll). No `value_portfolio` result, bond number or pinned hash moves; key-rate swap and
+KEYRATE futures horizon numbers do.
+
+### Changed
+
+- **`roll_key_rate_curve(curve, h)`** keeps the next decision date (`current_rate_end`)
+  and the rate in force until it; only the tenor pillars roll (each segment end moves by
+  `h - d0`, the first segment still starts at the decision date). A horizon on or after
+  the decision realises it at today's forward: the first segment's rate becomes the
+  current rate, until its rolled pillar end (no later meeting date is known to the
+  curve). A curve with no forward segment cannot be rolled past its decision
+  (`MissingMarketData`).
+- On the test book a 1-day theta of 20 KK-10.26 contracts (effective on the 26 October
+  decision) is now 0 instead of +30,000 RUB; the 2Y key-rate swap's 1-day rolldown is
+  −15.9k instead of −27.8k RUB (the rest was the meeting date sliding).
+- Model versions `rub-irs-horizon-carry-v2` (key-rate swaps move; OIS swaps do not) and
+  `rub-rate-futures-horizon-v2` (KEYRATE futures move; RUONIA futures do not).
+
 ## 0.31.0 — carry, rolldown and theta of every derivative
 
 BACKLOG #101 completed. Every derivative engine carries to a horizon with the bond
@@ -65,7 +86,8 @@ result (v2 or v3), bond number, swap number or pinned hash moves.
 - A non-RUB CDS is carried with `"spot_held"` only; OFZ futures only before delivery; a
   future settling inside the horizon reports its unrounded model price.
 - `roll_key_rate_curve` shifts the next CBR decision date with the horizon (as key-rate
-  swaps have since 0.21.0); holding meeting dates fixed is an owner decision.
+  swaps have since 0.21.0); holding meeting dates fixed is an owner decision (done in
+  0.32.0).
 - Default-weighted CDS carry, rebootstrapping CDS and XCCY curves at the horizon, and
   funding of received cash and margin are not modelled.
 

@@ -136,7 +136,8 @@ curve_cache=None)`) and `engine.horizon(horizon_date, *, horizon_spot_settlement
 [`horizon`](../rub_fixed_income/horizon.py), as for bonds and swaps: **forward** reads
 today's curves forward (`forward_curve`, `DF(t)/DF(h)`: today's forwards realised) and
 **rolled** keeps their shape in calendar days (`roll_curve`, `roll_key_rate_curve`; the
-desk theta). Base curves only (an OIS request uses the engine's built curve); the
+desk theta; a key-rate curve keeps its CBR decision date, so a KEYRATE contract effective
+on the next decision has zero theta). Base curves only (an OIS request uses the engine's built curve); the
 calibrated basis and bond spreads are held. `horizon_date` must follow the valuation date.
 
 A futures position is margined daily, so nothing is invested or received:
@@ -145,7 +146,7 @@ A futures position is margined daily, so nothing is invested or received:
 price_forward)`, `horizon_pnl = scale * (price_rolled - price_start)`. Prices are model
 prices, unrounded (no final-price rounding even for a contract settled by the horizon).
 
-- **Short-rate futures** (`RateFuturesHorizonValuation`, `rub-rate-futures-horizon-v1`):
+- **Short-rate futures** (`RateFuturesHorizonValuation`, `rub-rate-futures-horizon-v2`):
   a RUONIA business day `T < h` (an index span starting before `h`, a key rate effective
   before `h`) is the path to the horizon, realised at today's projection plus basis in
   both views; later rates are projected on the view plus basis. Known fixings stay. So

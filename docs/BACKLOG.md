@@ -490,7 +490,7 @@ other repositories and must be changed there, not in this core.
      position names no RUB curve for a forward FX rate); OFZ futures only to a horizon
      spot settlement before delivery; a future that settles inside the horizon reports
      its unrounded model price, not the exchange-rounded final price.
-109. **Key-rate curve roll.** `roll_key_rate_curve` (used since 0.21.0 by key-rate swaps,
+109. *(done in 0.32.0: the decision date is held, the tenor pillars roll)* **Key-rate curve roll.** `roll_key_rate_curve` (used since 0.21.0 by key-rate swaps,
      and now by KEYRATE futures) moves every date by the horizon, the next decision
      date (`current_rate_end`) included. CBR meeting dates are fixed events, so a desk
      may prefer to hold them (a date-anchored key-rate path, rolldown only from the

@@ -456,7 +456,7 @@ Each result has `pv_start`, `pv_forward` (today's curves read forward), `pv_roll
 | Name | Description |
 | --- | --- |
 | `FxHorizon`, `FX_HORIZONS`, `fx_horizon(value)` | The FX spot at a horizon: `"spot_held"` or `"forwards_realised"`. |
-| `forward_curve(curve, horizon_date)`, `roll_curve`, `roll_key_rate_curve(curve, horizon_date)` | Curve views at a horizon (`rub_fixed_income._curve_views`, re-exported by `horizon`). |
+| `forward_curve(curve, horizon_date)`, `roll_curve`, `roll_key_rate_curve(curve, horizon_date)` | Curve views at a horizon (`rub_fixed_income._curve_views`, re-exported by `horizon`). The key-rate roll holds the CBR decision date **(0.32.0)**. |
 | `FxForwardRiskEngine.horizon(h, *, horizon_spot_value_date, fx_horizon="spot_held")`, `fx_forward_horizon(request, ...)` -> `FxForwardHorizonValuation` | FX forwards and swaps; `horizon_spot_rate` reports the spot used. |
 | `FxFuturesRiskEngine.horizon(h, *, horizon_spot_value_date, fx_horizon="spot_held")`, `fx_futures_horizon(request, ...)` -> `FxFuturesHorizonValuation` | Prices `price_start` / `price_forward` / `price_rolled`; money is the variation margin. |
 | `XccyRiskEngine.horizon(h, *, horizon_spot_value_date, fx_horizon="spot_held")`, `xccy_horizon(request, ...)` -> `XccyHorizonValuation` | Cross-currency swaps; a quote-built foreign curve is read forward and rolled as built. |

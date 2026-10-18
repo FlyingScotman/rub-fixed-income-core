@@ -550,7 +550,11 @@ of today's base curves (`rub_fixed_income._curve_views`, re-exported by `horizon
   rates after `h`, so `Q_h(t) = Q(t) / Q(h)`.
 - **Rolled view** `roll_curve(curve, h)`, `roll_key_rate_curve`, `roll_hazard_curve`:
   every node date moved by `h - d0`, the shape held in calendar days. This is the desk
-  theta: curves (and CDS spreads per tenor) moved to the next day unchanged.
+  theta: curves (and CDS spreads per tenor) moved to the next day unchanged. A key-rate
+  curve holds its CBR decision date (0.32.0, #109): the rate in force until the meeting
+  stays, the tenor pillars roll, and the first segment still starts on the meeting date.
+  A horizon past the meeting realises the decision at today's forward (the first
+  segment's rate, current until its rolled pillar end).
 - **Path to the horizon:** a floating observation before `h` (RUONIA, a repo
   benchmark, a futures day, a key rate effective before `h`) keeps today's forward on
   both views; later observations are projected on the view. Calibrated bases and

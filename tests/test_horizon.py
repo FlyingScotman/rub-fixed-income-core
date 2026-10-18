@@ -22,6 +22,7 @@ from rub_fixed_income import (
     FloatingCouponRule,
     Instrument,
     InvalidTerms,
+    MissingMarketData,
     Offer,
     OfferKind,
     OisQuote,
@@ -35,6 +36,7 @@ from rub_fixed_income import (
     roll_curve,
 )
 from rub_fixed_income.dates import add_months
+from rub_fixed_income.key_rate import KeyRateForwardCurve, KeyRateForwardSegment
 
 D0 = date(2026, 10, 15)  # Thursday; settlement Friday 16 October
 D1 = date(2026, 11, 16)  # Monday; settlement Tuesday 17 November
@@ -334,20 +336,55 @@ def test_forward_curve_reads_today_forward_from_the_horizon() -> None:
         fx_horizon("sticky")
 
 
-def test_roll_key_rate_curve_shifts_every_date() -> None:
-    from rub_fixed_income import roll_key_rate_curve
-    from rub_fixed_income.key_rate import KeyRateForwardCurve, KeyRateForwardSegment
-
-    curve = KeyRateForwardCurve(
+def _key_rate_curve() -> KeyRateForwardCurve:
+    return KeyRateForwardCurve(
         D0,
         0.165,
         date(2026, 10, 26),
-        (KeyRateForwardSegment(date(2026, 10, 26), date(2027, 6, 1), 0.15, "1Y"),),
+        (
+            KeyRateForwardSegment(date(2026, 10, 26), date(2027, 1, 18), 0.155, "3M"),
+            KeyRateForwardSegment(date(2027, 1, 18), date(2027, 6, 1), 0.14, "6M"),
+        ),
     )
-    rolled = roll_key_rate_curve(curve, D1)
-    shift = D1 - D0
-    assert rolled.curve_date == D1
-    assert rolled.current_rate_end == curve.current_rate_end + shift
-    assert rolled.rate_at(date(2027, 1, 4) + shift) == curve.rate_at(date(2027, 1, 4))
+
+
+def test_roll_key_rate_curve_holds_the_decision_date() -> None:
+    from rub_fixed_income import roll_key_rate_curve
+
+    curve = _key_rate_curve()
+    horizon = date(2026, 10, 20)
+    shift = horizon - D0
+    rolled = roll_key_rate_curve(curve, horizon)
+    assert rolled.curve_date == horizon
+    assert rolled.current_rate == curve.current_rate
+    assert rolled.current_rate_end == curve.current_rate_end  # CBR meeting does not move
+    first, second = rolled.segments
+    assert first.start_date == curve.current_rate_end
+    assert first.end_date == date(2027, 1, 18) + shift  # tenor pillars roll
+    assert second.end_date == date(2027, 6, 1) + shift
+    assert [s.rate for s in rolled.segments] == [0.155, 0.14]
+    assert [s.pillar_tenor for s in rolled.segments] == ["3M", "6M"]
+    assert rolled.rate_at(date(2026, 10, 25)) == 0.165
+    assert rolled.rate_at(date(2026, 10, 26)) == 0.155
     with pytest.raises(InvalidTerms):
         roll_key_rate_curve(curve, D0 - timedelta(days=1))
+
+
+def test_roll_key_rate_curve_past_the_decision_realises_it() -> None:
+    from rub_fixed_income import roll_key_rate_curve
+
+    curve = _key_rate_curve()
+    horizon = date(2026, 11, 2)
+    shift = horizon - D0
+    rolled = roll_key_rate_curve(curve, horizon)
+    assert rolled.curve_date == horizon
+    assert rolled.current_rate == 0.155  # the decision taken at today's forward
+    assert rolled.current_rate_end == date(2027, 1, 18) + shift
+    (later,) = rolled.segments
+    assert (later.start_date, later.end_date, later.rate) == (
+        date(2027, 1, 18) + shift,
+        date(2027, 6, 1) + shift,
+        0.14,
+    )
+    with pytest.raises(MissingMarketData):
+        roll_key_rate_curve(KeyRateForwardCurve(D0, 0.165, date(2026, 10, 26), ()), horizon)

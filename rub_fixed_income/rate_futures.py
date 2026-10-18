@@ -93,7 +93,7 @@ __all__ = [
 
 RATE_FUTURES_RISK_MODEL_VERSION = "rub-rate-futures-v1"
 RATE_FUTURES_SECOND_ORDER_MODEL_VERSION = "rub-rate-futures-second-order-v1"
-RATE_FUTURES_HORIZON_MODEL_VERSION = "rub-rate-futures-horizon-v1"
+RATE_FUTURES_HORIZON_MODEL_VERSION = "rub-rate-futures-horizon-v2"
 
 
 def _round_half_up(value: float | Decimal, decimals: int) -> float:

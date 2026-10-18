@@ -96,7 +96,7 @@ __all__ = [
 
 SWAP_MODEL_VERSION = "rub-irs-ois-krs-v1"
 SWAP_SECOND_ORDER_MODEL_VERSION = "rub-irs-ois-krs-second-order-v1"
-SWAP_HORIZON_MODEL_VERSION = "rub-irs-horizon-carry-v1"
+SWAP_HORIZON_MODEL_VERSION = "rub-irs-horizon-carry-v2"
 
 SwapSide = Literal["payer", "receiver"]
 SwapIndex = Literal["ruonia", "key_rate"]

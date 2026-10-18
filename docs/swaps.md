@@ -199,7 +199,8 @@ the [horizon module](CONVENTIONS.md#horizon-valuation-carry-and-rolldown-0140):
 - `pv_forward_rub`: the remaining flows at the horizon on today's curves read
   forward, `DF(t) / DF(horizon)`.
 - `pv_rolled_rub`: the remaining flows on rolled curves, with the shape held in
-  calendar days (`roll_curve`; a key-rate forward curve shifts all its dates).
+  calendar days (`roll_curve`; a key-rate forward curve keeps its next CBR decision
+  date and rolls its tenor pillars, 0.32.0).
   Fixings between today and the horizon are today's forwards.
 - `carry = pv_forward + received - pv_start`, `rolldown = pv_rolled - pv_forward`,
   `horizon_pnl = carry + rolldown`.
@@ -218,7 +219,7 @@ On flat curves the rolldown is zero, and the carry is
 - the fixing history's identity (snapshot ID, `known_at`, content hash).
 
 Model versions: `rub-irs-ois-krs-v1`, `rub-irs-ois-krs-second-order-v1` and
-`rub-irs-horizon-carry-v1`.
+`rub-irs-horizon-carry-v2` (v1 until 0.31.0 shifted the CBR decision date).
 
 ## Validation
 
