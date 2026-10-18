@@ -16,8 +16,9 @@ from __future__ import annotations
 import math
 from dataclasses import asdict, dataclass, field
 from datetime import date
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
+from ._curve_views import FxHorizon, fx_horizon, roll_curve
 from ._money import finite_money, positive_money
 from ._risk_common import (
     _ZERO_SHOCK,
@@ -36,9 +37,6 @@ from .conventions import DayCount
 from .discount import CurveBootstrapRequest, DiscountCurve, DiscountFactorCurve
 from .errors import InvalidTerms
 from .risk import BucketRisk
-
-if TYPE_CHECKING:
-    from .horizon import FxHorizon
 
 FX_FUTURES_RISK_MODEL_VERSION = "rub-fx-futures-parity-risk-v1"
 FX_FUTURES_SECOND_ORDER_MODEL_VERSION = "rub-fx-futures-parity-second-order-v1"
@@ -299,8 +297,6 @@ class _HorizonView:
 
 def _horizon_views(curve: DiscountCurve, horizon: date) -> tuple[_HorizonView, _HorizonView]:
     """(forward view, rolled view) of a base curve at ``horizon``."""
-    from .horizon import roll_curve  # horizon imports this module (through domain and xccy)
-
     return _HorizonView(horizon, curve), _HorizonView(horizon, curve, roll_curve(curve, horizon))
 
 
@@ -312,8 +308,6 @@ def _horizon_rule(
     rule: object,
 ) -> FxHorizon:
     """The checked FX horizon rule; the horizon and its spot date must follow today's."""
-    from .horizon import fx_horizon  # horizon imports this module (through domain and xccy)
-
     checked = fx_horizon(rule)
     if not isinstance(horizon_date, date) or horizon_date <= valuation:
         raise InvalidTerms("horizon date must be after the valuation date")

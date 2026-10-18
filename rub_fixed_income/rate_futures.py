@@ -38,6 +38,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from itertools import pairwise
 from typing import Literal
 
+from ._curve_views import forward_curve, roll_curve, roll_key_rate_curve
 from ._money import finite_money, positive_money
 from ._risk_common import (
     _ZERO_SHOCK,
@@ -1086,9 +1087,6 @@ class RateFuturesRiskEngine:
 
     def horizon(self, horizon_date: date) -> RateFuturesHorizonValuation:
         """Carry and rolldown to ``horizon_date`` (see :class:`RateFuturesHorizonValuation`)."""
-        # Imported here: ``horizon`` imports ``domain``, which imports this module.
-        from .horizon import forward_curve, roll_curve, roll_key_rate_curve
-
         req = self.request
         valuation = req.valuation_date
         if not isinstance(horizon_date, date) or horizon_date <= valuation:

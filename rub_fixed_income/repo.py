@@ -43,6 +43,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from enum import Enum
 from typing import Literal, cast
 
+from ._curve_views import roll_curve
 from ._money import finite_money, positive_money
 from ._risk_common import (
     _ZERO_SHOCK,
@@ -63,7 +64,6 @@ from .discount import CurveBootstrapRequest, DiscountCurve, DiscountFactorCurve
 from .errors import InvalidTerms, MissingMarketData, UnsupportedProduct
 from .factors import FactorRisk, _upper, ir_factor
 from .floating import _FORWARD_MEMO_SIZE, FixingHistory, _forward_key, _forward_memo
-from .horizon import roll_curve
 from .risk import BucketRisk
 
 __all__ = [

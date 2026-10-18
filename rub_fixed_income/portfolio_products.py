@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import TYPE_CHECKING, Literal, Protocol
 
+from ._curve_views import FxHorizon
 from ._money import finite_money
 from ._risk_common import ShockedCurveCache
 from .canonical import canonical_sha256
@@ -90,7 +91,6 @@ from .fx_futures import (
     FxFuturesRiskRequest,
     FxFuturesScenario,
 )
-from .horizon import FxHorizon
 from .key_rate import MODEL_VERSION as KEY_RATE_CURVE_MODEL_VERSION
 from .key_rate import KeyRateForwardCurve
 from .ofz_futures import (

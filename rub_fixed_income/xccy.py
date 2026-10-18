@@ -34,6 +34,8 @@ from datetime import date, timedelta
 from itertools import pairwise
 from typing import Literal, cast
 
+from ._curve_views import FxHorizon, roll_curve
+from ._curve_views import fx_horizon as _check_fx_horizon
 from ._money import finite_money, positive_money
 from ._risk_common import (
     _ZERO_SHOCK,
@@ -115,8 +117,6 @@ XccyCurveRole = Literal["rub_discount", "rub_projection", "foreign_discount", "f
 FlowSource = Literal["fixed", "known", "fixed_by_history", "partially_projected", "projected"]
 FlowKind = Literal["coupon", "exchange"]
 LegName = Literal["rub", "foreign"]
-# ``horizon.FxHorizon``, restated: horizon imports domain, which imports this module.
-FxHorizon = Literal["spot_held", "forwards_realised"]
 
 _RUONIA_INDEX = "RUB-RUONIA-OIS-COMPOUND"
 _BASES = ("nfa_act", "act_365f", "act_360")
@@ -1894,9 +1894,6 @@ class XccyRiskEngine:
         curves only; a bootstrapped foreign curve is read forward and rolled as built
         (its quotes are not rebootstrapped at the horizon).
         """
-        from .horizon import fx_horizon as check_fx_horizon  # horizon imports domain
-        from .horizon import roll_curve
-
         req = self.request
         valuation = req.valuation_date
         if not isinstance(horizon_date, date) or horizon_date <= valuation:
@@ -1906,7 +1903,7 @@ class XccyRiskEngine:
             raise InvalidTerms("horizon spot value date cannot predate the horizon date")
         if spot_h < req.spot_value_date:
             raise InvalidTerms("horizon spot value date cannot predate the spot value date")
-        rule = check_fx_horizon(fx_horizon)
+        rule = _check_fx_horizon(fx_horizon)
         rub_d = self._bases["rub_discount"]
         rub_p = self._bases.get("rub_projection", rub_d)
         foreign_d = self._bases["foreign_discount"]

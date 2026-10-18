@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal
 
+from ._curve_views import FxHorizon
 from ._money import finite_money, positive_money
 from ._risk_common import (
     _ZERO_SHOCK,
@@ -52,7 +53,6 @@ from .discount import (
 from .errors import InvalidTerms
 from .factors import FactorRisk, _upper, fx_basis_factor, fx_factor, ir_factor
 from .fx_futures import FxFuturesScenario, _horizon_rule, _horizon_views, _HorizonView
-from .horizon import FxHorizon
 from .tenors import parse_tenor, resolve_tenor
 
 __all__ = [

@@ -35,6 +35,7 @@ from typing import Literal, cast
 
 import numpy as np
 
+from ._curve_views import roll_curve, roll_key_rate_curve
 from ._money import finite_money, positive_money
 from ._risk_common import (
     _ZERO_SHOCK,
@@ -64,7 +65,6 @@ from .discount import CurveBootstrapRequest, DiscountCurve, DiscountFactorCurve
 from .errors import InvalidTerms, MissingMarketData, UnsupportedProduct
 from .factors import FactorRisk, HessianEntry, ir_factor
 from .floating import FixingHistory
-from .horizon import roll_curve, roll_key_rate_curve
 from .key_rate import KeyRateForwardCurve
 from .risk import BucketRisk
 from .tenors import parse_tenor, resolve_tenor

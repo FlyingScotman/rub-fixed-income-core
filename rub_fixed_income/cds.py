@@ -27,6 +27,7 @@ from functools import lru_cache
 from itertools import pairwise
 from typing import Literal, cast
 
+from ._curve_views import forward_curve, roll_curve
 from ._money import finite_money, non_negative_money, positive_money
 from ._risk_common import (
     _ZERO_SHOCK,
@@ -1663,8 +1664,6 @@ class CdsRiskEngine:
 
     def horizon(self, horizon_date: date) -> CdsHorizonValuation:
         """Carry and rolldown to ``horizon_date`` (see :class:`CdsHorizonValuation`)."""
-        from .horizon import forward_curve, roll_curve  # cycle: horizon -> domain -> cds
-
         valuation = self.request.valuation_date
         if not isinstance(horizon_date, date) or horizon_date <= valuation:
             raise InvalidTerms("horizon date must be after the valuation date")

@@ -43,6 +43,7 @@ from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Literal
 
+from ._curve_views import forward_curve, roll_curve
 from ._money import finite_money, positive_money
 from ._risk_common import (
     _ZERO_SHOCK,
@@ -63,7 +64,6 @@ from .discount import CurveBootstrapRequest, DiscountCurve, DiscountFactorCurve
 from .domain import FixedCouponLeg, Instrument, PrincipalLeg
 from .errors import InvalidTerms
 from .factors import CS_FACTOR, FactorRisk, HessianEntry, ir_factor
-from .horizon import forward_curve, roll_curve
 from .rate_futures import futures_basis_factor
 from .risk import BucketRisk
 
