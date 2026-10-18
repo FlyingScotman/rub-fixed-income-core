@@ -86,11 +86,13 @@ from .portfolio_products import (
     HessianTotal,
     HorizonRow,
     JtdTotal,
+    OfzFuturesPositionHorizon,
     OfzFuturesPositionValuation,
     PositionModel,
     ProductContext,
     ProductOutcome,
     ProductRow,
+    RateFuturesPositionHorizon,
     RateFuturesPositionValuation,
     RepoPositionHorizon,
     RepoPositionValuation,
@@ -1756,6 +1758,10 @@ class PortfolioHorizonResult:
     swaps: tuple[SwapPositionHorizon, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
     repos: tuple[RepoPositionHorizon, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
     cds: tuple[CdsPositionHorizon, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
+    rate_futures: tuple[RateFuturesPositionHorizon, ...] = field(
+        default=(), metadata=OMIT_IF_DEFAULT
+    )
+    ofz_futures: tuple[OfzFuturesPositionHorizon, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
     fx_horizon: FxHorizon = field(default="spot_held", metadata=OMIT_IF_DEFAULT)
 
     def derivative_rows(self) -> tuple[HorizonRow, ...]:

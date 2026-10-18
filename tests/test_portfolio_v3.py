@@ -761,7 +761,10 @@ class _Alien:
 
 
 HORIZON = date(2026, 11, 16)
-CARRIED = ("p-ois", "p-ois-2c", "p-krs", "p-repo-term", "p-repo-open", "p-cds-gaz", "p-cds-sber")
+CARRIED = (
+    *("p-ois", "p-ois-2c", "p-krs", "p-repo-term", "p-repo-open", "p-cds-gaz", "p-cds-sber"),
+    *("p-ruon", "p-rf", "p-kk", "p-ofz-fut-1", "p-ofz-fut-2"),
+)
 
 
 def horizon_book(**kw: object) -> PortfolioHorizonResult:

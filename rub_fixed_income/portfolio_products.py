@@ -97,6 +97,7 @@ from .ofz_futures import (
     OFZ_FUTURES_RISK_MODEL_VERSION,
     DeliverableAnalysis,
     DeliverableBond,
+    OfzFuturesHorizonValuation,
     OfzFuturesRiskEngine,
     OfzFuturesRiskRequest,
     OfzFuturesScenario,
@@ -115,6 +116,7 @@ from .portfolio_instruments import (
 from .rate_futures import (
     RATE_FUTURES_RISK_MODEL_VERSION,
     KeyRateFuturesContract,
+    RateFuturesHorizonValuation,
     RateFuturesRiskEngine,
     RateFuturesRiskRequest,
     RateFuturesScenario,
@@ -174,10 +176,12 @@ __all__ = [
     "FxFuturesPositionValuation",
     "HessianTotal",
     "JtdTotal",
+    "OfzFuturesPositionHorizon",
     "OfzFuturesPositionValuation",
     "PositionModel",
     "ProductContext",
     "ProductOutcome",
+    "RateFuturesPositionHorizon",
     "RateFuturesPositionValuation",
     "RepoPositionHorizon",
     "RepoPositionValuation",
@@ -1796,11 +1800,68 @@ class CdsPositionHorizon:
     per_trade: CdsHorizonValuation
 
 
-HorizonRow = SwapPositionHorizon | RepoPositionHorizon | CdsPositionHorizon
+@dataclass(frozen=True)
+class RateFuturesPositionHorizon:
+    """Carry, rolldown and theta of a short-rate futures position
+    (``rate_futures.rate_futures_horizon``): the variation margin to the horizon on the
+    model price with the calibrated basis held; ``received_rub`` is zero."""
+
+    position_id: str
+    instrument_id: str
+    book: str
+    accounting_category: AccountingCategory
+    quantity: float
+    carry_rub: float
+    rolldown_rub: float
+    received_rub: float
+    horizon_pnl_rub: float
+    contract_id: str
+    projection_curve_id: str
+    price_start: float
+    price_forward: float
+    price_rolled: float
+    per_trade: RateFuturesHorizonValuation
+
+
+@dataclass(frozen=True)
+class OfzFuturesPositionHorizon:
+    """Carry, rolldown and theta of an OFZ futures position
+    (``ofz_futures.ofz_futures_horizon``): the variation margin to the horizon, spreads
+    and basis held; ``cheapest_*`` name the cheapest bond in each view."""
+
+    position_id: str
+    instrument_id: str
+    book: str
+    accounting_category: AccountingCategory
+    quantity: float
+    carry_rub: float
+    rolldown_rub: float
+    received_rub: float
+    horizon_pnl_rub: float
+    contract_id: str
+    bond_curve_id: str
+    funding_curve_id: str
+    price_start: float
+    price_forward: float
+    price_rolled: float
+    cheapest_start: str
+    cheapest_rolled: str
+    per_trade: OfzFuturesHorizonValuation
+
+
+HorizonRow = (
+    SwapPositionHorizon
+    | RepoPositionHorizon
+    | CdsPositionHorizon
+    | RateFuturesPositionHorizon
+    | OfzFuturesPositionHorizon
+)
 
 HORIZON_ROW_FIELDS: dict[type, str] = {
     SwapPositionHorizon: "swaps",
     CdsPositionHorizon: "cds",
+    RateFuturesPositionHorizon: "rate_futures",
+    OfzFuturesPositionHorizon: "ofz_futures",
     RepoPositionHorizon: "repos",
 }
 """The ``PortfolioHorizonResult`` field that holds each carry row type."""
@@ -1937,9 +1998,69 @@ def horizon_cds(
     )
 
 
+def horizon_rate_future(
+    position: Position,
+    instrument: object,
+    ctx: ProductContext,
+    horizon_date: date,
+    fx_horizon: FxHorizon,
+) -> RateFuturesPositionHorizon:
+    assert isinstance(instrument, RateFuturesInstrument)
+    _check_position(position, instrument.currency)
+    base = ctx.shared_engine(
+        instrument.instrument_id, lambda: _rate_futures_engine(instrument, ctx)
+    )
+    assert isinstance(base, RateFuturesRiskEngine)
+    carry = base.for_quantity(position.quantity).horizon(horizon_date)
+    return RateFuturesPositionHorizon(
+        *_horizon_header(position, instrument.instrument_id, carry, 1.0, "rate futures"),
+        instrument.contract.contract_id,
+        instrument.projection_curve_id,
+        carry.price_start,
+        carry.price_forward,
+        carry.price_rolled,
+        carry,
+    )
+
+
+def horizon_ofz_future(
+    position: Position,
+    instrument: object,
+    ctx: ProductContext,
+    horizon_date: date,
+    fx_horizon: FxHorizon,
+) -> OfzFuturesPositionHorizon:
+    assert isinstance(instrument, OfzFuturesInstrument)
+    _check_position(position, instrument.currency)
+    base = ctx.shared_engine(instrument.instrument_id, lambda: _ofz_futures_engine(instrument, ctx))
+    assert isinstance(base, OfzFuturesRiskEngine)
+    # The basket settles on one lag (checked when the engine was built).
+    bond = ctx.instruments[instrument.basket[0].instrument_id]
+    settlement = ctx.calendar(bond.calendar_id).add_business_days(
+        horizon_date, bond.settlement_lag_days
+    )
+    carry = base.for_quantity(position.quantity).horizon(
+        horizon_date, horizon_spot_settlement_date=settlement
+    )
+    return OfzFuturesPositionHorizon(
+        *_horizon_header(position, instrument.instrument_id, carry, 1.0, "OFZ futures"),
+        instrument.contract.contract_id,
+        instrument.bond_curve_id,
+        instrument.funding_curve_id,
+        carry.price_start,
+        carry.price_forward,
+        carry.price_rolled,
+        carry.cheapest_start,
+        carry.cheapest_rolled,
+        carry,
+    )
+
+
 HORIZON_ADAPTERS: Mapping[type, HorizonAdapter] = {
     SwapInstrument: horizon_swap,
     CdsInstrument: horizon_cds,
+    RateFuturesInstrument: horizon_rate_future,
+    OfzFuturesInstrument: horizon_ofz_future,
     RepoInstrument: horizon_repo,
 }
 """Carry adapter per derivative position type; the others are not carried yet (BACKLOG #101)."""
