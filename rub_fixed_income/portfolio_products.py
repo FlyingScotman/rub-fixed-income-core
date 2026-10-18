@@ -186,6 +186,7 @@ __all__ = [
     "adapter_for",
     "hessian_totals",
     "horizon_adapter_for",
+    "horizon_spot_date",
     "jtd_totals",
     "scale_factor_risk",
 ]
@@ -1777,6 +1778,24 @@ HORIZON_ROW_FIELDS: dict[type, str] = {
 }
 """The ``PortfolioHorizonResult`` field that holds each carry row type."""
 HorizonAdapter = Callable[[Position, object, ProductContext, date, FxHorizon], HorizonRow]
+
+
+def horizon_spot_date(
+    business_date: date, spot: FxSpot, calendar: BusinessCalendar, horizon_date: date
+) -> date:
+    """The spot value date that applies on ``horizon_date``: today's spot lag in business
+    days of the settlement calendar (TOM stays TOM), counted from the horizon."""
+    lag = 0
+    while calendar.add_business_days(business_date, lag) < spot.value_date:
+        lag += 1
+    if calendar.add_business_days(business_date, lag) != spot.value_date:
+        raise InvalidTerms(
+            f"FX spot value date {spot.value_date.isoformat()} is not a business-day lag "
+            f"from {business_date.isoformat()}"
+        )
+    if lag == 0 and not calendar.is_business_day(horizon_date):
+        return calendar.add_business_days(horizon_date, 1)
+    return calendar.add_business_days(horizon_date, lag)
 
 
 class _Carried(Protocol):
