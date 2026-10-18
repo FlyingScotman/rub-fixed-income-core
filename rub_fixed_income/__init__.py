@@ -542,6 +542,7 @@ from .trade_grid import (
 from .xccy import (
     RUONIA_OIS_COMPOUND,
     XCCY_CURVE_MODEL_VERSION,
+    XCCY_HORIZON_MODEL_VERSION,
     XCCY_MODEL_VERSION,
     XCCY_QUOTE_SPEC_ID,
     XCCY_SECOND_ORDER_MODEL_VERSION,
@@ -553,6 +554,7 @@ from .xccy import (
     XccyCurveBootstrapRequest,
     XccyCurveCache,
     XccyCurveRisk,
+    XccyHorizonValuation,
     XccyLeg,
     XccyParQuote,
     XccyPeriod,
@@ -569,6 +571,7 @@ from .xccy import (
     standard_xccy_swap,
     xccy_basis_factor,
     xccy_factor_risk,
+    xccy_horizon,
     xccy_leg_periods,
     xccy_par_rate,
     xcs_cnyrub_convention,
@@ -1114,4 +1117,11 @@ __all__ += [
     "RateFuturesHorizonValuation",
     "ofz_futures_horizon",
     "rate_futures_horizon",
+]
+
+# BACKLOG #101: XCCY horizon.
+__all__ += [
+    "XCCY_HORIZON_MODEL_VERSION",
+    "XccyHorizonValuation",
+    "xccy_horizon",
 ]

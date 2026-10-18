@@ -249,6 +249,51 @@ rates, foreign rates, basis and spot P&L in isolation, and their interaction.
 separate factors because they are calibrated to different instruments (XCS quotes vs
 FX outrights). The backend can alias them if its desk treats them as one.
 
+## Horizon (carry, rolldown, theta)
+
+`xccy_horizon(request, horizon_date=..., horizon_spot_value_date=..., fx_horizon="spot_held")`
+and `engine.horizon(horizon_date, horizon_spot_value_date=..., fx_horizon=...)` return
+an `XccyHorizonValuation` (`rub-xccy-horizon-v1`). They follow the
+[horizon module](CONVENTIONS.md#horizon-valuation-carry-and-rolldown-0140) and the
+swaps' [carry and rolldown](swaps.md#carry-and-rolldown):
+
+- `received_rub`: flows paid in `(valuation date, horizon]`, as cash (undiscounted, not
+  reinvested). Floating amounts are today's projections.
+- `pv_forward_rub`: the remaining flows at the horizon on today's curves read forward,
+  `DF(t) / DF(h)`, with today's projections.
+- `pv_rolled_rub`: the remaining flows at the horizon on rolled curves (`roll_curve`,
+  shape held in calendar days): the desk theta. On both legs, observations before the
+  horizon keep today's forwards and later ones are projected on the rolled projection
+  curve.
+- `carry = pv_forward + received - pv_start`, `rolldown = pv_rolled - pv_forward`,
+  `horizon_pnl = pv_rolled + received - pv_start`.
+
+The spot at the horizon `S_h`, for value date `s_h = horizon_spot_value_date` (on or
+after the horizon and today's spot date), follows `fx_horizon`:
+
+| `fx_horizon` | `S_h` | received foreign flow paid at `P` converts at |
+| --- | --- | --- |
+| `spot_held` (sticky spot) | `S` | `S` |
+| `forwards_realised` | today's outright `F(s_h)` | today's outright `F(P)` |
+
+with `F(d) = S * [DF_for(d) / DF_for(s)] / [DF_rub(d) / DF_rub(s)] * exp(b * tau(s, d))`.
+A remaining foreign flow is worth, at the horizon on either view of the curves,
+
+```text
+CF * DF_for(t) / DF_for(s_h) * exp(b * tau(s_h, t)) * S_h * DF_rub(s_h)
+```
+
+and a RUB flow `CF * DF_rub(t)`. The basis is held in bp. With `forwards_realised`,
+`pv_forward` is today's PV of the flows paid after `h` divided by `DF_rub(h)` (exact
+for an additive basis day count).
+
+Only base curves are used. A bootstrapped foreign curve (`XccyCurveBootstrapRequest`) is
+read forward and rolled as built; its quotes are not rebootstrapped at the horizon.
+`tests/test_xccy_horizon.py` checks a hand-computed fixed/fixed swap in both spot
+rules, the `forwards_realised` identity, zero rolldown on flat curves, a horizon past
+maturity, a RUB floating period straddling the horizon, a bootstrapped foreign curve
+and the spot effect between the two rules.
+
 ## Identity
 
 `base_id` hashes the following:
@@ -260,8 +305,8 @@ FX outrights). The backend can alias them if its desk treats them as one.
 - the basis and its day count;
 - the fixings' identities.
 
-Model versions: `rub-xccy-v1`, `rub-xccy-second-order-v1`, and `xccy-cny-logdf-v1`
-for the curve.
+Model versions: `rub-xccy-v1`, `rub-xccy-second-order-v1`, `rub-xccy-horizon-v1`, and
+`xccy-cny-logdf-v1` for the curve. A horizon result carries the engine's `base_id`.
 
 ## Validation (`tests/test_xccy.py`, synthetic)
 
@@ -324,6 +369,7 @@ curves are not persisted yet.
   indices and the 2-decimal rounding of amounts.
 - Bootstrapping from basis quotes of RUONIA plus a spread against a CNY floating index
   (MOEX `XCCY/BASIS` with `RUSFARCNY`). Only CNY fixed par quotes are bootstrapped.
-- Carry and horizon valuation; persisted XCCY shocked curves.
+- Persisted XCCY shocked curves; rebootstrapping the foreign curve from its quotes at a
+  horizon.
 - Portfolio carry: `value_portfolio` takes XCCY swaps (`XccyInstrument`, result contract
   v3, [portfolio-v3.md](portfolio-v3.md)); `horizon_portfolio` does not.
