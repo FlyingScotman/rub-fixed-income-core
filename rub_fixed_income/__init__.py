@@ -77,6 +77,7 @@ from .cashflows import (
     dirty_rub_to_clean_price_pct,
 )
 from .cds import (
+    CDS_HORIZON_MODEL_VERSION,
     CDS_MODEL_VERSION,
     CDS_RISK_MODEL_VERSION,
     CDS_SECOND_ORDER_MODEL_VERSION,
@@ -87,6 +88,7 @@ from .cds import (
     CdsCurveCache,
     CdsCurveRequest,
     CdsDefaultResult,
+    CdsHorizonValuation,
     CdsPremiumPeriod,
     CdsQuoteRisk,
     CdsRiskEngine,
@@ -103,12 +105,15 @@ from .cds import (
     HazardCurve,
     bootstrap_hazard_curve,
     cds_factor_risk,
+    cds_horizon,
     cds_par_spread,
     cds_premium_schedule,
     cds_trade_dates,
     flat_hazard_from_spread,
     flat_hazard_from_upfront,
+    forward_hazard_curve,
     previous_imm_date,
+    roll_hazard_curve,
     spread_from_upfront,
     standard_cds_maturity,
     upfront_from_spread,
@@ -230,12 +235,14 @@ from .floating import (
     key_rate_projection_curve,
 )
 from .fx_forwards import (
+    FX_FORWARD_HORIZON_MODEL_VERSION,
     FX_FORWARD_RISK_MODEL_VERSION,
     FX_FORWARD_SECOND_ORDER_MODEL_VERSION,
     FX_IMPLIED_CURVE_MODEL_VERSION,
     FX_VALUE_DATE_CODES,
     FxForward,
     FxForwardBucketRisk,
+    FxForwardHorizonValuation,
     FxForwardLeg,
     FxForwardLegValuation,
     FxForwardRiskEngine,
@@ -251,6 +258,7 @@ from .fx_forwards import (
     cip_outright,
     fx_forward_basis_bp,
     fx_forward_factor_risk,
+    fx_forward_horizon,
     fx_forward_outright,
     fx_swap_value_dates,
     fx_value_date,
@@ -259,23 +267,31 @@ from .fx_forwards import (
     joint_calendar,
 )
 from .fx_futures import (
+    FX_FUTURES_HORIZON_MODEL_VERSION,
     FX_FUTURES_RISK_MODEL_VERSION,
     FX_FUTURES_SECOND_ORDER_MODEL_VERSION,
     FxFuturesContract,
+    FxFuturesHorizonValuation,
     FxFuturesRiskEngine,
     FxFuturesRiskRequest,
     FxFuturesRiskResult,
     FxFuturesScenario,
     FxFuturesScenarioResult,
     FxFuturesSecondOrderRisk,
+    fx_futures_horizon,
 )
 from .horizon import (
+    FX_HORIZONS,
     HORIZON_MODEL_VERSION,
+    FxHorizon,
     HorizonPnlExplain,
     HorizonValuation,
     explain_horizon_pnl,
+    forward_curve,
+    fx_horizon,
     horizon_valuation,
     roll_curve,
+    roll_key_rate_curve,
 )
 from .inflation import (
     INFLATION_MODEL_VERSION,
@@ -326,11 +342,13 @@ from .local_risk import (
     prepare_local_bond_risk,
 )
 from .ofz_futures import (
+    OFZ_FUTURES_HORIZON_MODEL_VERSION,
     OFZ_FUTURES_RISK_MODEL_VERSION,
     OFZ_FUTURES_SECOND_ORDER_MODEL_VERSION,
     DeliverableAnalysis,
     DeliverableBond,
     OfzFuturesContract,
+    OfzFuturesHorizonValuation,
     OfzFuturesRiskEngine,
     OfzFuturesRiskRequest,
     OfzFuturesRiskResult,
@@ -340,6 +358,7 @@ from .ofz_futures import (
     ofz_conversion_factor,
     ofz_default_delivery_issue,
     ofz_futures_factor_risk,
+    ofz_futures_horizon,
 )
 from .pass_through import (
     PREPAYMENT_MODEL_VERSION,
@@ -398,6 +417,7 @@ from .portfolio_instruments import (
     XccyInstrument,
 )
 from .portfolio_products import (
+    HORIZON_ADAPTERS,
     PRODUCT_ADAPTERS,
     CdsPositionValuation,
     CreditCurveUse,
@@ -408,14 +428,18 @@ from .portfolio_products import (
     OfzFuturesPositionValuation,
     PositionModel,
     RateFuturesPositionValuation,
+    RepoPositionHorizon,
     RepoPositionValuation,
+    SwapPositionHorizon,
     SwapPositionValuation,
     XccyPositionValuation,
 )
 from .rate_futures import (
+    RATE_FUTURES_HORIZON_MODEL_VERSION,
     RATE_FUTURES_RISK_MODEL_VERSION,
     RATE_FUTURES_SECOND_ORDER_MODEL_VERSION,
     KeyRateFuturesContract,
+    RateFuturesHorizonValuation,
     RateFuturesRiskEngine,
     RateFuturesRiskRequest,
     RateFuturesRiskResult,
@@ -430,6 +454,7 @@ from .rate_futures import (
     futures_basis_factor,
     key_rate_index_value,
     rate_futures_factor_risk,
+    rate_futures_horizon,
     rate_futures_variation_margin,
     ruonia_average_final_price,
     ruonia_average_settlement_period,
@@ -523,6 +548,7 @@ from .trade_grid import (
 from .xccy import (
     RUONIA_OIS_COMPOUND,
     XCCY_CURVE_MODEL_VERSION,
+    XCCY_HORIZON_MODEL_VERSION,
     XCCY_MODEL_VERSION,
     XCCY_QUOTE_SPEC_ID,
     XCCY_SECOND_ORDER_MODEL_VERSION,
@@ -534,6 +560,7 @@ from .xccy import (
     XccyCurveBootstrapRequest,
     XccyCurveCache,
     XccyCurveRisk,
+    XccyHorizonValuation,
     XccyLeg,
     XccyParQuote,
     XccyPeriod,
@@ -550,6 +577,7 @@ from .xccy import (
     standard_xccy_swap,
     xccy_basis_factor,
     xccy_factor_risk,
+    xccy_horizon,
     xccy_leg_periods,
     xccy_par_rate,
     xcs_cnyrub_convention,
@@ -1064,4 +1092,52 @@ __all__ += [
     "repo_factor_risk",
     "repo_initial_discount_pct",
     "repo_start_amount",
+]
+
+# BACKLOG #101: derivative carry and theta in horizon_portfolio.
+__all__ += [
+    "FX_HORIZONS",
+    "HORIZON_ADAPTERS",
+    "FxHorizon",
+    "RepoPositionHorizon",
+    "SwapPositionHorizon",
+    "forward_curve",
+    "fx_horizon",
+    "roll_key_rate_curve",
+]
+
+# BACKLOG #101: CDS horizon.
+__all__ += [
+    "CDS_HORIZON_MODEL_VERSION",
+    "CdsHorizonValuation",
+    "cds_horizon",
+    "forward_hazard_curve",
+    "roll_hazard_curve",
+]
+
+# BACKLOG #101: rate and OFZ futures horizon.
+__all__ += [
+    "OFZ_FUTURES_HORIZON_MODEL_VERSION",
+    "RATE_FUTURES_HORIZON_MODEL_VERSION",
+    "OfzFuturesHorizonValuation",
+    "RateFuturesHorizonValuation",
+    "ofz_futures_horizon",
+    "rate_futures_horizon",
+]
+
+# BACKLOG #101: XCCY horizon.
+__all__ += [
+    "XCCY_HORIZON_MODEL_VERSION",
+    "XccyHorizonValuation",
+    "xccy_horizon",
+]
+
+# BACKLOG #101: FX forward and futures horizon.
+__all__ += [
+    "FX_FORWARD_HORIZON_MODEL_VERSION",
+    "FX_FUTURES_HORIZON_MODEL_VERSION",
+    "FxForwardHorizonValuation",
+    "FxFuturesHorizonValuation",
+    "fx_forward_horizon",
+    "fx_futures_horizon",
 ]

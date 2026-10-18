@@ -42,9 +42,12 @@ from rub_fixed_income import (
     BondScenario,
     CurveEntry,
     FactorRisk,
+    InvalidTerms,
+    PortfolioHorizonResult,
     PortfolioRiskResult,
     PortfolioScenario,
     Position,
+    PositionHorizon,
     ShockedCurveCache,
     canonical_sha256,
     horizon_portfolio,
@@ -66,6 +69,7 @@ from rub_fixed_income.fx_forwards import (
     FxForwardRiskEngine,
     FxForwardRiskRequest,
     fx_forward_factor_risk,
+    fx_forward_horizon,
 )
 from rub_fixed_income.fx_futures import FxFuturesRiskEngine, FxFuturesRiskRequest, FxFuturesScenario
 from rub_fixed_income.key_rate import rebase_key_rate_curve
@@ -91,7 +95,7 @@ from rub_fixed_income.portfolio_instruments import (
     SwapInstrument,
     XccyInstrument,
 )
-from rub_fixed_income.portfolio_products import scale_factor_risk
+from rub_fixed_income.portfolio_products import HorizonRow, scale_factor_risk
 from rub_fixed_income.rate_futures import (
     RateFuturesRiskEngine,
     RateFuturesRiskRequest,
@@ -99,8 +103,22 @@ from rub_fixed_income.rate_futures import (
     RuoniaIndexValue,
     rate_futures_factor_risk,
 )
-from rub_fixed_income.repo import RepoRiskEngine, RepoRiskRequest, RepoScenario, repo_factor_risk
-from rub_fixed_income.swaps import SwapRiskEngine, SwapRiskRequest, SwapScenario, swap_factor_risk
+from rub_fixed_income.repo import (
+    RepoCarry,
+    RepoRiskEngine,
+    RepoRiskRequest,
+    RepoScenario,
+    repo_carry,
+    repo_factor_risk,
+)
+from rub_fixed_income.swaps import (
+    SwapHorizonValuation,
+    SwapRiskEngine,
+    SwapRiskRequest,
+    SwapScenario,
+    swap_factor_risk,
+    swap_horizon,
+)
 from rub_fixed_income.xccy import (
     XccyRiskEngine,
     XccyRiskRequest,
@@ -744,17 +762,182 @@ class _Alien:
     instrument_id: str
 
 
-def test_horizon_portfolio_rejects_derivatives_with_a_code() -> None:
-    result = horizon_portfolio(
-        snapshot=snapshot(),
-        instruments=instruments(),
-        positions=positions(),
-        policy=POLICY,
-        horizon_date=date(2026, 11, 16),
+HORIZON = date(2026, 11, 16)
+
+
+def horizon_book(**kw: object) -> PortfolioHorizonResult:
+    args: dict[str, object] = {
+        "snapshot": snapshot(),
+        "instruments": instruments(),
+        "positions": positions(),
+        "policy": POLICY,
+        "horizon_date": HORIZON,
+    }
+    args.update(kw)
+    return horizon_portfolio(**args)  # type: ignore[arg-type]
+
+
+def standalone_carry(position_id: str, horizon: date) -> SwapHorizonValuation | RepoCarry:
+    """The engine's carry of one swap or repo trade on the raw inputs (per trade)."""
+    pos = next(p for p in positions() if p.position_id == position_id)
+    inst = instrument(pos.instrument_id)
+    if isinstance(inst, SwapInstrument):
+        projection = None if inst.projection_curve_id is None else curve(inst.projection_curve_id)
+        request = SwapRiskRequest(
+            inst.swap,
+            CAL,
+            curve(inst.discount_curve_id),  # type: ignore[arg-type]
+            projection,  # type: ignore[arg-type]
+            ruonia_history() if inst.fixing_id else None,
+        )
+        return swap_horizon(request, horizon_date=horizon)
+    assert isinstance(inst, RepoInstrument)
+    floating = inst.fixing_id is not None
+    collateral = inst.trade.collateral
+    price = None
+    if collateral is not None:  # the portfolio passes the collateral's dirty price
+        bond = instrument(collateral.instrument_id)
+        assert isinstance(bond, Instrument)
+        price = 104.0 / 100.0 * 1000.0 + bond.accrued(TOM)
+    repo_request = RepoRiskRequest(
+        inst.trade,
+        CAL,
+        curve(inst.discount_curve_id),  # type: ignore[arg-type]
+        curve(inst.projection_curve_id) if inst.projection_curve_id else None,  # type: ignore[arg-type]
+        ruonia_history() if floating else None,
+        inst.assumed_end_date,
+        price,
     )
+    return repo_carry(repo_request, horizon_date=horizon)
+
+
+def test_horizon_portfolio_carries_every_product() -> None:
+    result = horizon_book()
+    assert result.coverage.status == "complete"
+    assert result.total_horizon_pnl_rub == result.covered_horizon_pnl_rub
+    assert result.fx_horizon == "spot_held"
+    carried = {r.position_id for r in result.derivative_rows()}
+    assert carried == set(DERIVATIVES)
+    quantities = {p.position_id: p.quantity for p in positions()}
+    assert [r.position_id for r in result.swaps] == ["p-ois", "p-ois-2c", "p-krs"]
+    for row in result.swaps:
+        q = quantities[row.position_id]
+        direct = standalone_carry(row.position_id, HORIZON)
+        assert isinstance(direct, SwapHorizonValuation)
+        assert row.per_trade == direct
+        assert row.quantity == q
+        assert row.carry_rub == pytest.approx(direct.carry_rub * q, rel=1e-15)
+        assert row.rolldown_rub == pytest.approx(direct.rolldown_rub * q, rel=1e-15)
+        assert row.received_rub == pytest.approx(direct.received_rub * q, rel=1e-15)
+        assert row.horizon_pnl_rub == pytest.approx(row.carry_rub + row.rolldown_rub, abs=1e-6)
+    assert result.swaps[2].discount_curve_id == "RUB_OIS"
+    assert result.swaps[2].projection_curve_id == "KEY_RATE"
+    assert [r.position_id for r in result.repos] == ["p-repo-term", "p-repo-open"]
+    for repo_row in result.repos:
+        q = quantities[repo_row.position_id]
+        direct_r = standalone_carry(repo_row.position_id, HORIZON)
+        assert isinstance(direct_r, RepoCarry)
+        assert repo_row.per_trade == direct_r
+        assert repo_row.carry_rub == pytest.approx(direct_r.pv_carry_rub * q, rel=1e-15)
+        assert repo_row.rolldown_rub == pytest.approx(direct_r.rolldown_rub * q, rel=1e-15)
+        assert repo_row.horizon_pnl_rub == pytest.approx(
+            repo_row.carry_rub + repo_row.rolldown_rub, abs=1e-6
+        )
+        assert repo_row.interest_carry_rub == pytest.approx(
+            direct_r.interest_carry_rub * q, rel=1e-15
+        )
+    # The term repo ends before the horizon: its repurchase amount is received.
+    assert result.repos[0].per_trade.pv_forward_rub == 0.0
+    assert result.repos[0].received_rub > 0.0
+    # Bond rows are those of a bond-only book; totals add every carried row.
+    bonds_only = horizon_book(
+        positions=tuple(p for p in positions() if p.position_id in ("p-gaz", "p-ofz-short"))
+    )
+    assert result.positions == bonds_only.positions
+    rows: list[PositionHorizon | HorizonRow] = [*result.positions, *result.derivative_rows()]
+    assert result.covered_carry_rub == pytest.approx(math.fsum(r.carry_rub for r in rows))
+    assert result.covered_rolldown_rub == pytest.approx(math.fsum(r.rolldown_rub for r in rows))
+    assert result.covered_horizon_pnl_rub == pytest.approx(
+        math.fsum(r.horizon_pnl_rub for r in rows)
+    )
+    assert result.covered_horizon_pnl_rub == pytest.approx(
+        result.covered_carry_rub + result.covered_rolldown_rub, abs=1e-6
+    )
+    for any_row in result.derivative_rows():
+        assert any_row.horizon_pnl_rub == pytest.approx(
+            any_row.carry_rub + any_row.rolldown_rub, abs=1e-6
+        )
+    assert horizon_book(curve_cache=ShockedCurveCache()) == result
+
+
+def test_horizon_portfolio_fx_products_follow_the_fx_rule() -> None:
+    held = horizon_book()
+    realised = horizon_book(fx_horizon="forwards_realised")
+    assert realised.fx_horizon == "forwards_realised"
+    # A USD CDS has no RUB curve for a forward FX rate: spot held only.
+    codes = {r.position_id: r.code for r in realised.coverage.rejections}
+    assert codes == {"p-cds-sber": "UNSUPPORTED_PRODUCT"}
+    fwd = next(r for r in held.fx_forwards if r.position_id == "p-fwd")
+    assert fwd.horizon_spot_value_date == date(2026, 11, 17)  # TOM from the horizon
+    assert fwd.horizon_spot_rate == SPOT["USD"]
+    inst = instrument("FWD-USD")
+    assert isinstance(inst, FxForwardInstrument)
+    request = FxForwardRiskRequest(
+        inst.trade,
+        SPOT["USD"],
+        TOM,
+        curve("RUB_OIS"),  # type: ignore[arg-type]
+        curve("USD_DF"),  # type: ignore[arg-type]
+        0.0,
+    )
+    for result, rule in ((held, "spot_held"), (realised, "forwards_realised")):
+        row = next(r for r in result.fx_forwards if r.position_id == "p-fwd")
+        direct = fx_forward_horizon(
+            request,
+            horizon_date=HORIZON,
+            horizon_spot_value_date=date(2026, 11, 17),
+            fx_horizon=rule,  # type: ignore[arg-type]
+        )
+        assert row.per_trade == direct
+        assert row.horizon_pnl_rub == pytest.approx(direct.horizon_pnl_rub, rel=1e-15)
+    realised_fwd = next(r for r in realised.fx_forwards if r.position_id == "p-fwd")
+    assert realised_fwd.horizon_spot_rate != SPOT["USD"]
+    # Products without FX do not depend on the rule.
+    assert realised.swaps == held.swaps and realised.repos == held.repos
+    assert realised.rate_futures == held.rate_futures
+    with pytest.raises(InvalidTerms):
+        horizon_book(fx_horizon="sticky")
+
+
+def test_horizon_holds_the_key_rate_decision_date() -> None:
+    """KK-10.26 settles on the 26 October decision: a 1-day roll leaves it alone (#109)."""
+    only = tuple(p for p in positions() if p.position_id == "p-kk")
+    for horizon in (date(2026, 10, 16), date(2026, 10, 19)):
+        (kk,) = horizon_book(positions=only, horizon_date=horizon).rate_futures
+        assert kk.horizon_pnl_rub == 0.0  # the decided rate path does not move
+
+
+def test_horizon_portfolio_derivative_rejections_carry_codes() -> None:
+    no_end = tuple(
+        replace(i, assumed_end_date=None)
+        if isinstance(i, RepoInstrument) and i.trade.is_open
+        else i
+        for i in instruments()
+    )
+    only = tuple(p for p in positions() if p.position_id in ("p-repo-open", "p-krs"))
+    result = horizon_book(instruments=no_end, positions=only)
     codes = {r.position_id: r.code for r in result.coverage.rejections}
-    assert set(codes) == set(DERIVATIVES)
-    assert set(codes.values()) == {"UNSUPPORTED_PRODUCT"}
+    assert codes == {"p-repo-open": "MISSING_ASSUMPTION"}
+    # The key-rate projection curve ends on 2031-01-01.
+    late = horizon_book(positions=only, horizon_date=date(2031, 2, 3))
+    late_codes = {r.position_id: r.code for r in late.coverage.rejections}
+    assert late_codes == {"p-krs": "MISSING_MARKET_DATA"}
+    assert [r.position_id for r in late.repos] == ["p-repo-open"]
+    assert late.repos[0].per_trade.pv_forward_rub == 0.0
+    wrong_ccy = tuple(replace(p, currency="USD") for p in only[:1])
+    assert {r.code for r in horizon_book(positions=wrong_ccy).coverage.rejections} == {
+        "INVALID_TERMS"
+    }
 
 
 def test_key_rate_curve_rebased_from_tom_values_the_swap() -> None:

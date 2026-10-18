@@ -43,6 +43,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from enum import Enum
 from typing import Literal, cast
 
+from ._curve_views import roll_curve
 from ._money import finite_money, positive_money
 from ._risk_common import (
     _ZERO_SHOCK,
@@ -56,7 +57,7 @@ from ._risk_common import (
     _shock_curve,
     _snapshot_curve,
 )
-from .canonical import _Canonical, _precanonical, canonical_sha256
+from .canonical import OMIT_IF_DEFAULT, _Canonical, _precanonical, canonical_sha256
 from .conventions import DayCount, calendar_fingerprint
 from .dates import BusinessCalendar
 from .discount import CurveBootstrapRequest, DiscountCurve, DiscountFactorCurve
@@ -627,7 +628,12 @@ class RepoCarry:
     - ``received_rub``: flows paid in ``(valuation, horizon]``;
     - ``pv_forward_rub``: the remaining flows at the horizon on today's discount curve
       read forward, ``DF(t) / DF(horizon)``;
-    - ``pv_carry_rub = pv_forward + received - pv_start`` (today's forwards realised).
+    - ``pv_carry_rub = pv_forward + received - pv_start`` (today's forwards realised);
+    - ``pv_rolled_rub``: the remaining flows at the horizon on the rolled curves (shape
+      held in calendar days, ``horizon.roll_curve``); observations before the horizon
+      keep today's forwards, later ones are projected on the rolled projection curve;
+    - ``rolldown_rub = pv_rolled - pv_forward`` and ``horizon_pnl_rub = pv_rolled +
+      received - pv_start`` (the theta), so ``pv_carry + rolldown == horizon_pnl``.
     """
 
     base_id: str
@@ -642,6 +648,9 @@ class RepoCarry:
     pv_forward_rub: float
     pv_carry_rub: float
     model_version: str = REPO_MODEL_VERSION
+    pv_rolled_rub: float = field(default=0.0, metadata=OMIT_IF_DEFAULT)
+    rolldown_rub: float = field(default=0.0, metadata=OMIT_IF_DEFAULT)
+    horizon_pnl_rub: float = field(default=0.0, metadata=OMIT_IF_DEFAULT)
 
 
 # --- contract helpers ------------------------------------------------------------
@@ -1007,8 +1016,8 @@ class RepoRiskEngine:
         base = cast(DiscountCurve, self._projection)
         return _shock_curve(source, base, projection_shifts, self.curve_cache)
 
-    def _forwards(self, view: DiscountFactorCurve) -> dict[int, float]:
-        """All-in rates of the projected observations on ``view``.
+    def _forwards(self, view: DiscountFactorCurve, since: date | None = None) -> dict[int, float]:
+        """All-in rates of the projected observations on ``view`` (from ``since``).
 
         Overnight forwards ``(DF(o) / DF(next) - 1) / tau`` are memoised on the view
         (shared by every position on the same shocked curve), with the keys and the
@@ -1021,6 +1030,8 @@ class RepoRiskEngine:
         get = memo.get
         out: dict[int, float] = {}
         for index, key, day, following, tau in self._fast.steps:
+            if since is not None and day < since:
+                continue
             forward = get(key) if key >= 0 else None
             if forward is None:
                 ratio = view.discount_factor(day) / view.discount_factor(following)
@@ -1077,7 +1088,11 @@ class RepoRiskEngine:
         if fast.known_end is not None:
             return fast.known_end
         assert view is not None
-        forwards = self._forwards(view)
+        return self._end_from(self._forwards(view))
+
+    def _end_from(self, forwards: dict[int, float]) -> float:
+        """The repurchase amount on the all-in rates of the projected observations."""
+        fast = self._fast
         start = self.request.trade.start_amount_rub
         if fast.weights:
             terms = [fast.constant, *(forwards[i] * w for i, w in fast.weights)]
@@ -1380,6 +1395,13 @@ class RepoRiskEngine:
             for (_, d, _), a, df in zip(self._flows, amounts, dfs, strict=True)
             if d > horizon_date
         )
+        rolled_discount = roll_curve(self._discount, horizon_date)
+        end = self._rolled_end(horizon_date, rolled_discount)
+        pv_rolled = sign * math.fsum(
+            (end if a is None else a) * rolled_discount.discount_factor(d)
+            for _, d, a in self._flows
+            if d > horizon_date
+        )
         return RepoCarry(
             self.base_id,
             trade.trade_id,
@@ -1392,6 +1414,27 @@ class RepoRiskEngine:
             self.base_pv,
             finite_money(pv_forward, "forward PV"),
             finite_money(pv_forward + received - self.base_pv, "PV carry"),
+            pv_rolled_rub=finite_money(pv_rolled, "rolled PV"),
+            rolldown_rub=finite_money(pv_rolled - pv_forward, "rolldown"),
+            horizon_pnl_rub=finite_money(pv_rolled + received - self.base_pv, "horizon P&L"),
+        )
+
+    def _rolled_end(self, horizon_date: date, rolled_discount: DiscountCurve) -> float:
+        """The repurchase amount with today's forwards before ``horizon_date`` and the
+        rolled projection curve from it (fixed and known amounts do not move)."""
+        fast = self._fast
+        if fast.known_end is not None:
+            return fast.known_end
+        today = self._forwards(self._projection_view(_ZERO_SHOCK, _ZERO_SHOCK))
+        projection = self._projection
+        rolled = rolled_discount if projection is None else roll_curve(projection, horizon_date)
+        later = self._forwards(rolled, horizon_date)
+        observations = self._observations
+        return self._end_from(
+            {
+                i: today[i] if observations[i].day < horizon_date else later[i]
+                for i in fast.projected
+            }
         )
 
 

@@ -29,6 +29,13 @@ floater has no core convention, so its accrued fields are None. P&L explain of a
 floater is not supported: it needs the fixings realised over the horizon.
 
 Amounts are RUB per bond; :func:`horizon_portfolio` scales by position quantity.
+
+Derivative engines carry to a horizon on the same two curve views (BACKLOG #101):
+:func:`forward_curve` (today's curve read forward, ``DF(t) / DF(horizon)``) and
+:func:`roll_curve` (shape held). ``horizon_pnl`` on rolled curves is the theta. An FX
+product also needs the spot at the horizon, a stated :data:`FxHorizon` rule:
+``"spot_held"`` keeps today's spot (sticky spot: forward points roll down) and
+``"forwards_realised"`` moves it to today's forward for the horizon's spot value date.
 """
 
 from __future__ import annotations
@@ -36,9 +43,17 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
-from datetime import date, timedelta
+from datetime import date
 from typing import Literal
 
+from ._curve_views import (
+    FX_HORIZONS,
+    FxHorizon,
+    forward_curve,
+    fx_horizon,
+    roll_curve,
+    roll_key_rate_curve,
+)
 from ._money import finite_money, positive_money
 from ._risk_common import ShockedCurveCache, _base_curve
 from .compatibility import price_cashflows, solve_z_spread
@@ -50,28 +65,21 @@ from .errors import InvalidTerms, UnsupportedProduct
 from .floating import FixingHistory, FloatingLeg
 
 __all__ = [
+    "FX_HORIZONS",
     "HORIZON_MODEL_VERSION",
+    "FxHorizon",
     "HorizonPnlExplain",
     "HorizonValuation",
     "explain_horizon_pnl",
+    "forward_curve",
+    "fx_horizon",
     "horizon_valuation",
     "roll_curve",
+    "roll_key_rate_curve",
 ]
 
 HORIZON_MODEL_VERSION = "rub-horizon-carry-v1"
 HorizonPolicy = Literal["maturity", "confirmed_put"]
-
-
-def roll_curve(curve: DiscountCurve, horizon_date: date) -> DiscountCurve:
-    """The curve moved to ``horizon_date`` with its shape in calendar days unchanged."""
-    if horizon_date < curve.curve_date:
-        raise InvalidTerms("a curve can only be rolled forward")
-    shift = timedelta(days=(horizon_date - curve.curve_date).days)
-    return replace(
-        curve,
-        curve_date=horizon_date,
-        nodes=tuple((node + shift, df) for node, df in curve.nodes),
-    )
 
 
 @dataclass(frozen=True)

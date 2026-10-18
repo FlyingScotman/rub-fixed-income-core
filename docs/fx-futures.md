@@ -111,6 +111,36 @@ including quantity. The formulas are the same as for bonds
 the price is linear in spot, so under a relative spot move `x` every rate and
 basis derivative scales by exactly `1 + x`.
 
+## Horizon (carry, rolldown, theta)
+
+`engine.horizon(horizon_date, *, horizon_spot_value_date, fx_horizon="spot_held")` and
+`fx_futures_horizon(request, horizon_date=..., horizon_spot_value_date=..., fx_horizon=...)`
+return an `FxFuturesHorizonValuation`. The price at the horizon is
+
+```text
+F_h = S_h · [DF_for(T) / DF_for(s_h)] / [DF_rub(T) / DF_rub(s_h)] · exp(b · τ(s_h, T))
+```
+
+with the calibrated basis `b` held in bp, on today's curves read forward
+(`price_forward`, `DF(t) / DF(h)`) or on rolled curves (`price_rolled`, shape held in
+calendar days: the theta). `S_h` is today's spot (`"spot_held"`) or today's parity
+forward for `horizon_spot_value_date` **without** the futures basis
+(`"forwards_realised"`): the basis is contract-specific, so under that rule the carry
+is the basis decaying over the horizon. `horizon_spot_value_date` is the spot date on
+the horizon date (the caller applies the spot lag); `τ` is signed if delivery falls
+before it.
+
+A contract delivered by the horizon has settled at the FX fixing:
+`price_forward = price_rolled` = today's spot (`"spot_held"`) or today's parity forward
+to delivery without the basis (`"forwards_realised"`, convergence).
+
+A position is margined: `pv_start_rub = received_rub = 0`, and with
+`scale = quantity · multiplier` the variation margin splits into
+`carry = scale · (price_forward − price_start)` and
+`rolldown = scale · (price_rolled − price_forward)`;
+`horizon_pnl = scale · (price_rolled − price_start)`. On flat curves the rolldown is
+zero. Model version: `rub-fx-futures-horizon-v1`.
+
 ## Identity
 
 `base_id` hashes:

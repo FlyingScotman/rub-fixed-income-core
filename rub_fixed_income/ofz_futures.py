@@ -29,6 +29,10 @@ options (choice of bond, delivery within three periods of the delivery day) are 
 valued**: deterministic rates make the cheapest bond certain, so the model price is an
 upper bound of a price with option value. Shocks can switch the cheapest bond, and the
 exact scenarios show it.
+
+:meth:`OfzFuturesRiskEngine.horizon` carries a position to a horizon before delivery on
+the two curve views of ``horizon`` (today's curves read forward, and rolled); see
+:class:`OfzFuturesHorizonValuation`.
 """
 
 from __future__ import annotations
@@ -39,6 +43,7 @@ from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Literal
 
+from ._curve_views import forward_curve, roll_curve
 from ._money import finite_money, positive_money
 from ._risk_common import (
     _ZERO_SHOCK,
@@ -63,11 +68,13 @@ from .rate_futures import futures_basis_factor
 from .risk import BucketRisk
 
 __all__ = [
+    "OFZ_FUTURES_HORIZON_MODEL_VERSION",
     "OFZ_FUTURES_RISK_MODEL_VERSION",
     "OFZ_FUTURES_SECOND_ORDER_MODEL_VERSION",
     "DeliverableAnalysis",
     "DeliverableBond",
     "OfzFuturesContract",
+    "OfzFuturesHorizonValuation",
     "OfzFuturesRiskEngine",
     "OfzFuturesRiskRequest",
     "OfzFuturesRiskResult",
@@ -77,10 +84,12 @@ __all__ = [
     "ofz_conversion_factor",
     "ofz_default_delivery_issue",
     "ofz_futures_factor_risk",
+    "ofz_futures_horizon",
 ]
 
 OFZ_FUTURES_RISK_MODEL_VERSION = "rub-ofz-futures-ctd-v1"
 OFZ_FUTURES_SECOND_ORDER_MODEL_VERSION = "rub-ofz-futures-ctd-second-order-v1"
+OFZ_FUTURES_HORIZON_MODEL_VERSION = "rub-ofz-futures-horizon-v1"
 _ACT365 = DayCount.ACT_365_FIXED
 
 
@@ -378,6 +387,45 @@ class OfzFuturesSecondOrderRisk:
 
 
 @dataclass(frozen=True)
+class OfzFuturesHorizonValuation:
+    """Carry and rolldown of the position from the valuation date to ``horizon_date``.
+
+    At the horizon each basket bond is priced for ``horizon_spot_settlement_date``
+    ``s_h``: its flows after ``s_h`` on the bond-curve view anchored at ``s_h``
+    (``DF(t) / DF(s_h)``) with its calibrated spread held, carried to delivery on the
+    funding-curve view with the basis held (coupons in ``(s_h, D]`` removed). The price is
+    the cheapest of ``lot * (forward - AI(D)) / CF``, unrounded; ``cheapest_*`` name the
+    cheapest bond at the start and in each view (it can switch). Views: ``forward`` reads
+    today's curves forward (today's forwards realised), ``rolled`` rolls them (shape held
+    in calendar days).
+
+    The position is margined daily: ``pv_start_rub`` and ``received_rub`` are zero,
+    ``carry = quantity * (price_forward - price_start)``, ``rolldown = quantity *
+    (price_rolled - price_forward)`` and ``horizon_pnl = quantity * (price_rolled -
+    price_start)`` (1 RUB of margin per contract per RUB of price).
+    """
+
+    base_id: str
+    contract_id: str
+    valuation_date: date
+    horizon_date: date
+    horizon_spot_settlement_date: date
+    quantity: float
+    price_start: float
+    price_forward: float
+    price_rolled: float
+    cheapest_start: str
+    cheapest_forward: str
+    cheapest_rolled: str
+    pv_start_rub: float
+    received_rub: float
+    carry_rub: float
+    rolldown_rub: float
+    horizon_pnl_rub: float
+    model_version: str = OFZ_FUTURES_HORIZON_MODEL_VERSION
+
+
+@dataclass(frozen=True)
 class _Bond:
     instrument_id: str
     conversion_factor: float
@@ -455,8 +503,16 @@ class OfzFuturesRiskEngine:
 
     # -- calibration
 
-    def _dirty(self, bond: _Bond, curve: DiscountFactorCurve, spread: float) -> float:
-        settlement_df = curve.discount_factor(self.request.spot_settlement_date)
+    def _dirty(
+        self,
+        bond: _Bond,
+        curve: DiscountFactorCurve,
+        spread: float,
+        settlement: date | None = None,
+    ) -> float:
+        """Dirty price at ``settlement`` (default spot) of ``bond.flows`` (times from it)."""
+        at = self.request.spot_settlement_date if settlement is None else settlement
+        settlement_df = curve.discount_factor(at)
         return math.fsum(
             amount * curve.discount_factor(paid) / settlement_df * math.exp(-spread * time)
             for paid, amount, time in bond.flows
@@ -548,10 +604,17 @@ class OfzFuturesRiskEngine:
         return twin
 
     def _forward_dirty(
-        self, bond: _Bond, dirty: float, funding: DiscountFactorCurve, basis: float
+        self,
+        bond: _Bond,
+        dirty: float,
+        funding: DiscountFactorCurve,
+        basis: float,
+        settlement: date | None = None,
     ) -> float:
+        """``dirty`` at ``settlement`` (default spot) carried to delivery, coupons removed."""
         delivery = self.request.contract.delivery_date
-        settlement = self.request.spot_settlement_date
+        if settlement is None:
+            settlement = self.request.spot_settlement_date
 
         def growth(start: date) -> float:
             ratio = funding.discount_factor(start) / funding.discount_factor(delivery)
@@ -774,6 +837,98 @@ class OfzFuturesRiskEngine:
             gradient_rub_per_bp=gradient,
             hessian_rub_per_bp2=hessian,
         )
+
+    # -- horizon
+
+    def _horizon_prices(
+        self, settlement: date, bond_view: DiscountFactorCurve, funding_view: DiscountFactorCurve
+    ) -> tuple[float, int]:
+        """The cheapest price and its index with spot at ``settlement`` on the two views."""
+        delivery = self.request.contract.delivery_date
+        basis = self.basis_bp * 1e-4
+        lot = self.request.contract.bonds_per_lot
+        prices = []
+        for item, bond, spread in zip(self.request.basket, self._bonds, self.spreads, strict=True):
+            flows = tuple(
+                (cf.payment_date, cf.amount, _ACT365.year_fraction(settlement, cf.payment_date))
+                for cf in item.instrument.cashflows(after=settlement)
+            )
+            carry = tuple((d, a) for d, a, _ in flows if d <= delivery)
+            moved = replace(bond, flows=flows, carry_coupons=carry)
+            dirty = self._dirty(moved, bond_view, spread, settlement)
+            forward = self._forward_dirty(moved, dirty, funding_view, basis, settlement)
+            prices.append(lot * (forward - bond.accrued_delivery) / bond.conversion_factor)
+        index = min(range(len(prices)), key=prices.__getitem__)
+        return positive_money(prices[index], "OFZ futures price"), index
+
+    def horizon(
+        self, horizon_date: date, *, horizon_spot_settlement_date: date
+    ) -> OfzFuturesHorizonValuation:
+        """Carry and rolldown to ``horizon_date`` (see :class:`OfzFuturesHorizonValuation`).
+
+        ``horizon_spot_settlement_date`` is the basket's spot settlement for the horizon
+        trade date (the caller applies the settlement lag). It must precede delivery:
+        carry through delivery is not modelled (no OFZ futures are listed since 2022).
+        """
+        req = self.request
+        valuation = self._bond_curve.curve_date
+        if not isinstance(horizon_date, date) or horizon_date <= valuation:
+            raise InvalidTerms("horizon date must be after the valuation date")
+        settlement = horizon_spot_settlement_date
+        if not isinstance(settlement, date) or settlement < horizon_date:
+            raise InvalidTerms("horizon spot settlement must not precede the horizon date")
+        if settlement < req.spot_settlement_date:
+            raise InvalidTerms("horizon spot settlement must not precede today's spot settlement")
+        if settlement >= req.contract.delivery_date:
+            raise InvalidTerms(
+                "horizon spot settlement on or after delivery is not supported: "
+                "the contract has delivered"
+            )
+        bond, funding = self._bond_curve, self._funding_curve
+        try:
+            price_forward, cheapest_forward = self._horizon_prices(
+                settlement, forward_curve(bond, horizon_date), forward_curve(funding, horizon_date)
+            )
+            price_rolled, cheapest_rolled = self._horizon_prices(
+                settlement, roll_curve(bond, horizon_date), roll_curve(funding, horizon_date)
+            )
+        except (OverflowError, ZeroDivisionError) as exc:
+            raise ValueError("horizon is outside the supported numerical domain") from exc
+        start, scale = self.base_price, self._scale
+        ids = [b.instrument_id for b in self._bonds]
+        return OfzFuturesHorizonValuation(
+            base_id=self.base_id,
+            contract_id=req.contract.contract_id,
+            valuation_date=valuation,
+            horizon_date=horizon_date,
+            horizon_spot_settlement_date=settlement,
+            quantity=req.quantity,
+            price_start=start,
+            price_forward=price_forward,
+            price_rolled=price_rolled,
+            cheapest_start=ids[self._price(_NO_MOVE)[1]],
+            cheapest_forward=ids[cheapest_forward],
+            cheapest_rolled=ids[cheapest_rolled],
+            pv_start_rub=0.0,
+            received_rub=0.0,
+            carry_rub=finite_money(scale * (price_forward - start), "carry"),
+            rolldown_rub=finite_money(scale * (price_rolled - price_forward), "rolldown"),
+            horizon_pnl_rub=finite_money(scale * (price_rolled - start), "horizon P&L"),
+        )
+
+
+def ofz_futures_horizon(
+    request: OfzFuturesRiskRequest,
+    *,
+    horizon_date: date,
+    horizon_spot_settlement_date: date,
+    curve_cache: ShockedCurveCache | None = None,
+) -> OfzFuturesHorizonValuation:
+    """Carry and rolldown of an OFZ futures position to ``horizon_date``."""
+    engine = OfzFuturesRiskEngine(
+        request, ShockedCurveCache() if curve_cache is None else curve_cache
+    )
+    return engine.horizon(horizon_date, horizon_spot_settlement_date=horizon_spot_settlement_date)
 
 
 def _upper(matrix: tuple[tuple[float, ...], ...]) -> tuple[HessianEntry, ...]:

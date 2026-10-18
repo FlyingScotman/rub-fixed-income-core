@@ -539,6 +539,54 @@ instrument's settlement lag in its calendar). The Z-spread is held.
 - **Put bonds:** `redemption_horizon="confirmed_put"` values to the first confirmed put
   (yield-to-offer), as the desk quotes them.
 
+### Derivatives: carry, rolldown and theta (0.30.0–0.31.0, BACKLOG #101)
+
+Every derivative engine has `.horizon(...)` with the bond semantics above, on two views
+of today's base curves (`rub_fixed_income._curve_views`, re-exported by `horizon`):
+
+- **Forward view** `forward_curve(curve, h)`: `DF_h(t) = DF(t) / DF(h)`, today's
+  forwards realised (exact up to the last node; beyond it the flat forward, exact for
+  ACT/365F and ACT/360 curve time). Hazard curves: `forward_hazard_curve`, the same
+  rates after `h`, so `Q_h(t) = Q(t) / Q(h)`.
+- **Rolled view** `roll_curve(curve, h)`, `roll_key_rate_curve`, `roll_hazard_curve`:
+  every node date moved by `h - d0`, the shape held in calendar days. This is the desk
+  theta: curves (and CDS spreads per tenor) moved to the next day unchanged. A key-rate
+  curve holds its CBR decision date (0.32.0, #109): the rate in force until the meeting
+  stays, the tenor pillars roll, and the first segment still starts on the meeting date.
+  A horizon past the meeting realises the decision at today's forward (the first
+  segment's rate, current until its rolled pillar end).
+- **Path to the horizon:** a floating observation before `h` (RUONIA, a repo
+  benchmark, a futures day, a key rate effective before `h`) keeps today's forward on
+  both views; later observations are projected on the view. Calibrated bases and
+  spreads are held in bp. A key rate already decided (before `current_rate_end`) does
+  not move.
+- `received` = flows paid in `(d0, h]` as undiscounted cash; `carry = pv_forward +
+  received - pv_start`, `rolldown = pv_rolled - pv_forward`, `horizon_pnl = carry +
+  rolldown` (the theta).
+- **FX spot at the horizon** (`FxHorizon`, FX forwards and swaps, XCCY, FX futures):
+  - `"spot_held"` (default, sticky spot): `S_h = S0`; forward points roll down, so the
+    theta of a forward is mostly its points over the days to the new spot date. Foreign
+    cash received by the horizon converts at `S0`.
+  - `"forwards_realised"`: `S_h` = today's outright for the horizon spot date (with the
+    forward's FX basis; a future's basis is its own and is not in `S_h`). Foreign cash
+    received converts at today's outright for its date, and `pv_forward` equals today's
+    PV of the remaining flows divided by `DF_rub(h)`: carry is the RUB funding only.
+  - The horizon spot date keeps today's lag in business days of the settlement
+    calendar (`horizon_spot_date`): a Friday horizon's TOM is Monday.
+- **Futures** are margined daily: `pv_start = received = 0` and carry, rolldown and
+  theta are the variation margin on the model price (`quantity × margin per point ×
+  ΔF`). A contract that settles inside the horizon uses the realised path (today's
+  forwards) and its unrounded model price. OFZ futures are carried only to a horizon
+  spot settlement before delivery.
+- **CDS** amounts are conditional on no default before the horizon; `received` counts
+  the coupons that leave the contract's value between today's step-in date and the
+  horizon's (`h + step_in_days`), so no coupon is lost or counted twice on the step-in
+  boundary. A non-RUB CDS converts at the snapshot FX rate and is carried with
+  `"spot_held"` only (its position names no RUB curve for a forward rate).
+- **Repo**: `pv_rolled` reprices the repurchase amount with the post-horizon
+  observations on the rolled projection curve and discounts on the rolled curve; the
+  accrual P&L (`interest_carry`) is reported beside it.
+
 ## Inflation-linked bonds: OFZ-IN (package 9a)
 
 From the Minfin terms (order No. 80n of 22.05.2015) as restated by the Bank of Russia

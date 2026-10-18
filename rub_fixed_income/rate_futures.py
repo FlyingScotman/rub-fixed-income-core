@@ -22,6 +22,10 @@ Variation margin is daily and undiscounted (as in ``fx_futures``). Prices before
 are expectations under a deterministic projection curve: RUONIA overnight forwards from a
 discount curve, or a :class:`KeyRateForwardCurve`. A calibrated basis (bp added to every
 projected rate) reprices a market settlement price and is frozen under curve shocks.
+
+:meth:`RateFuturesRiskEngine.horizon` carries a position to a horizon on the two curve
+views of ``horizon`` (today's curve read forward, and rolled); see
+:class:`RateFuturesHorizonValuation`.
 """
 
 from __future__ import annotations
@@ -34,6 +38,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from itertools import pairwise
 from typing import Literal
 
+from ._curve_views import forward_curve, roll_curve, roll_key_rate_curve
 from ._money import finite_money, positive_money
 from ._risk_common import (
     _ZERO_SHOCK,
@@ -59,9 +64,11 @@ from .key_rate import KeyRateForwardCurve
 from .risk import BucketRisk
 
 __all__ = [
+    "RATE_FUTURES_HORIZON_MODEL_VERSION",
     "RATE_FUTURES_RISK_MODEL_VERSION",
     "RATE_FUTURES_SECOND_ORDER_MODEL_VERSION",
     "KeyRateFuturesContract",
+    "RateFuturesHorizonValuation",
     "RateFuturesRiskEngine",
     "RateFuturesRiskRequest",
     "RateFuturesRiskResult",
@@ -76,6 +83,7 @@ __all__ = [
     "futures_basis_factor",
     "key_rate_index_value",
     "rate_futures_factor_risk",
+    "rate_futures_horizon",
     "rate_futures_variation_margin",
     "ruonia_average_final_price",
     "ruonia_average_settlement_period",
@@ -85,6 +93,7 @@ __all__ = [
 
 RATE_FUTURES_RISK_MODEL_VERSION = "rub-rate-futures-v1"
 RATE_FUTURES_SECOND_ORDER_MODEL_VERSION = "rub-rate-futures-second-order-v1"
+RATE_FUTURES_HORIZON_MODEL_VERSION = "rub-rate-futures-horizon-v2"
 
 
 def _round_half_up(value: float | Decimal, decimals: int) -> float:
@@ -644,6 +653,41 @@ class RateFuturesSecondOrderRisk:
 
 
 @dataclass(frozen=True)
+class RateFuturesHorizonValuation:
+    """Carry and rolldown of the position from the valuation date to ``horizon_date``.
+
+    Prices are model prices (basis held), unrounded. A rate observed before the horizon
+    (a RUONIA business day ``T < horizon``, an index span starting before it, a key rate
+    effective before it) is realised at today's projection in both views; later rates are
+    projected on the view: ``price_forward`` on today's curve read forward (today's
+    forwards realised, so it equals ``price_start`` up to rounding) and ``price_rolled``
+    on the rolled curve (shape held in calendar days). A contract whose last trading day
+    is on or before the horizon settles on the realised path: both prices agree.
+
+    The position is margined daily: ``pv_start_rub`` and ``received_rub`` are zero and the
+    variation margin to the horizon is the price change, ``carry = scale * (price_forward
+    - price_start)``, ``rolldown = scale * (price_rolled - price_forward)`` and
+    ``horizon_pnl = scale * (price_rolled - price_start)``, ``scale = quantity *
+    margin_per_point``.
+    """
+
+    base_id: str
+    contract_id: str
+    valuation_date: date
+    horizon_date: date
+    quantity: float
+    price_start: float
+    price_forward: float
+    price_rolled: float
+    pv_start_rub: float
+    received_rub: float
+    carry_rub: float
+    rolldown_rub: float
+    horizon_pnl_rub: float
+    model_version: str = RATE_FUTURES_HORIZON_MODEL_VERSION
+
+
+@dataclass(frozen=True)
 class _Plan:
     """The rate period split into fixed and projected pieces (no market data)."""
 
@@ -990,6 +1034,106 @@ class RateFuturesRiskEngine:
             gradient_rub_per_bp=gradient,
             hessian_rub_per_bp2=hessian,
         )
+
+    # -- horizon
+
+    def _horizon_price(
+        self, horizon: date, view: DiscountFactorCurve | KeyRateForwardCurve
+    ) -> float:
+        """The price with rates observed from ``horizon`` on read off ``view``.
+
+        Earlier rates (and every rate of a contract settled by the horizon) keep today's
+        projection; the basis is held. Each term is computed as in ``_raw_price``.
+        """
+        basis = self.basis_bp * 1e-4
+        req = self.request
+        contract = req.contract
+        settled = contract.last_trading_day <= horizon
+        if isinstance(contract, KeyRateFuturesContract):
+            today = req.projection_curve
+            assert isinstance(today, KeyRateForwardCurve)
+            assert isinstance(view, KeyRateForwardCurve)
+            effective = contract.effective_date
+            source = today
+            if not (settled or effective < horizon or effective < today.current_rate_end):
+                if effective >= view.horizon_date:
+                    raise MissingMarketData(
+                        "rolled key-rate curve does not reach the effective date"
+                    )
+                source = view
+            rate = source.rate_at(effective) + basis
+            return finite_money(rate * 100.0, "key-rate futures price")
+        plan, now = self._plan, self._curve
+        assert plan is not None and now is not None
+        assert not isinstance(view, KeyRateForwardCurve)
+
+        def ratio(first: date, last: date) -> float:
+            curve = now if settled or first < horizon else view
+            return curve.discount_factor(first) / curve.discount_factor(last)
+
+        if isinstance(contract, RuoniaAverageFuturesContract):
+            projected = math.fsum(
+                ((ratio(first, last) - 1.0) / tau + basis) * weight
+                for first, last, weight, tau in plan.projected
+            )
+            mean = (float(plan.fixed_sum) + projected) / contract.period_days
+            return finite_money(100.0 - mean * 100.0, "RUONIA futures price")
+        anchor = req.index_anchor
+        assert anchor is not None
+        growth = plan.fixed_growth
+        for first, last, _, tau in plan.projected:
+            growth *= ratio(first, last) + basis * tau
+        return positive_money(anchor.value * growth, "RUONIA index futures price")
+
+    def horizon(self, horizon_date: date) -> RateFuturesHorizonValuation:
+        """Carry and rolldown to ``horizon_date`` (see :class:`RateFuturesHorizonValuation`)."""
+        req = self.request
+        valuation = req.valuation_date
+        if not isinstance(horizon_date, date) or horizon_date <= valuation:
+            raise InvalidTerms("horizon date must be after the valuation date")
+        curve = req.projection_curve
+        forward: DiscountFactorCurve | KeyRateForwardCurve
+        rolled: DiscountFactorCurve | KeyRateForwardCurve
+        if isinstance(curve, KeyRateForwardCurve):
+            forward, rolled = curve, roll_key_rate_curve(curve, horizon_date)
+        else:
+            assert self._curve is not None
+            forward = forward_curve(self._curve, horizon_date)
+            rolled = roll_curve(self._curve, horizon_date)
+        try:
+            price_forward = self._horizon_price(horizon_date, forward)
+            price_rolled = self._horizon_price(horizon_date, rolled)
+        except (OverflowError, ZeroDivisionError) as exc:
+            raise ValueError("horizon is outside the supported numerical domain") from exc
+        start, scale = self.base_price, self._scale
+        return RateFuturesHorizonValuation(
+            base_id=self.base_id,
+            contract_id=req.contract.contract_id,
+            valuation_date=valuation,
+            horizon_date=horizon_date,
+            quantity=req.quantity,
+            price_start=start,
+            price_forward=price_forward,
+            price_rolled=price_rolled,
+            pv_start_rub=0.0,
+            received_rub=0.0,
+            carry_rub=finite_money(scale * (price_forward - start), "carry"),
+            rolldown_rub=finite_money(scale * (price_rolled - price_forward), "rolldown"),
+            horizon_pnl_rub=finite_money(scale * (price_rolled - start), "horizon P&L"),
+        )
+
+
+def rate_futures_horizon(
+    request: RateFuturesRiskRequest,
+    *,
+    horizon_date: date,
+    curve_cache: ShockedCurveCache | None = None,
+) -> RateFuturesHorizonValuation:
+    """Carry and rolldown of a short-rate futures position to ``horizon_date``."""
+    engine = RateFuturesRiskEngine(
+        request, ShockedCurveCache() if curve_cache is None else curve_cache
+    )
+    return engine.horizon(horizon_date)
 
 
 # --- desk factors ---------------------------------------------------------------------------

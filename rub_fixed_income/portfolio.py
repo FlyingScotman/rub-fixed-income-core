@@ -63,7 +63,8 @@ from .factors import (
     linker_factor_risk,
 )
 from .floating import FixingIndex
-from .horizon import HORIZON_MODEL_VERSION, HorizonValuation, horizon_valuation
+from .horizon import HORIZON_MODEL_VERSION, FxHorizon, HorizonValuation, horizon_valuation
+from .horizon import fx_horizon as fx_horizon_rule
 from .inflation import IndexedPrincipalLeg
 from .kbd import KBD_MODEL_VERSION, ZcycParameters, g_spread_bp, kbd_discount_curve
 from .linkers import linker_accrued, linker_nominal, real_cashflows
@@ -75,24 +76,35 @@ from .local_risk import (
 )
 from .portfolio_instruments import PortfolioInstrument
 from .portfolio_products import (
+    HORIZON_ROW_FIELDS,
     ROW_FIELDS,
+    CdsPositionHorizon,
     CdsPositionValuation,
     CreditCurveUse,
+    FxForwardPositionHorizon,
     FxForwardPositionValuation,
+    FxFuturesPositionHorizon,
     FxFuturesPositionValuation,
     HessianTotal,
+    HorizonRow,
     JtdTotal,
+    OfzFuturesPositionHorizon,
     OfzFuturesPositionValuation,
     PositionModel,
     ProductContext,
     ProductOutcome,
     ProductRow,
+    RateFuturesPositionHorizon,
     RateFuturesPositionValuation,
+    RepoPositionHorizon,
     RepoPositionValuation,
+    SwapPositionHorizon,
     SwapPositionValuation,
+    XccyPositionHorizon,
     XccyPositionValuation,
     adapter_for,
     hessian_totals,
+    horizon_adapter_for,
     jtd_totals,
 )
 from .risk import BondRiskEngine, BondRiskRequest, BondScenario, ShockedCurveCache
@@ -688,35 +700,10 @@ def value_portfolio(
     models: list[PositionModel] = []
     exercised_memo: dict[str, ExercisedBond | CoreRejection] = {}
 
-    def curve(curve_id: str) -> _BuiltCurve:
-        if curve_id not in built:
-            try:
-                built[curve_id] = _build_curve(snapshot.curve(curve_id), snapshot.business_date)
-            except CoreRejection as exc:
-                built[curve_id] = exc
-        outcome = built[curve_id]
-        if isinstance(outcome, CoreRejection):
-            raise outcome
-        return outcome
-
-    def projection(curve_id: str, index: FixingIndex) -> _BuiltCurve:
-        return _projection_curve(snapshot, projections, curve_id, index)
-
-    def calendar(calendar_id: str) -> BusinessCalendar:
-        return _record_calendar(snapshot, calendar_id, used_calendars)
-
-    context = ProductContext(
-        snapshot,
-        job_id,
-        policy.bump_bp,
-        policy.include_second_order,
-        cache,
-        curve,
-        projection,
-        calendar,
-        used_fx,
-        bonds_by_id,
+    context = _product_context(
+        snapshot, policy, job_id, cache, built, projections, used_calendars, used_fx, bonds_by_id
     )
+    curve, projection = context.bond_curve, context.projection
 
     for position in positions:
         reason = stopped()
@@ -901,6 +888,50 @@ def value_portfolio(
     )
     return replace(
         result_v3, result_sha256=canonical_sha256(portfolio_result_hash_projection(result_v3))
+    )
+
+
+def _product_context(
+    snapshot: MarketSnapshot,
+    policy: ValuationPolicy,
+    job_id: str,
+    cache: ShockedCurveCache,
+    built: dict[str, _BuiltCurve | CoreRejection],
+    projections: dict[str, _BuiltCurve | CoreRejection],
+    used_calendars: dict[str, CalendarUse],
+    used_fx: dict[str, FxRate],
+    bonds: Mapping[str, Instrument],
+) -> ProductContext:
+    """The derivative adapters' context; curves and calendars resolve into the job's memos."""
+
+    def curve(curve_id: str) -> _BuiltCurve:
+        if curve_id not in built:
+            try:
+                built[curve_id] = _build_curve(snapshot.curve(curve_id), snapshot.business_date)
+            except CoreRejection as exc:
+                built[curve_id] = exc
+        outcome = built[curve_id]
+        if isinstance(outcome, CoreRejection):
+            raise outcome
+        return outcome
+
+    def projection(curve_id: str, index: FixingIndex) -> _BuiltCurve:
+        return _projection_curve(snapshot, projections, curve_id, index)
+
+    def calendar(calendar_id: str) -> BusinessCalendar:
+        return _record_calendar(snapshot, calendar_id, used_calendars)
+
+    return ProductContext(
+        snapshot,
+        job_id,
+        policy.bump_bp,
+        policy.include_second_order,
+        cache,
+        curve,
+        projection,
+        calendar,
+        used_fx,
+        bonds,
     )
 
 
@@ -1708,7 +1739,12 @@ class PositionHorizon:
 
 @dataclass(frozen=True)
 class PortfolioHorizonResult:
-    """Book carry to ``horizon_date``; totals are ``None`` unless coverage is complete."""
+    """Book carry to ``horizon_date``; totals are ``None`` unless coverage is complete.
+
+    ``positions`` holds the bonds; the derivative rows are in one field per product
+    (BACKLOG #101). Covered carry, rolldown and horizon P&L (the theta) sum every row.
+    ``fx_horizon`` is the FX spot rule the FX products were carried with.
+    """
 
     snapshot_id: str
     business_date: date
@@ -1722,6 +1758,21 @@ class PortfolioHorizonResult:
     covered_horizon_pnl_rub: float
     total_horizon_pnl_rub: float | None
     model_version: str = HORIZON_MODEL_VERSION
+    swaps: tuple[SwapPositionHorizon, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
+    repos: tuple[RepoPositionHorizon, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
+    cds: tuple[CdsPositionHorizon, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
+    fx_forwards: tuple[FxForwardPositionHorizon, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
+    xccy_swaps: tuple[XccyPositionHorizon, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
+    fx_futures: tuple[FxFuturesPositionHorizon, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
+    rate_futures: tuple[RateFuturesPositionHorizon, ...] = field(
+        default=(), metadata=OMIT_IF_DEFAULT
+    )
+    ofz_futures: tuple[OfzFuturesPositionHorizon, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
+    fx_horizon: FxHorizon = field(default="spot_held", metadata=OMIT_IF_DEFAULT)
+
+    def derivative_rows(self) -> tuple[HorizonRow, ...]:
+        """Every derivative carry row, product by product."""
+        return tuple(row for name in HORIZON_ROW_FIELDS.values() for row in getattr(self, name))
 
 
 def horizon_portfolio(
@@ -1732,12 +1783,19 @@ def horizon_portfolio(
     policy: ValuationPolicy,
     horizon_date: date,
     curve_cache: ShockedCurveCache | None = None,
+    fx_horizon: FxHorizon = "spot_held",
 ) -> PortfolioHorizonResult:
     """Carry and rolldown of a book from the snapshot's business date to ``horizon_date``.
 
     Positions resolve exactly as in :func:`value_portfolio` (instrument checks, curve,
     calendar, quote and accrued, horizon policy); each spread is calibrated to the
-    quoted dirty price and held. Rejections carry the same codes.
+    quoted dirty price and held. Swaps and repo legs are carried on the engines
+    ``value_portfolio`` builds for them (``swap_horizon``, ``repo_carry``); other
+    derivatives are ``UNSUPPORTED_PRODUCT``. Rejections carry the same codes.
+
+    ``fx_horizon`` states the FX spot at the horizon for FX products: ``"spot_held"``
+    (today's spot, sticky spot) or ``"forwards_realised"`` (today's forward for the
+    horizon spot value date).
     """
     for names, label in (
         ([i.instrument_id for i in instruments], "instrument"),
@@ -1747,22 +1805,26 @@ def horizon_portfolio(
             raise ValueError(f"duplicate {label} identifiers")
     if horizon_date <= snapshot.business_date:
         raise InvalidTerms("horizon date must be after the snapshot business date")
+    fx_rule = fx_horizon_rule(fx_horizon)
     exercised_memo: dict[str, ExercisedBond | CoreRejection] = {}
     every = {i.instrument_id: i for i in instruments}
     by_id = {k: i for k, i in every.items() if isinstance(i, Instrument)}
     cache = ShockedCurveCache() if curve_cache is None else curve_cache
     built: dict[str, _BuiltCurve | CoreRejection] = {}
     used_calendars: dict[str, CalendarUse] = {}
+    # Carry rows need no calculation IDs, so the context has no job identity.
+    context = _product_context(snapshot, policy, "", cache, built, {}, used_calendars, {}, by_id)
     rows: list[PositionHorizon] = []
+    derivatives: list[HorizonRow] = []
     rejections: list[Rejection] = []
     for position in positions:
         try:
             other = every.get(position.instrument_id)
             if other is not None and not isinstance(other, Instrument):
-                raise UnsupportedProduct(
-                    f"carry of {other.product.value} positions is not supported "
-                    "(horizon_portfolio values bonds)"
+                derivatives.append(
+                    horizon_adapter_for(other)(position, other, context, horizon_date, fx_rule)
                 )
+                continue
             rows.append(
                 _horizon_position(
                     position,
@@ -1787,7 +1849,11 @@ def horizon_portfolio(
                 )
             )
     coverage = _coverage(positions, rejections)
-    covered = finite_money(math.fsum(r.horizon_pnl_rub for r in rows), "covered horizon P&L")
+    every_row = (*rows, *derivatives)
+    by_field: dict[str, list[HorizonRow]] = {name: [] for name in HORIZON_ROW_FIELDS.values()}
+    for row in derivatives:
+        by_field[HORIZON_ROW_FIELDS[type(row)]].append(row)
+    covered = finite_money(math.fsum(r.horizon_pnl_rub for r in every_row), "covered horizon P&L")
     return PortfolioHorizonResult(
         snapshot.snapshot_id,
         snapshot.business_date,
@@ -1796,10 +1862,12 @@ def horizon_portfolio(
         coverage,
         tuple(rows),
         tuple(used_calendars[k] for k in sorted(used_calendars)),
-        finite_money(math.fsum(r.carry_rub for r in rows), "covered carry"),
-        finite_money(math.fsum(r.rolldown_rub for r in rows), "covered rolldown"),
+        finite_money(math.fsum(r.carry_rub for r in every_row), "covered carry"),
+        finite_money(math.fsum(r.rolldown_rub for r in every_row), "covered rolldown"),
         covered,
         covered if coverage.status == "complete" else None,
+        **{name: tuple(items) for name, items in by_field.items()},  # type: ignore[arg-type]
+        fx_horizon=fx_rule,
     )
 
 

@@ -34,6 +34,8 @@ from datetime import date, timedelta
 from itertools import pairwise
 from typing import Literal, cast
 
+from ._curve_views import FxHorizon, roll_curve
+from ._curve_views import fx_horizon as _check_fx_horizon
 from ._money import finite_money, positive_money
 from ._risk_common import (
     _ZERO_SHOCK,
@@ -67,6 +69,7 @@ from .tenors import parse_tenor, resolve_tenor
 __all__ = [
     "RUONIA_OIS_COMPOUND",
     "XCCY_CURVE_MODEL_VERSION",
+    "XCCY_HORIZON_MODEL_VERSION",
     "XCCY_MODEL_VERSION",
     "XCCY_QUOTE_SPEC_ID",
     "XCCY_SECOND_ORDER_MODEL_VERSION",
@@ -78,6 +81,7 @@ __all__ = [
     "XccyCurveBootstrapRequest",
     "XccyCurveCache",
     "XccyCurveRisk",
+    "XccyHorizonValuation",
     "XccyLeg",
     "XccyParQuote",
     "XccyPeriod",
@@ -94,6 +98,7 @@ __all__ = [
     "standard_xccy_swap",
     "xccy_basis_factor",
     "xccy_factor_risk",
+    "xccy_horizon",
     "xccy_leg_periods",
     "xccy_par_rate",
     "xcs_cnyrub_convention",
@@ -101,6 +106,7 @@ __all__ = [
 
 XCCY_MODEL_VERSION = "rub-xccy-v1"
 XCCY_SECOND_ORDER_MODEL_VERSION = "rub-xccy-second-order-v1"
+XCCY_HORIZON_MODEL_VERSION = "rub-xccy-horizon-v1"
 XCCY_CURVE_MODEL_VERSION = "xccy-cny-logdf-v1"
 XCCY_QUOTE_SPEC_ID = "cny_ruonia_xccy_v1"
 """Core spec ID of the MOEX ``XCS CNYRUB`` standard swap (:func:`xcs_cnyrub_convention`)."""
@@ -743,6 +749,26 @@ def _amount(flow: _Flow, projection: DiscountFactorCurve | None) -> float:
     return flow.const + flow.coef * (flow.known * ratio - 1.0)
 
 
+def _rolled_amount(
+    flow: _Flow,
+    horizon: date,
+    today: DiscountFactorCurve | None,
+    rolled: DiscountFactorCurve | None,
+) -> float:
+    """Amount with today's forwards up to ``horizon`` and the rolled projection after."""
+    if flow.proj_start is None or flow.proj_end is None:
+        return flow.const
+    assert today is not None and rolled is not None
+    start, end = flow.proj_start, flow.proj_end
+    middle = min(max(start, horizon), end)
+    growth = flow.known
+    if start < middle:
+        growth *= today.discount_factor(start) / today.discount_factor(middle)
+    if middle < end:
+        growth *= rolled.discount_factor(middle) / rolled.discount_factor(end)
+    return flow.const + flow.coef * (growth - 1.0)
+
+
 def _leg_pv(
     flows: tuple[_Flow, ...], discount: DiscountFactorCurve, projection: DiscountFactorCurve | None
 ) -> float:
@@ -1319,6 +1345,45 @@ class XccySecondOrderRisk:
     model_version: str = XCCY_SECOND_ORDER_MODEL_VERSION
 
 
+@dataclass(frozen=True)
+class XccyHorizonValuation:
+    """Carry and rolldown from the valuation date to ``horizon_date``, in RUB.
+
+    - ``received_rub``: flows paid in ``(valuation date, horizon]``, as cash
+      (undiscounted, not reinvested); floating amounts are today's projections and
+      foreign flows convert at ``spot_rate`` (``spot_held``) or at today's outright for
+      their payment date (``forwards_realised``).
+    - ``pv_forward_rub``: the remaining flows at the horizon on today's curves read
+      forward (``DF(t) / DF(horizon)``), floating amounts on today's projections.
+    - ``pv_rolled_rub``: the remaining flows at the horizon on rolled curves (shape held
+      in calendar days); observations before the horizon keep today's forwards.
+    - Remaining foreign flows convert at ``horizon_spot_rate`` for value date
+      ``horizon_spot_value_date``, with the basis held in bp.
+
+    ``carry = pv_forward + received - pv_start``, ``rolldown = pv_rolled - pv_forward``
+    and ``horizon_pnl = pv_rolled + received - pv_start``.
+    """
+
+    base_id: str
+    trade_id: str
+    currency: str
+    valuation_date: date
+    horizon_date: date
+    fx_horizon: FxHorizon
+    spot_rate: float
+    spot_value_date: date
+    horizon_spot_rate: float
+    horizon_spot_value_date: date
+    pv_start_rub: float
+    pv_forward_rub: float
+    pv_rolled_rub: float
+    received_rub: float
+    carry_rub: float
+    rolldown_rub: float
+    horizon_pnl_rub: float
+    model_version: str = XCCY_HORIZON_MODEL_VERSION
+
+
 # --- Engine -------------------------------------------------------------------------
 
 
@@ -1812,6 +1877,142 @@ class XccyRiskEngine:
             gradient_rub=(*gradient, finite_money(base[0] / 100.0, "FX delta")),
             hessian_rub=tuple(tuple(row) for row in hessian),
         )
+
+    # --- horizon -----------------------------------------------------------------
+
+    def horizon(
+        self,
+        horizon_date: date,
+        *,
+        horizon_spot_value_date: date,
+        fx_horizon: FxHorizon = "spot_held",
+    ) -> XccyHorizonValuation:
+        """Carry and rolldown to ``horizon_date`` (see :class:`XccyHorizonValuation`).
+
+        The spot at the horizon follows ``fx_horizon``: today's spot (``spot_held``) or
+        today's outright for ``horizon_spot_value_date`` (``forwards_realised``). Base
+        curves only; a bootstrapped foreign curve is read forward and rolled as built
+        (its quotes are not rebootstrapped at the horizon).
+        """
+        req = self.request
+        valuation = req.valuation_date
+        if not isinstance(horizon_date, date) or horizon_date <= valuation:
+            raise InvalidTerms("horizon date must be after the valuation date")
+        spot_h = horizon_spot_value_date
+        if not isinstance(spot_h, date) or spot_h < horizon_date:
+            raise InvalidTerms("horizon spot value date cannot predate the horizon date")
+        if spot_h < req.spot_value_date:
+            raise InvalidTerms("horizon spot value date cannot predate the spot value date")
+        rule = _check_fx_horizon(fx_horizon)
+        rub_d = self._bases["rub_discount"]
+        rub_p = self._bases.get("rub_projection", rub_d)
+        foreign_d = self._bases["foreign_discount"]
+        foreign_p = self._bases.get("foreign_projection")
+        basis, day_count = req.basis_bp * 1e-4, req.basis_day_count
+        spot, spot_date = req.spot_rate, req.spot_value_date
+
+        def outright(day: date) -> float:
+            """Today's forward outright for ``day`` (covered parity with the basis)."""
+            return (
+                spot
+                * (foreign_d.discount_factor(day) / foreign_d.discount_factor(spot_date))
+                / (rub_d.discount_factor(day) / rub_d.discount_factor(spot_date))
+                * math.exp(basis * _signed_years(day_count, spot_date, day))
+            )
+
+        spot_at_h = spot if rule == "spot_held" else outright(spot_h)
+        rub_left = tuple(f for f in self._rub_flows if f.payment_date > horizon_date)
+        foreign_left = tuple(f for f in self._foreign_flows if f.payment_date > horizon_date)
+        received = math.fsum(
+            (
+                *(_amount(f, rub_p) for f in self._rub_flows if f.payment_date <= horizon_date),
+                *(
+                    _amount(f, foreign_p)
+                    * (spot if rule == "spot_held" else outright(f.payment_date))
+                    for f in self._foreign_flows
+                    if f.payment_date <= horizon_date
+                ),
+            )
+        )
+
+        def at_horizon(
+            rub_amounts: Sequence[float],
+            foreign_amounts: Sequence[float],
+            rub_df: Callable[[date], float],
+            foreign_df: Callable[[date], float],
+        ) -> float:
+            """Remaining flows' RUB value at the horizon on one view of the curves."""
+            rub = math.fsum(
+                a * rub_df(f.payment_date) for f, a in zip(rub_left, rub_amounts, strict=True)
+            )
+            foreign = math.fsum(
+                a
+                * foreign_df(f.payment_date)
+                * math.exp(basis * _signed_years(day_count, spot_h, f.payment_date))
+                for f, a in zip(foreign_left, foreign_amounts, strict=True)
+            )
+            return rub + spot_at_h * rub_df(spot_h) / foreign_df(spot_h) * foreign
+
+        rub_h = rub_d.discount_factor(horizon_date)
+        foreign_h = foreign_d.discount_factor(horizon_date)
+        pv_forward = at_horizon(
+            tuple(_amount(f, rub_p) for f in rub_left),
+            tuple(_amount(f, foreign_p) for f in foreign_left),
+            lambda t: rub_d.discount_factor(t) / rub_h,
+            lambda t: foreign_d.discount_factor(t) / foreign_h,
+        )
+        rolled_rub_d = roll_curve(rub_d, horizon_date)
+        rolled_rub_p = rolled_rub_d if rub_p is rub_d else roll_curve(rub_p, horizon_date)
+        rolled_foreign_d = roll_curve(foreign_d, horizon_date)
+        rolled_foreign_p = None if foreign_p is None else roll_curve(foreign_p, horizon_date)
+        pv_rolled = at_horizon(
+            tuple(_rolled_amount(f, horizon_date, rub_p, rolled_rub_p) for f in rub_left),
+            tuple(
+                _rolled_amount(f, horizon_date, foreign_p, rolled_foreign_p) for f in foreign_left
+            ),
+            rolled_rub_d.discount_factor,
+            rolled_foreign_d.discount_factor,
+        )
+        pv_start = self.base_pv_rub
+        return XccyHorizonValuation(
+            self.base_id,
+            req.swap.trade_id,
+            req.swap.currency,
+            valuation,
+            horizon_date,
+            rule,
+            spot,
+            spot_date,
+            finite_money(spot_at_h, "horizon spot"),
+            spot_h,
+            pv_start,
+            finite_money(pv_forward, "forward PV"),
+            finite_money(pv_rolled, "rolled PV"),
+            finite_money(received, "received"),
+            finite_money(pv_forward + received - pv_start, "carry"),
+            finite_money(pv_rolled - pv_forward, "rolldown"),
+            finite_money(pv_rolled + received - pv_start, "horizon P&L"),
+        )
+
+
+def xccy_horizon(
+    request: XccyRiskRequest,
+    *,
+    horizon_date: date,
+    horizon_spot_value_date: date,
+    fx_horizon: FxHorizon = "spot_held",
+    curve_cache: ShockedCurveCache | None = None,
+    xccy_cache: XccyCurveCache | None = None,
+) -> XccyHorizonValuation:
+    """Carry and rolldown of a cross-currency swap to ``horizon_date``."""
+    engine = XccyRiskEngine(
+        request,
+        ShockedCurveCache() if curve_cache is None else curve_cache,
+        XccyCurveCache() if xccy_cache is None else xccy_cache,
+    )
+    return engine.horizon(
+        horizon_date, horizon_spot_value_date=horizon_spot_value_date, fx_horizon=fx_horizon
+    )
 
 
 # --- Par rates and desk factors ------------------------------------------------------

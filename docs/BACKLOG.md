@@ -459,13 +459,14 @@ other repositories and must be changed there, not in this core.
     today), the value of the KSU 0.01 % floor near zero (rejected today).
 100. **Floating repo Hessian speed and carry explain.** 22 factors cost about 10.7 ms per
      position warm; the interest is linear in the forwards, so an analytic or sparse
-     projection block would cut it. Carry has no rolldown term or P&L explain.
+     projection block would cut it. *(Rolldown and theta done in 0.31.0.)* Carry has no
+     P&L explain.
 
 ## Portfolio v3 — 0.29.0
 
-101. **Derivative carry in `horizon_portfolio`.** It rejects every derivative
-     (`UNSUPPORTED_PRODUCT`); `swap_horizon` and `repo_carry` exist, FX, XCCY and CDS carry
-     do not.
+101. *(done in 0.30.0–0.31.0)* **Derivative carry in `horizon_portfolio`.** Every
+     product has an engine `.horizon(...)` and a carry adapter; FX products take an
+     explicit `fx_horizon` (`"spot_held"` or `"forwards_realised"`). Limits in #108.
 102. **Derivatives in the local worker** (`run_local_risk`; its contract v1 is fixed RUB
      bonds), including FX futures (#33) and rate futures (#87).
 103. **Basis scenarios.** `PortfolioScenario` cannot shift `FXBASIS`, `XCCYBASIS` or
@@ -483,3 +484,20 @@ other repositories and must be changed there, not in this core.
      types; run imported and computed derivatives in parallel before switching them to
      `computed`.
 
+## Derivative carry and theta — 0.31.0
+
+108. **Carry limits.** A non-RUB CDS is carried with `fx_horizon="spot_held"` only (its
+     position names no RUB curve for a forward FX rate); OFZ futures only to a horizon
+     spot settlement before delivery; a future that settles inside the horizon reports
+     its unrounded model price, not the exchange-rounded final price.
+109. *(done in 0.32.0: the decision date is held, the tenor pillars roll)* **Key-rate curve roll.** `roll_key_rate_curve` (used since 0.21.0 by key-rate swaps,
+     and now by KEYRATE futures) moves every date by the horizon, the next decision
+     date (`current_rate_end`) included. CBR meeting dates are fixed events, so a desk
+     may prefer to hold them (a date-anchored key-rate path, rolldown only from the
+     tenor pillars). On the test book a 1-day theta of 20 KK-10.26 contracts is +30,000
+     RUB from the shifted decision date alone. Owner decision; changing it moves
+     key-rate swap horizon numbers (new horizon model version).
+110. **Carry model refinements.** Default-weighted (expected) CDS carry over the window;
+     rebootstrapping CDS and XCCY curves from held quotes at the horizon instead of
+     rolling the built curves; funding of cash received and of variation margin to the
+     horizon; a hashed horizon result contract if the backend persists it.

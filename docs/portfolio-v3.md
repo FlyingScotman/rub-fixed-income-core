@@ -195,7 +195,7 @@ exercised rows).
 | `EXPIRED_CONTRACT` | a future past its last trading day (FX futures: delivery), or an OFZ basket settling after delivery |
 | `SETTLED_LEG` | an FX leg settled before the business date, a repo that has ended |
 | `INVALID_TERMS` | a position currency other than the instrument's; a curve of the wrong currency, kind or date (a key-rate curve not dated the business date); XCCY quotes with a spot other than the snapshot's; a value date off the settlement calendar |
-| `UNSUPPORTED_PRODUCT` | a position type without an adapter; any product limit of its engine; derivatives in `horizon_portfolio` |
+| `UNSUPPORTED_PRODUCT` | a position type without an adapter; any product limit of its engine; in `horizon_portfolio`, a non-RUB CDS with `fx_horizon="forwards_realised"` |
 | `CALCULATION_FAILED` | a numerical failure |
 
 ## Extension point
@@ -210,6 +210,19 @@ the `DerivativeRowHeader` fields, an adapter that builds its engine from the con
 `OMIT_IF_DEFAULT` so that existing v3 results keep their bytes. Factor totals, the
 Hessian, JTD, coverage, scenarios and model records then include it. Repo legs were
 added this way after the other products.
+
+Carry has its own registry, `HORIZON_ADAPTERS` (0.30.0; every product since 0.31.0): an
+adapter `(position, instrument, ProductContext, horizon_date, fx_horizon) -> row` builds
+the same engine as the valuation adapter, calls its `.horizon(...)` and returns a row
+whose first fields are those of `DerivativeHorizonHeader` (`carry_rub`, `rolldown_rub`,
+`received_rub`, `horizon_pnl_rub`, signed RUB for the position) and whose last is the
+engine's result (`per_trade`). Its type is listed in `HORIZON_ROW_FIELDS` with a tuple
+field on `PortfolioHorizonResult` (`swaps`, `fx_forwards`, `xccy_swaps`, `cds`,
+`fx_futures`, `rate_futures`, `ofz_futures`, `repos`); `.derivative_rows()` returns
+them all. FX products take the spot at the horizon from `horizon_portfolio(...,
+fx_horizon=...)` and the horizon spot date from `horizon_spot_date` (today's lag). The
+conventions are in [CONVENTIONS.md](CONVENTIONS.md), "Derivatives: carry, rolldown and
+theta".
 
 ## Performance
 
@@ -230,8 +243,9 @@ engines dominate; the portfolio layer adds no repricing.
 
 ## Not covered
 
-- Horizon / carry of derivatives (`horizon_portfolio` rejects them; `swap_horizon`,
-  `repo_carry` exist), and derivatives in `local_worker.run_local_risk` (contract v1).
+- Derivatives in `local_worker.run_local_risk` (contract v1). Carry of a non-RUB CDS
+  with `fx_horizon="forwards_realised"`, of OFZ futures through delivery and of non-RUB
+  bonds (BACKLOG #41, #108).
 - Basis shocks (`FXBASIS`, `XCCYBASIS`, `FUTBASIS`) in `PortfolioScenario`; recovery as a
   factor (`recovery01_rub` is reported beside the factors, BACKLOG #67).
 - One shared engine per FX futures contract (each position builds its own; rate and OFZ
