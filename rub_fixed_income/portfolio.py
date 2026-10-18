@@ -63,7 +63,8 @@ from .factors import (
     linker_factor_risk,
 )
 from .floating import FixingIndex
-from .horizon import HORIZON_MODEL_VERSION, HorizonValuation, horizon_valuation
+from .horizon import HORIZON_MODEL_VERSION, FxHorizon, HorizonValuation, horizon_valuation
+from .horizon import fx_horizon as fx_horizon_rule
 from .inflation import IndexedPrincipalLeg
 from .kbd import KBD_MODEL_VERSION, ZcycParameters, g_spread_bp, kbd_discount_curve
 from .linkers import linker_accrued, linker_nominal, real_cashflows
@@ -75,6 +76,7 @@ from .local_risk import (
 )
 from .portfolio_instruments import PortfolioInstrument
 from .portfolio_products import (
+    HORIZON_ROW_FIELDS,
     ROW_FIELDS,
     CdsPositionValuation,
     CreditCurveUse,
@@ -1733,9 +1735,9 @@ class PositionHorizon:
 class PortfolioHorizonResult:
     """Book carry to ``horizon_date``; totals are ``None`` unless coverage is complete.
 
-    ``positions`` holds the bonds; ``swaps`` and ``repos`` the derivative rows (BACKLOG
-    #101). Covered carry and horizon P&L sum every row; covered rolldown sums the bonds
-    and swaps (a repo row has no rolldown term, its carry is its horizon P&L).
+    ``positions`` holds the bonds; the derivative rows are in one field per product
+    (BACKLOG #101). Covered carry, rolldown and horizon P&L (the theta) sum every row.
+    ``fx_horizon`` is the FX spot rule the FX products were carried with.
     """
 
     snapshot_id: str
@@ -1752,6 +1754,11 @@ class PortfolioHorizonResult:
     model_version: str = HORIZON_MODEL_VERSION
     swaps: tuple[SwapPositionHorizon, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
     repos: tuple[RepoPositionHorizon, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
+    fx_horizon: FxHorizon = field(default="spot_held", metadata=OMIT_IF_DEFAULT)
+
+    def derivative_rows(self) -> tuple[HorizonRow, ...]:
+        """Every derivative carry row, product by product."""
+        return tuple(row for name in HORIZON_ROW_FIELDS.values() for row in getattr(self, name))
 
 
 def horizon_portfolio(
@@ -1762,6 +1769,7 @@ def horizon_portfolio(
     policy: ValuationPolicy,
     horizon_date: date,
     curve_cache: ShockedCurveCache | None = None,
+    fx_horizon: FxHorizon = "spot_held",
 ) -> PortfolioHorizonResult:
     """Carry and rolldown of a book from the snapshot's business date to ``horizon_date``.
 
@@ -1770,6 +1778,10 @@ def horizon_portfolio(
     quoted dirty price and held. Swaps and repo legs are carried on the engines
     ``value_portfolio`` builds for them (``swap_horizon``, ``repo_carry``); other
     derivatives are ``UNSUPPORTED_PRODUCT``. Rejections carry the same codes.
+
+    ``fx_horizon`` states the FX spot at the horizon for FX products: ``"spot_held"``
+    (today's spot, sticky spot) or ``"forwards_realised"`` (today's forward for the
+    horizon spot value date).
     """
     for names, label in (
         ([i.instrument_id for i in instruments], "instrument"),
@@ -1779,6 +1791,7 @@ def horizon_portfolio(
             raise ValueError(f"duplicate {label} identifiers")
     if horizon_date <= snapshot.business_date:
         raise InvalidTerms("horizon date must be after the snapshot business date")
+    fx_rule = fx_horizon_rule(fx_horizon)
     exercised_memo: dict[str, ExercisedBond | CoreRejection] = {}
     every = {i.instrument_id: i for i in instruments}
     by_id = {k: i for k, i in every.items() if isinstance(i, Instrument)}
@@ -1795,7 +1808,7 @@ def horizon_portfolio(
             other = every.get(position.instrument_id)
             if other is not None and not isinstance(other, Instrument):
                 derivatives.append(
-                    horizon_adapter_for(other)(position, other, context, horizon_date)
+                    horizon_adapter_for(other)(position, other, context, horizon_date, fx_rule)
                 )
                 continue
             rows.append(
@@ -1823,8 +1836,9 @@ def horizon_portfolio(
             )
     coverage = _coverage(positions, rejections)
     every_row = (*rows, *derivatives)
-    swaps = tuple(r for r in derivatives if isinstance(r, SwapPositionHorizon))
-    rolling: tuple[PositionHorizon | SwapPositionHorizon, ...] = (*rows, *swaps)
+    by_field: dict[str, list[HorizonRow]] = {name: [] for name in HORIZON_ROW_FIELDS.values()}
+    for row in derivatives:
+        by_field[HORIZON_ROW_FIELDS[type(row)]].append(row)
     covered = finite_money(math.fsum(r.horizon_pnl_rub for r in every_row), "covered horizon P&L")
     return PortfolioHorizonResult(
         snapshot.snapshot_id,
@@ -1835,11 +1849,11 @@ def horizon_portfolio(
         tuple(rows),
         tuple(used_calendars[k] for k in sorted(used_calendars)),
         finite_money(math.fsum(r.carry_rub for r in every_row), "covered carry"),
-        finite_money(math.fsum(r.rolldown_rub for r in rolling), "covered rolldown"),
+        finite_money(math.fsum(r.rolldown_rub for r in every_row), "covered rolldown"),
         covered,
         covered if coverage.status == "complete" else None,
-        swaps=swaps,
-        repos=tuple(r for r in derivatives if isinstance(r, RepoPositionHorizon)),
+        **{name: tuple(items) for name, items in by_field.items()},  # type: ignore[arg-type]
+        fx_horizon=fx_rule,
     )
 
 

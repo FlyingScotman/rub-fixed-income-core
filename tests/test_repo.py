@@ -464,6 +464,71 @@ def test_carry_capitalised_floating_partial_period() -> None:
     assert full.accrued_horizon_rub > carry.accrued_horizon_rub
 
 
+def _sloped(valuation: date = VALUATION) -> DiscountCurve:
+    nodes = []
+    for days, rate in ((7, 0.15), (30, 0.16), (90, 0.18), (365, 0.17)):
+        nodes.append((valuation + timedelta(days=days), math.exp(-rate * days / 365)))
+    return DiscountCurve(valuation, tuple(nodes))
+
+
+def test_theta_fixed_rolls_the_discount_curve() -> None:
+    request = _request(_trade(), discount_curve=_sloped())
+    horizon = date(2026, 10, 26)
+    carry = repo_carry(request, horizon_date=horizon)
+    end_amount = round(100_000_000.0 * (1 + 0.16 * 31 / 365), 2)
+    shift = horizon - VALUATION
+    rolled_df = _sloped().discount_factor(date(2026, 11, 12) - shift)
+    assert carry.pv_rolled_rub == pytest.approx(end_amount * rolled_df, rel=1e-14)
+    assert carry.rolldown_rub == pytest.approx(carry.pv_rolled_rub - carry.pv_forward_rub)
+    assert carry.horizon_pnl_rub == pytest.approx(
+        carry.pv_carry_rub + carry.rolldown_rub, abs=1e-6
+    )
+    # On a flat curve rolling and reading forward agree.
+    flat = repo_carry(_request(_trade()), horizon_date=horizon)
+    assert flat.pv_rolled_rub == pytest.approx(flat.pv_forward_rub, rel=1e-15)
+    beyond = repo_carry(request, horizon_date=date(2026, 12, 1))
+    assert beyond.pv_rolled_rub == 0.0 and beyond.horizon_pnl_rub == beyond.pv_carry_rub
+
+
+def test_theta_floating_keeps_the_path_and_rolls_the_projection() -> None:
+    trade = _trade(rate=FLOAT)
+    projection = _sloped()
+    horizon = date(2026, 10, 28)  # Wednesday
+    shift = horizon - VALUATION
+    carry = _engine(trade, projection_curve=projection).carry(horizon)
+    history = dict(_history().fixings)
+    total = 0.0
+    day = trade.start_date + timedelta(days=1)
+    assert trade.end_date is not None
+    while day <= trade.end_date:
+        settlement = day - timedelta(days=1)
+        while not CALENDAR.is_business_day(settlement):
+            settlement -= timedelta(days=1)
+        if settlement < VALUATION:
+            value = history[settlement]
+        else:
+            following = CALENDAR.add_business_days(settlement, 1)
+            tau = (following - settlement).days / 365
+            if settlement < horizon:  # today's forward: the path to the horizon
+                ratio = projection.discount_factor(settlement) / projection.discount_factor(
+                    following
+                )
+            else:  # the rolled projection curve
+                ratio = projection.discount_factor(settlement - shift) / (
+                    projection.discount_factor(following - shift)
+                )
+            value = (ratio - 1) / tau
+        total += (value + FLOAT.spread) / 365
+        day += timedelta(days=1)
+    end_amount = trade.start_amount_rub * (1 + total)
+    rolled_df = DiscountCurve.flat(VALUATION, RATE).discount_factor(trade.end_date - shift)
+    assert carry.pv_rolled_rub == pytest.approx(end_amount * rolled_df, rel=1e-13)
+    assert carry.rolldown_rub != 0.0
+    # Single curve on a flat curve: no rolldown.
+    flat = _engine(trade).carry(horizon)
+    assert flat.rolldown_rub == pytest.approx(0.0, abs=1e-6)
+
+
 # --- collateral, F13 and identity -----------------------------------------------------
 
 

@@ -47,9 +47,7 @@ from rub_fixed_income import (
     PortfolioScenario,
     Position,
     PositionHorizon,
-    RepoPositionHorizon,
     ShockedCurveCache,
-    SwapPositionHorizon,
     canonical_sha256,
     horizon_portfolio,
     portfolio_result_from_json,
@@ -95,7 +93,7 @@ from rub_fixed_income.portfolio_instruments import (
     SwapInstrument,
     XccyInstrument,
 )
-from rub_fixed_income.portfolio_products import scale_factor_risk
+from rub_fixed_income.portfolio_products import HorizonRow, scale_factor_risk
 from rub_fixed_income.rate_futures import (
     RateFuturesRiskEngine,
     RateFuturesRiskRequest,
@@ -837,8 +835,11 @@ def test_horizon_portfolio_carries_swaps_and_repos() -> None:
         direct_r = standalone_carry(repo_row.position_id, HORIZON)
         assert isinstance(direct_r, RepoCarry)
         assert repo_row.per_trade == direct_r
-        assert repo_row.carry_rub == repo_row.horizon_pnl_rub
         assert repo_row.carry_rub == pytest.approx(direct_r.pv_carry_rub * q, rel=1e-15)
+        assert repo_row.rolldown_rub == pytest.approx(direct_r.rolldown_rub * q, rel=1e-15)
+        assert repo_row.horizon_pnl_rub == pytest.approx(
+            repo_row.carry_rub + repo_row.rolldown_rub, abs=1e-6
+        )
         assert repo_row.interest_carry_rub == pytest.approx(
             direct_r.interest_carry_rub * q, rel=1e-15
         )
@@ -850,13 +851,9 @@ def test_horizon_portfolio_carries_swaps_and_repos() -> None:
         positions=tuple(p for p in positions() if p.position_id in ("p-gaz", "p-ofz-short"))
     )
     assert result.positions == bonds_only.positions
-    rolling: list[PositionHorizon | SwapPositionHorizon] = [*result.positions, *result.swaps]
-    rows: list[PositionHorizon | SwapPositionHorizon | RepoPositionHorizon] = [
-        *rolling,
-        *result.repos,
-    ]
+    rows: list[PositionHorizon | HorizonRow] = [*result.positions, *result.derivative_rows()]
     assert result.covered_carry_rub == pytest.approx(math.fsum(r.carry_rub for r in rows))
-    assert result.covered_rolldown_rub == pytest.approx(math.fsum(r.rolldown_rub for r in rolling))
+    assert result.covered_rolldown_rub == pytest.approx(math.fsum(r.rolldown_rub for r in rows))
     assert result.covered_horizon_pnl_rub == pytest.approx(
         math.fsum(r.horizon_pnl_rub for r in rows)
     )
