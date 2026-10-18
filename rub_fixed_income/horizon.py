@@ -44,7 +44,7 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
-from typing import Literal, cast
+from typing import Literal
 
 from ._money import finite_money, positive_money
 from ._risk_common import ShockedCurveCache, _base_curve
@@ -80,9 +80,9 @@ FX_HORIZONS: tuple[FxHorizon, ...] = ("spot_held", "forwards_realised")
 
 def fx_horizon(value: object) -> FxHorizon:
     """``value`` checked as an :data:`FxHorizon`."""
-    if value not in FX_HORIZONS:
-        raise InvalidTerms(f"fx_horizon must be one of {', '.join(FX_HORIZONS)}")
-    return cast(FxHorizon, value)
+    if value == "spot_held" or value == "forwards_realised":
+        return value
+    raise InvalidTerms(f"fx_horizon must be one of {', '.join(FX_HORIZONS)}")
 
 
 def roll_curve(curve: DiscountCurve, horizon_date: date) -> DiscountCurve:
