@@ -41,6 +41,7 @@ from .cds import (
     CDS_RISK_MODEL_VERSION,
     CdsCurveCache,
     CdsCurveRequest,
+    CdsHorizonValuation,
     CdsRiskEngine,
     CdsRiskRequest,
     CdsScenario,
@@ -164,6 +165,7 @@ __all__ = [
     "HORIZON_ROW_FIELDS",
     "PRODUCT_ADAPTERS",
     "ROW_FIELDS",
+    "CdsPositionHorizon",
     "CdsPositionValuation",
     "CreditCurveUse",
     "DerivativeHorizonHeader",
@@ -1770,10 +1772,35 @@ class RepoPositionHorizon:
     per_trade: RepoCarry
 
 
-HorizonRow = SwapPositionHorizon | RepoPositionHorizon
+@dataclass(frozen=True)
+class CdsPositionHorizon:
+    """Carry, rolldown and theta of a CDS position (``cds.cds_horizon``), conditional on
+    no default before the horizon.
+
+    ``per_trade`` is in the contract currency; a non-RUB contract is converted at the
+    snapshot rate ``fx_rate`` (``fx_horizon="spot_held"`` only).
+    """
+
+    position_id: str
+    instrument_id: str
+    book: str
+    accounting_category: AccountingCategory
+    quantity: float
+    carry_rub: float
+    rolldown_rub: float
+    received_rub: float
+    horizon_pnl_rub: float
+    currency: str
+    fx_rate: float
+    discount_curve_id: str
+    per_trade: CdsHorizonValuation
+
+
+HorizonRow = SwapPositionHorizon | RepoPositionHorizon | CdsPositionHorizon
 
 HORIZON_ROW_FIELDS: dict[type, str] = {
     SwapPositionHorizon: "swaps",
+    CdsPositionHorizon: "cds",
     RepoPositionHorizon: "repos",
 }
 """The ``PortfolioHorizonResult`` field that holds each carry row type."""
@@ -1876,8 +1903,43 @@ def horizon_repo(
     )
 
 
+def horizon_cds(
+    position: Position,
+    instrument: object,
+    ctx: ProductContext,
+    horizon_date: date,
+    fx_horizon: FxHorizon,
+) -> CdsPositionHorizon:
+    assert isinstance(instrument, CdsInstrument)
+    currency = instrument.contract.currency
+    if currency != "RUB" and fx_horizon != "spot_held":
+        raise UnsupportedProduct(
+            f"a {currency} CDS is carried with fx_horizon='spot_held' only (its position "
+            "names no RUB curve for a forward FX rate)"
+        )
+    engine, _, fx = _cds_engine(position, instrument, ctx)
+    carry = engine.horizon(horizon_date)
+    scale = position.quantity * fx
+    return CdsPositionHorizon(
+        position.position_id,
+        instrument.instrument_id,
+        position.book,
+        position.accounting_category,
+        position.quantity,
+        _money(carry.carry * scale, "CDS carry"),
+        _money(carry.rolldown * scale, "CDS rolldown"),
+        _money(carry.received * scale, "CDS received"),
+        _money(carry.horizon_pnl * scale, "CDS horizon P&L"),
+        currency,
+        fx,
+        instrument.discount_curve_id,
+        carry,
+    )
+
+
 HORIZON_ADAPTERS: Mapping[type, HorizonAdapter] = {
     SwapInstrument: horizon_swap,
+    CdsInstrument: horizon_cds,
     RepoInstrument: horizon_repo,
 }
 """Carry adapter per derivative position type; the others are not carried yet (BACKLOG #101)."""
