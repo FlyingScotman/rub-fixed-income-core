@@ -1,5 +1,74 @@
 # Changelog
 
+## 0.31.0 — carry, rolldown and theta of every derivative
+
+BACKLOG #101 completed. Every derivative engine carries to a horizon with the bond
+semantics: `pv_forward` on today's curves read forward (today's forwards realised),
+`pv_rolled` on curves moved to the horizon with their shape held (the desk theta),
+flows received as cash, `carry + rolldown = horizon_pnl`. `horizon_portfolio` now
+carries every product; FX products take a stated FX spot rule. No `value_portfolio`
+result (v2 or v3), bond number, swap number or pinned hash moves.
+
+### Added
+
+- **FX spot rule at a horizon** `FxHorizon`: `"spot_held"` (default, sticky spot:
+  forward points roll down) or `"forwards_realised"` (the spot moves to today's
+  outright for the horizon spot date, so carry is the RUB funding only); `FX_HORIZONS`,
+  `fx_horizon()`.
+- **Curve views** `forward_curve(curve, h)` and `roll_key_rate_curve(curve, h)` beside
+  `roll_curve`, in the new cycle-free module `_curve_views` (re-exported by `horizon`).
+- **Engine horizons**, each with a result type, a convenience function and a model
+  version `rub-<product>-horizon-v1`:
+  - `FxForwardRiskEngine.horizon` / `fx_forward_horizon` (forwards and FX swaps; a
+    cash-settled leg fixed by the horizon keeps today's forwards for its fixing);
+  - `FxFuturesRiskEngine.horizon` / `fx_futures_horizon` (futures basis held; a contract
+    delivered by the horizon settles at the spot or today's forward without the basis);
+  - `XccyRiskEngine.horizon` / `xccy_horizon` (RUB and foreign floating legs keep
+    today's forwards before the horizon; a quote-built foreign curve is rolled as built);
+  - `CdsRiskEngine.horizon` / `cds_horizon` with `forward_hazard_curve` and
+    `roll_hazard_curve` (no default before the horizon; coupons leaving the value
+    between the two step-in dates are received);
+  - `RateFuturesRiskEngine.horizon` / `rate_futures_horizon` (RUON, RUONIA index,
+    KEYRATE: rates before the horizon realised at today's projection, so carry is zero
+    and the theta is rolldown);
+  - `OfzFuturesRiskEngine.horizon` / `ofz_futures_horizon` (bond spreads and basis held,
+    cheapest bond reported per view; horizon settlement before delivery only).
+  - Futures are margined: `pv_start` and `received` are zero, the money is the
+    variation margin on the model price.
+- **Repo theta**: `RepoCarry.pv_rolled_rub`, `.rolldown_rub` and `.horizon_pnl_rub`
+  (observations after the horizon on the rolled projection curve, rolled discounting;
+  `OMIT_IF_DEFAULT`).
+- **`horizon_portfolio(..., fx_horizon="spot_held")`** carries FX forwards and swaps,
+  XCCY, CDS, FX futures, rate futures and OFZ futures beside swaps and repos: row types
+  `FxForwardPositionHorizon`, `XccyPositionHorizon`, `CdsPositionHorizon`,
+  `FxFuturesPositionHorizon`, `RateFuturesPositionHorizon`, `OfzFuturesPositionHorizon`
+  in fields `fx_forwards`, `xccy_swaps`, `cds`, `fx_futures`, `rate_futures`,
+  `ofz_futures` (`OMIT_IF_DEFAULT`), `PortfolioHorizonResult.fx_horizon` and
+  `.derivative_rows()`. The mixed v3 test book is carried with complete coverage
+  (0.5 ms per position warm, 380 positions). `HORIZON_ROW_FIELDS`,
+  `DerivativeHorizonHeader` and `horizon_spot_date` (today's spot lag from the horizon)
+  in `portfolio_products`.
+
+### Changed
+
+- `RepoPositionHorizon` reports `rolldown_rub` and its `horizon_pnl_rub` is the theta
+  (it was the PV carry in 0.30.0); covered rolldown sums every row. The carry rows of
+  0.30.0 lead with the shared header fields (`carry_rub`, `rolldown_rub`,
+  `received_rub`, `horizon_pnl_rub`) before their curve IDs.
+- `HORIZON_ADAPTERS` take the FX rule: `(position, instrument, context, horizon_date,
+  fx_horizon)`.
+- The valuation adapters build their engines through shared builders reused by carry
+  (no number moves).
+
+### Open (BACKLOG #108–#110)
+
+- A non-RUB CDS is carried with `"spot_held"` only; OFZ futures only before delivery; a
+  future settling inside the horizon reports its unrounded model price.
+- `roll_key_rate_curve` shifts the next CBR decision date with the horizon (as key-rate
+  swaps have since 0.21.0); holding meeting dates fixed is an owner decision.
+- Default-weighted CDS carry, rebootstrapping CDS and XCCY curves at the horizon, and
+  funding of received cash and margin are not modelled.
+
 ## 0.30.0 — swap and repo carry in `horizon_portfolio`
 
 BACKLOG #101, first part. `horizon_portfolio` now carries swaps and repo legs on the

@@ -445,4 +445,24 @@ byte for byte; a book with a derivative position returns v3.
 | `PRODUCT_ADAPTERS` | Position type -> valuation adapter (`portfolio_products`); the extension point for new products. |
 | `ExpiredContract` (`EXPIRED_CONTRACT`), `SettledLeg` (`SETTLED_LEG`), `UndeclaredFixingGap` (`UNDECLARED_FIXING_GAP`), `MissingBasketPrice` (`MISSING_BASKET_PRICE`) | New coded rejections (subclasses of `InvalidTerms`, `MissingFixing`, `MissingMarketData`). |
 | `swap_convention("rub_ruonia_ois_moex_v2")`; `SwapConvention(..., float_compounding="rate_day_count" \| "nfa_act")` | The v2 swap side (BACKLOG #61): NFA `RUB-RUONIA-OIS-COMPOUND`, `n_i / Act` weights and `(growth - 1) * Act / d * Act/Act ISDA`; the field is omitted at its default. |
-| `SwapPositionHorizon`, `RepoPositionHorizon`; `PortfolioHorizonResult.swaps`, `.repos` **(0.30.0)** | Derivative carry in `horizon_portfolio` (BACKLOG #101) on the engines `value_portfolio` builds: `swap_horizon` (carry, rolldown, received, horizon P&L) and `repo_carry` (PV carry = horizon P&L, interest carry, received; no rolldown term). Signed RUB for the position, the trade's result in `per_trade`. Covered rolldown sums bonds and swaps. `HORIZON_ADAPTERS` maps position types to carry adapters. |
+| `SwapPositionHorizon`, `RepoPositionHorizon`; `PortfolioHorizonResult.swaps`, `.repos` **(0.30.0)** | Swap and repo carry rows; extended to every product in 0.31.0 (below). |
+
+## Derivative carry and theta (0.31.0, BACKLOG #101)
+
+Conventions: [CONVENTIONS.md](CONVENTIONS.md), "Derivatives: carry, rolldown and theta".
+Each result has `pv_start`, `pv_forward` (today's curves read forward), `pv_rolled`
+(rolled curves), `received`, `carry`, `rolldown` and `horizon_pnl` (the theta).
+
+| Name | Description |
+| --- | --- |
+| `FxHorizon`, `FX_HORIZONS`, `fx_horizon(value)` | The FX spot at a horizon: `"spot_held"` or `"forwards_realised"`. |
+| `forward_curve(curve, horizon_date)`, `roll_curve`, `roll_key_rate_curve(curve, horizon_date)` | Curve views at a horizon (`rub_fixed_income._curve_views`, re-exported by `horizon`). |
+| `FxForwardRiskEngine.horizon(h, *, horizon_spot_value_date, fx_horizon="spot_held")`, `fx_forward_horizon(request, ...)` -> `FxForwardHorizonValuation` | FX forwards and swaps; `horizon_spot_rate` reports the spot used. |
+| `FxFuturesRiskEngine.horizon(h, *, horizon_spot_value_date, fx_horizon="spot_held")`, `fx_futures_horizon(request, ...)` -> `FxFuturesHorizonValuation` | Prices `price_start` / `price_forward` / `price_rolled`; money is the variation margin. |
+| `XccyRiskEngine.horizon(h, *, horizon_spot_value_date, fx_horizon="spot_held")`, `xccy_horizon(request, ...)` -> `XccyHorizonValuation` | Cross-currency swaps; a quote-built foreign curve is read forward and rolled as built. |
+| `CdsRiskEngine.horizon(h)`, `cds_horizon(request, ...)` -> `CdsHorizonValuation`; `forward_hazard_curve`, `roll_hazard_curve` | Contract currency, conditional on no default; `accrued_start`, `accrued_horizon`. |
+| `RateFuturesRiskEngine.horizon(h)`, `rate_futures_horizon(request, ...)` -> `RateFuturesHorizonValuation` | RUON, RUONIA index and KEYRATE; works on `for_quantity` engines. |
+| `OfzFuturesRiskEngine.horizon(h, *, horizon_spot_settlement_date)`, `ofz_futures_horizon(request, ...)` -> `OfzFuturesHorizonValuation` | Spreads and basis held; `cheapest_start` / `_forward` / `_rolled`; a horizon settlement on or after delivery raises `InvalidTerms`. |
+| `RepoCarry.pv_rolled_rub`, `.rolldown_rub`, `.horizon_pnl_rub` | Repo theta (fields omitted at their defaults). |
+| `horizon_portfolio(..., fx_horizon="spot_held")`; `PortfolioHorizonResult.fx_forwards`, `.xccy_swaps`, `.cds`, `.fx_futures`, `.rate_futures`, `.ofz_futures`, `.fx_horizon`, `.derivative_rows()` | Every derivative carried; rows `FxForwardPositionHorizon`, `XccyPositionHorizon`, `CdsPositionHorizon`, `FxFuturesPositionHorizon`, `RateFuturesPositionHorizon`, `OfzFuturesPositionHorizon` (shape: `DerivativeHorizonHeader`). Covered rolldown now sums every row. |
+| `HORIZON_ADAPTERS`, `HORIZON_ROW_FIELDS`, `horizon_spot_date(business_date, spot, calendar, horizon_date)` | Carry registry and the horizon spot date (today's lag) in `portfolio_products`. |

@@ -79,6 +79,7 @@ from .floating import FixingHistory, FixingIndex
 from .fx_forwards import (
     FX_FORWARD_RISK_MODEL_VERSION,
     FX_IMPLIED_CURVE_MODEL_VERSION,
+    FxForwardHorizonValuation,
     FxForwardLegValuation,
     FxForwardRiskEngine,
     FxForwardRiskRequest,
@@ -87,6 +88,7 @@ from .fx_forwards import (
 )
 from .fx_futures import (
     FX_FUTURES_RISK_MODEL_VERSION,
+    FxFuturesHorizonValuation,
     FxFuturesRiskEngine,
     FxFuturesRiskRequest,
     FxFuturesScenario,
@@ -152,6 +154,7 @@ from .xccy import (
     XccyCurveBootstrapRequest,
     XccyCurveCache,
     XccyCurveRole,
+    XccyHorizonValuation,
     XccyRiskEngine,
     XccyRiskRequest,
     XccyScenario,
@@ -172,7 +175,9 @@ __all__ = [
     "CreditCurveUse",
     "DerivativeHorizonHeader",
     "DerivativeRowHeader",
+    "FxForwardPositionHorizon",
     "FxForwardPositionValuation",
+    "FxFuturesPositionHorizon",
     "FxFuturesPositionValuation",
     "HessianTotal",
     "JtdTotal",
@@ -188,6 +193,7 @@ __all__ = [
     "ScenarioView",
     "SwapPositionHorizon",
     "SwapPositionValuation",
+    "XccyPositionHorizon",
     "XccyPositionValuation",
     "adapter_for",
     "hessian_totals",
@@ -1849,17 +1855,90 @@ class OfzFuturesPositionHorizon:
     per_trade: OfzFuturesHorizonValuation
 
 
+@dataclass(frozen=True)
+class FxForwardPositionHorizon:
+    """Carry, rolldown and theta of an FX forward or swap position
+    (``fx_forwards.fx_forward_horizon``); the spot at the horizon follows ``fx_horizon``."""
+
+    position_id: str
+    instrument_id: str
+    book: str
+    accounting_category: AccountingCategory
+    quantity: float
+    carry_rub: float
+    rolldown_rub: float
+    received_rub: float
+    horizon_pnl_rub: float
+    currency: str
+    rub_curve_id: str
+    foreign_curve_id: str
+    horizon_spot_rate: float
+    horizon_spot_value_date: date
+    per_trade: FxForwardHorizonValuation
+
+
+@dataclass(frozen=True)
+class XccyPositionHorizon:
+    """Carry, rolldown and theta of a cross-currency swap position
+    (``xccy.xccy_horizon``); the spot at the horizon follows ``fx_horizon``."""
+
+    position_id: str
+    instrument_id: str
+    book: str
+    accounting_category: AccountingCategory
+    quantity: float
+    carry_rub: float
+    rolldown_rub: float
+    received_rub: float
+    horizon_pnl_rub: float
+    currency: str
+    horizon_spot_rate: float
+    horizon_spot_value_date: date
+    per_trade: XccyHorizonValuation
+
+
+@dataclass(frozen=True)
+class FxFuturesPositionHorizon:
+    """Carry, rolldown and theta of an FX futures position
+    (``fx_futures.fx_futures_horizon``): the variation margin to the horizon with the
+    calibrated basis held; ``received_rub`` is zero."""
+
+    position_id: str
+    instrument_id: str
+    book: str
+    accounting_category: AccountingCategory
+    quantity: float
+    carry_rub: float
+    rolldown_rub: float
+    received_rub: float
+    horizon_pnl_rub: float
+    contract_id: str
+    currency: str
+    price_start: float
+    price_forward: float
+    price_rolled: float
+    horizon_spot_rate: float
+    horizon_spot_value_date: date
+    per_trade: FxFuturesHorizonValuation
+
+
 HorizonRow = (
     SwapPositionHorizon
-    | RepoPositionHorizon
+    | FxForwardPositionHorizon
+    | XccyPositionHorizon
     | CdsPositionHorizon
+    | FxFuturesPositionHorizon
     | RateFuturesPositionHorizon
     | OfzFuturesPositionHorizon
+    | RepoPositionHorizon
 )
 
 HORIZON_ROW_FIELDS: dict[type, str] = {
     SwapPositionHorizon: "swaps",
+    FxForwardPositionHorizon: "fx_forwards",
+    XccyPositionHorizon: "xccy_swaps",
     CdsPositionHorizon: "cds",
+    FxFuturesPositionHorizon: "fx_futures",
     RateFuturesPositionHorizon: "rate_futures",
     OfzFuturesPositionHorizon: "ofz_futures",
     RepoPositionHorizon: "repos",
@@ -1964,6 +2043,72 @@ def horizon_repo(
     )
 
 
+def horizon_fx_forward(
+    position: Position,
+    instrument: object,
+    ctx: ProductContext,
+    horizon_date: date,
+    fx_horizon: FxHorizon,
+) -> FxForwardPositionHorizon:
+    assert isinstance(instrument, FxForwardInstrument)
+    engine, spot, settlement, _ = _fx_forward_engine(position, instrument, ctx)
+    spot_date = horizon_spot_date(ctx.business_date, spot, settlement, horizon_date)
+    carry = engine.horizon(horizon_date, horizon_spot_value_date=spot_date, fx_horizon=fx_horizon)
+    return FxForwardPositionHorizon(
+        *_horizon_header(position, instrument.instrument_id, carry, position.quantity, "FX"),
+        instrument.currency,
+        instrument.rub_curve_id,
+        instrument.foreign_curve_id,
+        carry.horizon_spot_rate,
+        spot_date,
+        carry,
+    )
+
+
+def horizon_xccy(
+    position: Position,
+    instrument: object,
+    ctx: ProductContext,
+    horizon_date: date,
+    fx_horizon: FxHorizon,
+) -> XccyPositionHorizon:
+    assert isinstance(instrument, XccyInstrument)
+    engine, spot, settlement = _xccy_engine(position, instrument, ctx)
+    spot_date = horizon_spot_date(ctx.business_date, spot, settlement, horizon_date)
+    carry = engine.horizon(horizon_date, horizon_spot_value_date=spot_date, fx_horizon=fx_horizon)
+    return XccyPositionHorizon(
+        *_horizon_header(position, instrument.instrument_id, carry, position.quantity, "XCCY"),
+        instrument.swap.currency,
+        carry.horizon_spot_rate,
+        spot_date,
+        carry,
+    )
+
+
+def horizon_fx_future(
+    position: Position,
+    instrument: object,
+    ctx: ProductContext,
+    horizon_date: date,
+    fx_horizon: FxHorizon,
+) -> FxFuturesPositionHorizon:
+    assert isinstance(instrument, FxFuturesInstrument)
+    engine, spot, settlement, _ = _fx_futures_engine(position, instrument, ctx)
+    spot_date = horizon_spot_date(ctx.business_date, spot, settlement, horizon_date)
+    carry = engine.horizon(horizon_date, horizon_spot_value_date=spot_date, fx_horizon=fx_horizon)
+    return FxFuturesPositionHorizon(
+        *_horizon_header(position, instrument.instrument_id, carry, 1.0, "FX futures"),
+        instrument.contract.contract_id,
+        instrument.contract.currency,
+        carry.price_start,
+        carry.price_forward,
+        carry.price_rolled,
+        carry.horizon_spot_rate,
+        spot_date,
+        carry,
+    )
+
+
 def horizon_cds(
     position: Position,
     instrument: object,
@@ -2058,12 +2203,15 @@ def horizon_ofz_future(
 
 HORIZON_ADAPTERS: Mapping[type, HorizonAdapter] = {
     SwapInstrument: horizon_swap,
+    FxForwardInstrument: horizon_fx_forward,
+    XccyInstrument: horizon_xccy,
     CdsInstrument: horizon_cds,
+    FxFuturesInstrument: horizon_fx_future,
     RateFuturesInstrument: horizon_rate_future,
     OfzFuturesInstrument: horizon_ofz_future,
     RepoInstrument: horizon_repo,
 }
-"""Carry adapter per derivative position type; the others are not carried yet (BACKLOG #101)."""
+"""Carry adapter per derivative position type (BACKLOG #101)."""
 
 
 def horizon_adapter_for(instrument: object) -> HorizonAdapter:

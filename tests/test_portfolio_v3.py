@@ -42,6 +42,7 @@ from rub_fixed_income import (
     BondScenario,
     CurveEntry,
     FactorRisk,
+    InvalidTerms,
     PortfolioHorizonResult,
     PortfolioRiskResult,
     PortfolioScenario,
@@ -68,6 +69,7 @@ from rub_fixed_income.fx_forwards import (
     FxForwardRiskEngine,
     FxForwardRiskRequest,
     fx_forward_factor_risk,
+    fx_forward_horizon,
 )
 from rub_fixed_income.fx_futures import FxFuturesRiskEngine, FxFuturesRiskRequest, FxFuturesScenario
 from rub_fixed_income.key_rate import rebase_key_rate_curve
@@ -761,10 +763,6 @@ class _Alien:
 
 
 HORIZON = date(2026, 11, 16)
-CARRIED = (
-    *("p-ois", "p-ois-2c", "p-krs", "p-repo-term", "p-repo-open", "p-cds-gaz", "p-cds-sber"),
-    *("p-ruon", "p-rf", "p-kk", "p-ofz-fut-1", "p-ofz-fut-2"),
-)
 
 
 def horizon_book(**kw: object) -> PortfolioHorizonResult:
@@ -813,11 +811,13 @@ def standalone_carry(position_id: str, horizon: date) -> SwapHorizonValuation | 
     return repo_carry(repo_request, horizon_date=horizon)
 
 
-def test_horizon_portfolio_carries_swaps_and_repos() -> None:
+def test_horizon_portfolio_carries_every_product() -> None:
     result = horizon_book()
-    codes = {r.position_id: r.code for r in result.coverage.rejections}
-    assert set(codes) == set(DERIVATIVES) - set(CARRIED)
-    assert set(codes.values()) == {"UNSUPPORTED_PRODUCT"}
+    assert result.coverage.status == "complete"
+    assert result.total_horizon_pnl_rub == result.covered_horizon_pnl_rub
+    assert result.fx_horizon == "spot_held"
+    carried = {r.position_id for r in result.derivative_rows()}
+    assert carried == set(DERIVATIVES)
     quantities = {p.position_id: p.quantity for p in positions()}
     assert [r.position_id for r in result.swaps] == ["p-ois", "p-ois-2c", "p-krs"]
     for row in result.swaps:
@@ -863,16 +863,50 @@ def test_horizon_portfolio_carries_swaps_and_repos() -> None:
     assert result.covered_horizon_pnl_rub == pytest.approx(
         result.covered_carry_rub + result.covered_rolldown_rub, abs=1e-6
     )
-    assert result.total_horizon_pnl_rub is None
+    for any_row in result.derivative_rows():
+        assert any_row.horizon_pnl_rub == pytest.approx(
+            any_row.carry_rub + any_row.rolldown_rub, abs=1e-6
+        )
+    assert horizon_book(curve_cache=ShockedCurveCache()) == result
 
 
-def test_horizon_portfolio_of_bonds_swaps_and_repos_is_complete() -> None:
-    carried = tuple(p for p in positions() if p.position_id in ("p-gaz", "p-ofz-short", *CARRIED))
-    result = horizon_book(positions=carried)
-    assert result.coverage.status == "complete"
-    assert result.total_horizon_pnl_rub == result.covered_horizon_pnl_rub
-    assert [c.calendar_id for c in result.calendars] == ["MOEX"]
-    assert horizon_book(positions=carried, curve_cache=ShockedCurveCache()) == result
+def test_horizon_portfolio_fx_products_follow_the_fx_rule() -> None:
+    held = horizon_book()
+    realised = horizon_book(fx_horizon="forwards_realised")
+    assert realised.fx_horizon == "forwards_realised"
+    # A USD CDS has no RUB curve for a forward FX rate: spot held only.
+    codes = {r.position_id: r.code for r in realised.coverage.rejections}
+    assert codes == {"p-cds-sber": "UNSUPPORTED_PRODUCT"}
+    fwd = next(r for r in held.fx_forwards if r.position_id == "p-fwd")
+    assert fwd.horizon_spot_value_date == date(2026, 11, 17)  # TOM from the horizon
+    assert fwd.horizon_spot_rate == SPOT["USD"]
+    inst = instrument("FWD-USD")
+    assert isinstance(inst, FxForwardInstrument)
+    request = FxForwardRiskRequest(
+        inst.trade,
+        SPOT["USD"],
+        TOM,
+        curve("RUB_OIS"),  # type: ignore[arg-type]
+        curve("USD_DF"),  # type: ignore[arg-type]
+        0.0,
+    )
+    for result, rule in ((held, "spot_held"), (realised, "forwards_realised")):
+        row = next(r for r in result.fx_forwards if r.position_id == "p-fwd")
+        direct = fx_forward_horizon(
+            request,
+            horizon_date=HORIZON,
+            horizon_spot_value_date=date(2026, 11, 17),
+            fx_horizon=rule,  # type: ignore[arg-type]
+        )
+        assert row.per_trade == direct
+        assert row.horizon_pnl_rub == pytest.approx(direct.horizon_pnl_rub, rel=1e-15)
+    realised_fwd = next(r for r in realised.fx_forwards if r.position_id == "p-fwd")
+    assert realised_fwd.horizon_spot_rate != SPOT["USD"]
+    # Products without FX do not depend on the rule.
+    assert realised.swaps == held.swaps and realised.repos == held.repos
+    assert realised.rate_futures == held.rate_futures
+    with pytest.raises(InvalidTerms):
+        horizon_book(fx_horizon="sticky")
 
 
 def test_horizon_portfolio_derivative_rejections_carry_codes() -> None:

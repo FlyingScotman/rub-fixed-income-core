@@ -81,7 +81,9 @@ from .portfolio_products import (
     CdsPositionHorizon,
     CdsPositionValuation,
     CreditCurveUse,
+    FxForwardPositionHorizon,
     FxForwardPositionValuation,
+    FxFuturesPositionHorizon,
     FxFuturesPositionValuation,
     HessianTotal,
     HorizonRow,
@@ -98,6 +100,7 @@ from .portfolio_products import (
     RepoPositionValuation,
     SwapPositionHorizon,
     SwapPositionValuation,
+    XccyPositionHorizon,
     XccyPositionValuation,
     adapter_for,
     hessian_totals,
@@ -1758,6 +1761,9 @@ class PortfolioHorizonResult:
     swaps: tuple[SwapPositionHorizon, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
     repos: tuple[RepoPositionHorizon, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
     cds: tuple[CdsPositionHorizon, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
+    fx_forwards: tuple[FxForwardPositionHorizon, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
+    xccy_swaps: tuple[XccyPositionHorizon, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
+    fx_futures: tuple[FxFuturesPositionHorizon, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
     rate_futures: tuple[RateFuturesPositionHorizon, ...] = field(
         default=(), metadata=OMIT_IF_DEFAULT
     )

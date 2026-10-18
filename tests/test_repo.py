@@ -480,9 +480,7 @@ def test_theta_fixed_rolls_the_discount_curve() -> None:
     rolled_df = _sloped().discount_factor(date(2026, 11, 12) - shift)
     assert carry.pv_rolled_rub == pytest.approx(end_amount * rolled_df, rel=1e-14)
     assert carry.rolldown_rub == pytest.approx(carry.pv_rolled_rub - carry.pv_forward_rub)
-    assert carry.horizon_pnl_rub == pytest.approx(
-        carry.pv_carry_rub + carry.rolldown_rub, abs=1e-6
-    )
+    assert carry.horizon_pnl_rub == pytest.approx(carry.pv_carry_rub + carry.rolldown_rub, abs=1e-6)
     # On a flat curve rolling and reading forward agree.
     flat = repo_carry(_request(_trade()), horizon_date=horizon)
     assert flat.pv_rolled_rub == pytest.approx(flat.pv_forward_rub, rel=1e-15)
