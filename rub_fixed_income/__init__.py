@@ -235,12 +235,14 @@ from .floating import (
     key_rate_projection_curve,
 )
 from .fx_forwards import (
+    FX_FORWARD_HORIZON_MODEL_VERSION,
     FX_FORWARD_RISK_MODEL_VERSION,
     FX_FORWARD_SECOND_ORDER_MODEL_VERSION,
     FX_IMPLIED_CURVE_MODEL_VERSION,
     FX_VALUE_DATE_CODES,
     FxForward,
     FxForwardBucketRisk,
+    FxForwardHorizonValuation,
     FxForwardLeg,
     FxForwardLegValuation,
     FxForwardRiskEngine,
@@ -256,6 +258,7 @@ from .fx_forwards import (
     cip_outright,
     fx_forward_basis_bp,
     fx_forward_factor_risk,
+    fx_forward_horizon,
     fx_forward_outright,
     fx_swap_value_dates,
     fx_value_date,
@@ -264,15 +267,18 @@ from .fx_forwards import (
     joint_calendar,
 )
 from .fx_futures import (
+    FX_FUTURES_HORIZON_MODEL_VERSION,
     FX_FUTURES_RISK_MODEL_VERSION,
     FX_FUTURES_SECOND_ORDER_MODEL_VERSION,
     FxFuturesContract,
+    FxFuturesHorizonValuation,
     FxFuturesRiskEngine,
     FxFuturesRiskRequest,
     FxFuturesRiskResult,
     FxFuturesScenario,
     FxFuturesScenarioResult,
     FxFuturesSecondOrderRisk,
+    fx_futures_horizon,
 )
 from .horizon import (
     FX_HORIZONS,
@@ -1124,4 +1130,14 @@ __all__ += [
     "XCCY_HORIZON_MODEL_VERSION",
     "XccyHorizonValuation",
     "xccy_horizon",
+]
+
+# BACKLOG #101: FX forward and futures horizon.
+__all__ += [
+    "FX_FORWARD_HORIZON_MODEL_VERSION",
+    "FX_FUTURES_HORIZON_MODEL_VERSION",
+    "FxForwardHorizonValuation",
+    "FxFuturesHorizonValuation",
+    "fx_forward_horizon",
+    "fx_futures_horizon",
 ]

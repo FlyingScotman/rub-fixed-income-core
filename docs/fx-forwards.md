@@ -136,6 +136,39 @@ The implied curve's risk is a zero-rate overlay (`continuous_zero`): a RUB shock
 the implied foreign curve held fixed means the swap points move. Holding the points
 fixed instead (rebuilding the foreign curve under RUB shocks) is not offered.
 
+## Horizon (carry, rolldown, theta)
+
+`engine.horizon(horizon_date, *, horizon_spot_value_date, fx_horizon="spot_held")` and
+`fx_forward_horizon(request, horizon_date=..., horizon_spot_value_date=..., fx_horizon=...)`
+return an `FxForwardHorizonValuation` on the semantics of bonds and swaps
+([swaps.md](swaps.md#carry-and-rolldown)):
+
+- `received_rub`: legs whose payment date is in `(valuation date, horizon]`, as cash
+  `N/q · (FX − K)`, undiscounted and not reinvested.
+- `pv_forward_rub`: the other legs at the horizon on today's curves read forward,
+  `DF(t) / DF(h)`; `pv_rolled_rub`: the same on rolled curves (`roll_curve`, shape held
+  in calendar days). The latter is the desk theta.
+- `carry = pv_forward + received − pv_start`, `rolldown = pv_rolled − pv_forward`,
+  `horizon_pnl = pv_rolled + received − pv_start`.
+
+The basis is held in bp. The spot at the horizon is a stated rule (`FxHorizon`):
+
+| `fx_horizon` | horizon spot `S_h` | `FX` of a leg received by `h` |
+|---|---|---|
+| `"spot_held"` | today's spot (sticky spot: forward points roll down) | today's spot |
+| `"forwards_realised"` | today's outright for `horizon_spot_value_date` (basis included) | the leg's today forward rate |
+
+A remaining leg's outright at the horizon is
+`S_h · [DF_for(T) / DF_for(s_h)] / [DF_rub(T) / DF_rub(s_h)] · exp(b · τ(s_h, T))` on the
+view, discounted to `h` on the RUB view. With `"forwards_realised"` the outright is
+today's (`τ` is additive), so `pv_forward = (today's PV of the legs paid after h) / DF_rub(h)`
+exactly. `horizon_spot_value_date` is the spot date applicable on the horizon date (the
+caller applies the spot lag); it must not precede the horizon or today's spot date. A
+cash-settled leg fixed by the horizon but paid after it keeps the parity formula,
+backward from `s_h`; its dates before the horizon read today's curves forward on both
+views, as swap fixings before the horizon do. On flat curves the rolldown is zero.
+Model version: `rub-fx-forward-horizon-v1`.
+
 ## Identity
 
 `base_id` hashes the model version, the instrument type and terms, spot and spot

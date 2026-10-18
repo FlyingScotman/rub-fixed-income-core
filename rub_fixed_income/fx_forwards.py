@@ -15,6 +15,10 @@ operations, the shocked-curve cache and the identities are shared with FX future
 Value dates come from an explicit calendar (``fx_value_date``); implied foreign curves
 come from caller-supplied swap points and outrights (``implied_foreign_curve``). No
 market data, calendar or exchange specification is looked up here.
+
+``FxForwardRiskEngine.horizon`` carries a forward or swap to a horizon (BACKLOG #101)
+on today's curves read forward and on rolled curves, with the basis held and the
+horizon spot set by a stated ``FxHorizon`` rule (:class:`FxForwardHorizonValuation`).
 """
 
 from __future__ import annotations
@@ -47,16 +51,19 @@ from .discount import (
 )
 from .errors import InvalidTerms
 from .factors import FactorRisk, _upper, fx_basis_factor, fx_factor, ir_factor
-from .fx_futures import FxFuturesScenario
+from .fx_futures import FxFuturesScenario, _horizon_rule, _horizon_views, _HorizonView
+from .horizon import FxHorizon
 from .tenors import parse_tenor, resolve_tenor
 
 __all__ = [
+    "FX_FORWARD_HORIZON_MODEL_VERSION",
     "FX_FORWARD_RISK_MODEL_VERSION",
     "FX_FORWARD_SECOND_ORDER_MODEL_VERSION",
     "FX_IMPLIED_CURVE_MODEL_VERSION",
     "FX_VALUE_DATE_CODES",
     "FxForward",
     "FxForwardBucketRisk",
+    "FxForwardHorizonValuation",
     "FxForwardLeg",
     "FxForwardLegValuation",
     "FxForwardRiskEngine",
@@ -72,6 +79,7 @@ __all__ = [
     "cip_outright",
     "fx_forward_basis_bp",
     "fx_forward_factor_risk",
+    "fx_forward_horizon",
     "fx_forward_outright",
     "fx_swap_value_dates",
     "fx_value_date",
@@ -83,6 +91,7 @@ __all__ = [
 FX_FORWARD_RISK_MODEL_VERSION = "rub-fx-forward-parity-risk-v1"
 FX_FORWARD_SECOND_ORDER_MODEL_VERSION = "rub-fx-forward-parity-second-order-v1"
 FX_IMPLIED_CURVE_MODEL_VERSION = "fx-implied-logdf-v1"
+FX_FORWARD_HORIZON_MODEL_VERSION = "rub-fx-forward-horizon-v1"
 
 FX_VALUE_DATE_CODES = {"TOD": 0, "TOM": 1, "SPT": 2}
 """Business-day lags of the named FX value dates: today, tomorrow, spot (T+2)."""
@@ -751,6 +760,52 @@ class FxForwardSecondOrderRisk:
     model_version: str = FX_FORWARD_SECOND_ORDER_MODEL_VERSION
 
 
+@dataclass(frozen=True)
+class FxForwardHorizonValuation:
+    """Carry, rolldown and theta from the valuation date to ``horizon_date``, as in ``horizon``.
+
+    - ``received_rub``: legs paid in ``(valuation date, horizon]``, as cash
+      ``N/q * (FX - K)`` (receive ``N`` foreign worth ``FX``, pay ``N/q * K`` RUB), with
+      ``FX`` today's spot (``"spot_held"``) or the leg's today forward rate, basis
+      included (``"forwards_realised"``);
+    - ``pv_forward_rub``: the legs paid after the horizon, valued at the horizon on
+      today's curves read forward, ``DF(t) / DF(horizon)``;
+    - ``pv_rolled_rub``: the same legs on rolled curves (shape held in calendar days):
+      the theta view.
+
+    At the horizon a leg's outright runs by parity on the view from
+    ``horizon_spot_rate`` for ``horizon_spot_value_date``, with the basis held and its
+    ``tau`` measured (signed, as today) from that date. ``horizon_spot_rate`` is
+    today's spot or today's outright for the horizon spot date. A cash-settled leg
+    whose value date is not after the horizon but whose payment is keeps this formula;
+    its dates before the horizon read today's curves forward on both views. With
+    ``"forwards_realised"``, ``pv_forward`` is today's PV of the legs paid after the
+    horizon divided by ``DF_rub(horizon)``.
+
+    ``carry = pv_forward + received - pv_start``, ``rolldown = pv_rolled -
+    pv_forward`` and ``horizon_pnl = pv_rolled + received - pv_start``.
+    """
+
+    base_id: str
+    trade_id: str
+    currency: str
+    valuation_date: date
+    horizon_date: date
+    fx_horizon: FxHorizon
+    spot_rate: float
+    spot_value_date: date
+    horizon_spot_rate: float
+    horizon_spot_value_date: date
+    pv_start_rub: float
+    pv_forward_rub: float
+    pv_rolled_rub: float
+    received_rub: float
+    carry_rub: float
+    rolldown_rub: float
+    horizon_pnl_rub: float
+    model_version: str = FX_FORWARD_HORIZON_MODEL_VERSION
+
+
 _Moves = tuple[tuple[float, ...], tuple[float, ...], float, float]
 _NO_MOVE: _Moves = (_ZERO_SHOCK, _ZERO_SHOCK, 0.0, 0.0)
 
@@ -1085,6 +1140,97 @@ class FxForwardRiskEngine:
             gradient_rub=(*gradient, finite_money(foreign_pv / 100.0, "FX delta RUB")),
             hessian_rub=tuple(tuple(row) for row in hessian),
         )
+
+    def horizon(
+        self,
+        horizon_date: date,
+        *,
+        horizon_spot_value_date: date,
+        fx_horizon: FxHorizon = "spot_held",
+    ) -> FxForwardHorizonValuation:
+        """Carry, rolldown and theta to ``horizon_date`` (see :class:`FxForwardHorizonValuation`).
+
+        ``horizon_spot_value_date`` is the spot value date on the horizon date (the
+        caller applies the spot lag); it must not precede the horizon or today's spot date.
+        """
+        req = self.request
+        rub, foreign = self._rub_curve, self._foreign_curve
+        spot, spot_date = req.spot_rate, req.spot_value_date
+        horizon_spot_date = horizon_spot_value_date
+        rule = _horizon_rule(rub.curve_date, spot_date, horizon_date, horizon_spot_date, fx_horizon)
+        held = rule == "spot_held"
+        basis = req.basis_bp * 1e-4
+        day_count = req.basis_day_count
+        horizon_spot = spot
+        if not held:
+            tau = _signed_years(day_count, spot_date, horizon_spot_date)
+            horizon_spot = positive_money(
+                _parity(spot, rub, foreign, spot_date, horizon_spot_date) * math.exp(basis * tau),
+                "horizon spot rate",
+            )
+        cash = []
+        remaining = []
+        for leg in self._legs:
+            if leg.payment_date > horizon_date:
+                remaining.append(leg)
+                continue
+            fixing = spot if held else self._forward(leg, spot, rub, foreign, basis)
+            cash.append(leg.units * (fixing - leg.contract_rate))
+        received = finite_money(math.fsum(cash), "received")
+
+        def pv(rub_view: _HorizonView, foreign_view: _HorizonView, label: str) -> float:
+            values = []
+            for leg in remaining:
+                tau = _signed_years(day_count, horizon_spot_date, leg.value_date)
+                parity = _parity(
+                    horizon_spot, rub_view, foreign_view, horizon_spot_date, leg.value_date
+                )
+                outright = positive_money(parity * math.exp(basis * tau), "horizon forward rate")
+                df = rub_view.discount_factor(leg.payment_date)
+                values.append(leg.units * (outright - leg.contract_rate) * df)
+            return finite_money(math.fsum(values), label)
+
+        rub_forward, rub_rolled = _horizon_views(rub, horizon_date)
+        foreign_forward, foreign_rolled = _horizon_views(foreign, horizon_date)
+        pv_forward = pv(rub_forward, foreign_forward, "forward PV")
+        pv_rolled = pv(rub_rolled, foreign_rolled, "rolled PV")
+        start = self.base_pv_rub
+        return FxForwardHorizonValuation(
+            base_id=self.base_id,
+            trade_id=req.instrument.trade_id,
+            currency=req.instrument.currency,
+            valuation_date=rub.curve_date,
+            horizon_date=horizon_date,
+            fx_horizon=rule,
+            spot_rate=spot,
+            spot_value_date=spot_date,
+            horizon_spot_rate=horizon_spot,
+            horizon_spot_value_date=horizon_spot_date,
+            pv_start_rub=start,
+            pv_forward_rub=pv_forward,
+            pv_rolled_rub=pv_rolled,
+            received_rub=received,
+            carry_rub=finite_money(pv_forward + received - start, "carry"),
+            rolldown_rub=finite_money(pv_rolled - pv_forward, "rolldown"),
+            horizon_pnl_rub=finite_money(pv_rolled + received - start, "horizon P&L"),
+        )
+
+
+def fx_forward_horizon(
+    request: FxForwardRiskRequest,
+    *,
+    horizon_date: date,
+    horizon_spot_value_date: date,
+    fx_horizon: FxHorizon = "spot_held",
+    curve_cache: ShockedCurveCache | None = None,
+) -> FxForwardHorizonValuation:
+    """Carry, rolldown and theta of an FX forward or swap to ``horizon_date``."""
+    engine = FxForwardRiskEngine(
+        request, ShockedCurveCache() if curve_cache is None else curve_cache
+    )
+    return engine.horizon(
+        horizon_date, horizon_spot_value_date=horizon_spot_value_date, fx_horizon=fx_horizon
+    )
 
 
 def fx_forward_factor_risk(

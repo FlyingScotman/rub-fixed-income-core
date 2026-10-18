@@ -5,6 +5,10 @@ percent. Both discount curves, the spot rate and its value date, and the deliver
 date are explicit inputs. Variation margin is daily, so a price change is RUB
 P&L on the day and is not discounted. No exchange specification, calendar or
 market data is looked up here.
+
+``FxFuturesRiskEngine.horizon`` carries the price to a horizon (BACKLOG #101) on
+today's curves read forward and on rolled curves, with the calibrated basis held and
+the horizon spot set by a stated ``FxHorizon`` rule (see :class:`FxFuturesHorizonValuation`).
 """
 
 from __future__ import annotations
@@ -12,7 +16,7 @@ from __future__ import annotations
 import math
 from dataclasses import asdict, dataclass, field
 from datetime import date
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from ._money import finite_money, positive_money
 from ._risk_common import (
@@ -30,10 +34,15 @@ from ._risk_common import (
 from .canonical import canonical_sha256
 from .conventions import DayCount
 from .discount import CurveBootstrapRequest, DiscountCurve, DiscountFactorCurve
+from .errors import InvalidTerms
 from .risk import BucketRisk
+
+if TYPE_CHECKING:
+    from .horizon import FxHorizon
 
 FX_FUTURES_RISK_MODEL_VERSION = "rub-fx-futures-parity-risk-v1"
 FX_FUTURES_SECOND_ORDER_MODEL_VERSION = "rub-fx-futures-parity-second-order-v1"
+FX_FUTURES_HORIZON_MODEL_VERSION = "rub-fx-futures-horizon-v1"
 
 
 @dataclass(frozen=True)
@@ -227,6 +236,105 @@ class FxFuturesSecondOrderRisk:
     gradient_rub_per_bp: tuple[float, ...]
     hessian_rub_per_bp2: tuple[tuple[float, ...], ...]
     model_version: str = FX_FUTURES_SECOND_ORDER_MODEL_VERSION
+
+
+@dataclass(frozen=True)
+class FxFuturesHorizonValuation:
+    """Carry, rolldown and theta of the position from the valuation date to ``horizon_date``.
+
+    The price at the horizon is ``S_h * growth(s_h, T) * exp(b * tau(s_h, T))`` with the
+    calibrated basis ``b`` held, on today's curves read forward (``price_forward``) or on
+    rolled curves (``price_rolled``, shape held in calendar days: the theta). ``S_h`` is
+    ``horizon_spot_rate`` for ``horizon_spot_value_date``: today's spot (``"spot_held"``)
+    or today's parity forward for that date without the futures basis
+    (``"forwards_realised"``), since the basis belongs to the contract. A contract
+    delivered by the horizon has settled at the FX fixing: today's spot, or today's
+    parity forward to delivery (convergence: the basis is gone).
+
+    A position is margined, so ``pv_start_rub`` and ``received_rub`` are zero and the
+    variation margin, ``quantity * multiplier`` times the price change, is the carry
+    (``price_forward - price_start``) plus the rolldown (``price_rolled - price_forward``).
+    """
+
+    base_id: str
+    contract_id: str
+    valuation_date: date
+    horizon_date: date
+    fx_horizon: FxHorizon
+    spot_rate: float
+    horizon_spot_rate: float
+    horizon_spot_value_date: date
+    quantity: float
+    price_start: float
+    price_forward: float
+    price_rolled: float
+    pv_start_rub: float
+    received_rub: float
+    carry_rub: float
+    rolldown_rub: float
+    horizon_pnl_rub: float
+    model_version: str = FX_FUTURES_HORIZON_MODEL_VERSION
+
+
+@dataclass(frozen=True)
+class _HorizonView:
+    """Discount factors seen from the horizon ``curve_date`` on a base curve dated earlier.
+
+    The forward view (``rolled`` None) reads the base curve forward, ``DF(t) / DF(h)``;
+    the rolled view reads ``rolled`` (``roll_curve``: shape held in calendar days). A
+    date before the horizon (the value date of a cash-settled FX leg fixed by then)
+    reads the base curve forward on both views, as swap fixings before the horizon
+    keep today's forwards.
+    """
+
+    curve_date: date
+    base: DiscountCurve
+    rolled: DiscountCurve | None = None
+
+    def discount_factor(self, target: date) -> float:
+        if self.rolled is not None and target >= self.curve_date:
+            return self.rolled.discount_factor(target)
+        return self.base.discount_factor(target) / self.base.discount_factor(self.curve_date)
+
+
+def _horizon_views(curve: DiscountCurve, horizon: date) -> tuple[_HorizonView, _HorizonView]:
+    """(forward view, rolled view) of a base curve at ``horizon``."""
+    from .horizon import roll_curve  # horizon imports this module (through domain and xccy)
+
+    return _HorizonView(horizon, curve), _HorizonView(horizon, curve, roll_curve(curve, horizon))
+
+
+def _horizon_rule(
+    valuation: date,
+    spot_value_date: date,
+    horizon_date: date,
+    horizon_spot_value_date: date,
+    rule: object,
+) -> FxHorizon:
+    """The checked FX horizon rule; the horizon and its spot date must follow today's."""
+    from .horizon import fx_horizon  # horizon imports this module (through domain and xccy)
+
+    checked = fx_horizon(rule)
+    if not isinstance(horizon_date, date) or horizon_date <= valuation:
+        raise InvalidTerms("horizon date must be after the valuation date")
+    if not isinstance(horizon_spot_value_date, date):
+        raise InvalidTerms("horizon spot value date must be a date")
+    if horizon_spot_value_date < horizon_date:
+        raise InvalidTerms("the horizon spot value date cannot precede the horizon date")
+    if horizon_spot_value_date < spot_value_date:
+        raise InvalidTerms("the horizon spot value date cannot precede today's spot value date")
+    return checked
+
+
+def _parity_growth(
+    rub: DiscountFactorCurve, foreign: DiscountFactorCurve, start: date, end: date
+) -> float:
+    """``[DF_for(end) / DF_for(start)] / [DF_rub(end) / DF_rub(start)]`` (no basis)."""
+    return (
+        foreign.discount_factor(end)
+        / foreign.discount_factor(start)
+        * (rub.discount_factor(start) / rub.discount_factor(end))
+    )
 
 
 _Moves = tuple[tuple[float, ...], tuple[float, ...], float, float]
@@ -488,3 +596,84 @@ class FxFuturesRiskEngine:
             gradient_rub_per_bp=gradient,
             hessian_rub_per_bp2=hessian,
         )
+
+    def horizon(
+        self,
+        horizon_date: date,
+        *,
+        horizon_spot_value_date: date,
+        fx_horizon: FxHorizon = "spot_held",
+    ) -> FxFuturesHorizonValuation:
+        """Carry, rolldown and theta to ``horizon_date`` (see :class:`FxFuturesHorizonValuation`).
+
+        ``horizon_spot_value_date`` is the spot value date on the horizon date (the
+        caller applies the spot lag); it must not precede the horizon or today's spot date.
+        """
+        req = self.request
+        rub, foreign = self._rub_curve, self._foreign_curve
+        spot, spot_date = req.spot_rate, req.spot_value_date
+        horizon_spot_date, delivery = horizon_spot_value_date, req.contract.delivery_date
+        rule = _horizon_rule(rub.curve_date, spot_date, horizon_date, horizon_spot_date, fx_horizon)
+        held = rule == "spot_held"
+        horizon_spot = positive_money(
+            spot if held else spot * _parity_growth(rub, foreign, spot_date, horizon_spot_date),
+            "horizon spot rate",
+        )
+        if delivery <= horizon_date:
+            # Settled at the FX fixing for the delivery date: the basis has converged.
+            settled = spot if held else spot * _parity_growth(rub, foreign, spot_date, delivery)
+            price_forward = price_rolled = positive_money(settled, "settlement price")
+        else:
+            day_count = req.basis_day_count
+            tau = (
+                day_count.year_fraction(horizon_spot_date, delivery)
+                if delivery >= horizon_spot_date
+                else -day_count.year_fraction(delivery, horizon_spot_date)
+            )
+            basis = math.exp(self.basis_bp * 1e-4 * tau)
+            rub_forward, rub_rolled = _horizon_views(rub, horizon_date)
+            foreign_forward, foreign_rolled = _horizon_views(foreign, horizon_date)
+
+            def price(rub_view: _HorizonView, foreign_view: _HorizonView, label: str) -> float:
+                growth = _parity_growth(rub_view, foreign_view, horizon_spot_date, delivery)
+                return positive_money(horizon_spot * growth * basis, label)
+
+            price_forward = price(rub_forward, foreign_forward, "forward futures price")
+            price_rolled = price(rub_rolled, foreign_rolled, "rolled futures price")
+        start, scale = self.base_price, self._scale
+        return FxFuturesHorizonValuation(
+            base_id=self.base_id,
+            contract_id=req.contract.contract_id,
+            valuation_date=rub.curve_date,
+            horizon_date=horizon_date,
+            fx_horizon=rule,
+            spot_rate=spot,
+            horizon_spot_rate=horizon_spot,
+            horizon_spot_value_date=horizon_spot_date,
+            quantity=req.quantity,
+            price_start=start,
+            price_forward=price_forward,
+            price_rolled=price_rolled,
+            pv_start_rub=0.0,
+            received_rub=0.0,
+            carry_rub=finite_money(scale * (price_forward - start), "carry"),
+            rolldown_rub=finite_money(scale * (price_rolled - price_forward), "rolldown"),
+            horizon_pnl_rub=finite_money(scale * (price_rolled - start), "horizon P&L"),
+        )
+
+
+def fx_futures_horizon(
+    request: FxFuturesRiskRequest,
+    *,
+    horizon_date: date,
+    horizon_spot_value_date: date,
+    fx_horizon: FxHorizon = "spot_held",
+    curve_cache: ShockedCurveCache | None = None,
+) -> FxFuturesHorizonValuation:
+    """Carry, rolldown and theta of an FX futures position to ``horizon_date``."""
+    engine = FxFuturesRiskEngine(
+        request, ShockedCurveCache() if curve_cache is None else curve_cache
+    )
+    return engine.horizon(
+        horizon_date, horizon_spot_value_date=horizon_spot_value_date, fx_horizon=fx_horizon
+    )
