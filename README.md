@@ -36,6 +36,7 @@ linear guardrail; they do not call the exact solver.
 - [Repo](docs/repo.md) — repo and reverse-repo legs: fixed, RUSFAR / RUONIA / key-rate floating, collateral reference
 - [Portfolio v3](docs/portfolio-v3.md) — derivatives in `value_portfolio`: position types, snapshot inputs, result contract `rub-portfolio-risk-result.v3`
 - [Backlog](docs/BACKLOG.md) — remaining fixes and downstream migrations
+- [Desk-monitor review](docs/reviews/CORE_REVIEW_FOR_DESK_MONITOR.md) — what the Trading Desk Monitor interface needs from the core, MOEX validation of 2026-10-20, coverage, performance and gaps (in Russian; 0.33.0)
 - [Changelog](CHANGELOG.md)
 
 Conventions are explicit inputs (`rub_fixed_income.conventions`); defaults reproduce 0.2.1

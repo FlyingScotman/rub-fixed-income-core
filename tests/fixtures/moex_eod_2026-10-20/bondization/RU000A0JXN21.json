@@ -1,0 +1,38 @@
+{
+"amortizations": {
+	"columns": ["isin", "name", "issuevalue", "amortdate", "facevalue", "initialfacevalue", "faceunit", "valueprc", "value", "value_rub", "data_source", "secid", "primary_boardid"], 
+	"data": [
+		["RU000A0JXN21", "АФК \"Система\" ПАО БО-001P-06", 15000000000, "2027-03-26", 1000, 1000, "RUB", 100, 1000, 1000, "maturity", "RU000A0JXN21", "TQCB"]
+	]
+},
+"amortizations.cursor": {
+	"columns": ["INDEX", "TOTAL", "PAGESIZE"], 
+	"data": [
+		[0, 1, 1]
+	]
+},
+"coupons": {
+	"columns": ["isin", "name", "issuevalue", "coupondate", "recorddate", "startdate", "initialfacevalue", "facevalue", "faceunit", "value", "valueprc", "value_rub", "secid", "primary_boardid"], 
+	"data": [
+		["RU000A0JXN21", "АФК \"Система\" ПАО БО-001P-06", 15000000000, "2026-09-25", "2026-09-24", "2026-03-27", 1000, 1000, "RUB", 52.36, 10.5000000000, 52.36, "RU000A0JXN21", "TQCB"],
+		["RU000A0JXN21", "АФК \"Система\" ПАО БО-001P-06", 15000000000, "2027-03-26", "2027-03-25", "2026-09-25", 1000, 1000, "RUB", 52.36, 10.5000000000, 52.36, "RU000A0JXN21", "TQCB"]
+	]
+},
+"coupons.cursor": {
+	"columns": ["INDEX", "TOTAL", "PAGESIZE"], 
+	"data": [
+		[0, 2, 2]
+	]
+},
+"offers": {
+	"columns": ["isin", "name", "issuevalue", "offerdate", "offerdatestart", "offerdateend", "facevalue", "faceunit", "price", "value", "agent", "offertype", "secid", "primary_boardid"], 
+	"data": [
+
+	]
+},
+"coupons.cursor": {
+	"columns": ["INDEX", "TOTAL", "PAGESIZE"], 
+	"data": [
+		[0, 2, 2]
+	]
+}}

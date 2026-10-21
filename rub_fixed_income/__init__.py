@@ -34,6 +34,12 @@ from .assumed_portfolio import (
     value_assumed_portfolio,
     verify_assumed_result,
 )
+from .batch import (
+    BATCH_MODEL_VERSION,
+    BondMetrics,
+    BondMetricsInput,
+    bond_metrics_batch,
+)
 from .bond import (
     FinancedBondProjection,
     FinancedBondRequest,
@@ -310,6 +316,7 @@ from .kbd import (
     g_spread_bp,
     kbd_discount_curve,
     kbd_effective_yield,
+    kbd_effective_yields,
     kbd_zero_rate_bp,
 )
 from .key_rate import (
@@ -1140,4 +1147,13 @@ __all__ += [
     "FxFuturesHorizonValuation",
     "fx_forward_horizon",
     "fx_futures_horizon",
+]
+
+# 0.33.0: Trading Desk Monitor review (docs/reviews/CORE_REVIEW_FOR_DESK_MONITOR.md).
+__all__ += [
+    "BATCH_MODEL_VERSION",
+    "BondMetrics",
+    "BondMetricsInput",
+    "bond_metrics_batch",
+    "kbd_effective_yields",
 ]

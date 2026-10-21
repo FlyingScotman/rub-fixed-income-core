@@ -1,0 +1,43 @@
+{
+"amortizations": {
+	"columns": ["isin", "name", "issuevalue", "amortdate", "facevalue", "initialfacevalue", "faceunit", "valueprc", "value", "value_rub", "data_source", "secid", "primary_boardid"], 
+	"data": [
+		["RU0002868001", "ОФЗ-АД 46012 05\/09\/29", 11189000, "2026-09-09", 825, 1000, "RUB", 12.5, 125, 125, "amortization", "SU46012RMFS9", "TQOB"],
+		["RU0002868001", "ОФЗ-АД 46012 05\/09\/29", 11189000, "2027-09-08", 825, 1000, "RUB", 12.5, 125, 125, "amortization", "SU46012RMFS9", "TQOB"],
+		["RU0002868001", "ОФЗ-АД 46012 05\/09\/29", 11189000, "2028-09-06", 825, 1000, "RUB", 12.5, 125, 125, "amortization", "SU46012RMFS9", "TQOB"],
+		["RU0002868001", "ОФЗ-АД 46012 05\/09\/29", 11189000, "2029-09-05", 825, 1000, "RUB", 57.5, 575, 575, "amortization", "SU46012RMFS9", "TQOB"]
+	]
+},
+"amortizations.cursor": {
+	"columns": ["INDEX", "TOTAL", "PAGESIZE"], 
+	"data": [
+		[0, 4, 4]
+	]
+},
+"coupons": {
+	"columns": ["isin", "name", "issuevalue", "coupondate", "recorddate", "startdate", "initialfacevalue", "facevalue", "faceunit", "value", "valueprc", "value_rub", "secid", "primary_boardid"], 
+	"data": [
+		["RU0002868001", "ОФЗ-АД 46012 05\/09\/29", 11189000, "2026-09-09", "2026-09-08", "2025-09-10", 1000, 825, "RUB", 72.69, 7.6730000000, 72.69, "SU46012RMFS9", "TQOB"],
+		["RU0002868001", "ОФЗ-АД 46012 05\/09\/29", 11189000, "2027-09-08", "2027-09-07", "2026-09-09", 1000, 825, "RUB", 1.16, 0.1410000000, 1.16, "SU46012RMFS9", "TQOB"],
+		["RU0002868001", "ОФЗ-АД 46012 05\/09\/29", 11189000, "2028-09-06", "2028-09-05", "2027-09-08", 1000, 825, "RUB", 62.1, 8.8960000000, 62.1, "SU46012RMFS9", "TQOB"],
+		["RU0002868001", "ОФЗ-АД 46012 05\/09\/29", 11189000, "2029-09-05", "2029-09-04", "2028-09-06", 1000, 825, "RUB", 13.02, 2.2710000000, 13.02, "SU46012RMFS9", "TQOB"]
+	]
+},
+"coupons.cursor": {
+	"columns": ["INDEX", "TOTAL", "PAGESIZE"], 
+	"data": [
+		[0, 4, 4]
+	]
+},
+"offers": {
+	"columns": ["isin", "name", "issuevalue", "offerdate", "offerdatestart", "offerdateend", "facevalue", "faceunit", "price", "value", "agent", "offertype", "secid", "primary_boardid"], 
+	"data": [
+
+	]
+},
+"coupons.cursor": {
+	"columns": ["INDEX", "TOTAL", "PAGESIZE"], 
+	"data": [
+		[0, 4, 4]
+	]
+}}

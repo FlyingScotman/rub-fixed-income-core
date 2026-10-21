@@ -265,16 +265,23 @@ class FloatingCouponLeg:
     rate). It may equal the discount curve (single-curve). A leg without one is not
     projected: :meth:`Instrument.cashflows` then returns its principal only and
     portfolio valuation rejects it as unsupported.
+
+    ``accrual_basis`` (0.33.0) is how a coupon known in advance accrues: None, pro rata
+    on its amount (OFZ-PK, the Minfin rule); ``AccrualBasis.RATE_ACT_365``, on its rate
+    (MOEX corporate floaters, as fixed corporates). See :meth:`Instrument.accrued`.
     """
 
     rule: FloatingCouponRule
     periods: tuple[FloatingCouponPeriod, ...]
     fixing_id: str
     projection_curve_id: str | None = field(default=None, metadata=OMIT_IF_DEFAULT)
+    accrual_basis: AccrualBasis | None = field(default=None, metadata=OMIT_IF_DEFAULT)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "periods", tuple(self.periods))
         _text(self.fixing_id, "fixing_id")
+        if self.accrual_basis is not None and not isinstance(self.accrual_basis, AccrualBasis):
+            raise TypeError("accrual_basis must be an AccrualBasis or None")
         if not self.periods:
             raise InvalidTerms("a floating leg needs at least one period")
         if self.projection_curve_id is not None:
@@ -314,20 +321,44 @@ class PrincipalLeg:
 
 @dataclass(frozen=True)
 class Offer:
-    """A put or call date; the redemption is ``price_pct`` of the outstanding face."""
+    """A put or call date; the redemption is ``price_pct`` of the outstanding face.
+
+    ``window_start`` / ``window_end`` (0.33.0, optional) bound the period in which holders
+    submit a put (MOEX bondization ``offerdatestart`` / ``offerdateend``). A put whose
+    window closed before the settlement date can no longer be exercised: the horizon
+    policy ``open_put`` skips it. Left at None they are not part of the offer's bytes.
+    """
 
     offer_date: date
     kind: OfferKind
     confirmed: bool
     price_pct: float = 100.0
+    window_start: date | None = field(default=None, metadata=OMIT_IF_DEFAULT)
+    window_end: date | None = field(default=None, metadata=OMIT_IF_DEFAULT)
 
     def __post_init__(self) -> None:
         positive_money(self.price_pct, "offer price")
         if not isinstance(self.kind, OfferKind):
             raise TypeError("offer kind must be an OfferKind")
+        for name in ("window_start", "window_end"):
+            value = getattr(self, name)
+            if value is not None and (isinstance(value, datetime) or not isinstance(value, date)):
+                raise TypeError(f"offer {name} must be a date or None")
+        if self.window_end is not None and self.window_end > self.offer_date:
+            raise InvalidTerms("an offer's exercise window cannot end after the offer date")
+        if (
+            self.window_start is not None
+            and self.window_end is not None
+            and self.window_end < self.window_start
+        ):
+            raise InvalidTerms("an offer's exercise window cannot end before it starts")
+
+    def is_open(self, on: date) -> bool:
+        """Whether the exercise window has not closed by ``on`` (no window end: open)."""
+        return self.window_end is None or self.window_end >= on
 
 
-HorizonPolicy = Literal["maturity", "confirmed_put"]
+HorizonPolicy = Literal["maturity", "confirmed_put", "open_put"]
 
 
 @dataclass(frozen=True)
@@ -450,19 +481,24 @@ class Instrument:
         """Horizon date and the offer that sets it, for ``policy`` after ``settlement``.
 
         ``confirmed_put`` uses the first confirmed put after settlement and falls back
-        to maturity when there is none. Calls are never assumed exercised.
+        to maturity when there is none. ``open_put`` uses the first put after settlement
+        whose exercise window is still open on the settlement date
+        (:meth:`Offer.is_open`), confirmed or not: MOEX's yield-to-offer horizon. Both
+        skip an offer on or after maturity. Calls are never assumed exercised.
         """
-        if policy == "confirmed_put":
+        maturity = self.maturity_date
+        if policy in ("confirmed_put", "open_put"):
             for offer in self.offers:
-                if (
-                    offer.kind is OfferKind.PUT
-                    and offer.confirmed
-                    and offer.offer_date > settlement
-                ):
+                if offer.kind is not OfferKind.PUT or offer.offer_date <= settlement:
+                    continue
+                if maturity is not None and offer.offer_date >= maturity and policy == "open_put":
+                    continue
+                if policy == "confirmed_put" and offer.confirmed:
+                    return offer.offer_date, offer
+                if policy == "open_put" and offer.is_open(settlement):
                     return offer.offer_date, offer
         elif policy != "maturity":
-            raise ValueError("horizon policy must be maturity or confirmed_put")
-        maturity = self.maturity_date
+            raise ValueError("horizon policy must be maturity, confirmed_put or open_put")
         if maturity is None:
             raise InvalidTerms("a perpetual bond has no maturity horizon")
         return maturity, None
@@ -587,15 +623,21 @@ class Instrument:
         )
         return model.project(curve, settlement_date=date.min if after is None else after)
 
-    def accrued(self, settlement: date) -> float:
+    def accrued(self, settlement: date, market: MarketSnapshot | None = None) -> float:
         """Accrued coupon per bond at ``settlement``, rounded half-up to 0.01.
 
         A :class:`FixedCouponLeg` accrues pro rata on the coupon amount; a
         :class:`RateAccrualCouponLeg` by its ``accrual_basis``. Settlement on a period
         end gives 0, as does settlement after the last period.
+
+        A floater needs ``market`` (0.33.0): its fixings and, when the elapsed part of
+        the running coupon still needs a projected rate, its projection curve
+        (:meth:`FloatingLeg.accrued_interest`).
         """
         if isinstance(self.coupon_leg, FloatingCouponLeg):
-            raise InvalidTerms("floating accrued interest needs fixings; use the floating leg")
+            if market is None:
+                raise InvalidTerms("floating accrued interest needs fixings; pass the market")
+            return self._floating_accrued(market, settlement)
         if isinstance(self.coupon_leg, IndexedCouponLeg):
             raise InvalidTerms(
                 "indexed accrued interest needs a CPI series; use the linkers module"
@@ -603,6 +645,24 @@ class Instrument:
         if isinstance(self.coupon_leg, RateAccrualCouponLeg):
             return self._rate_accrued(self.coupon_leg, settlement)
         return accrued_interest(self.cashflows(), settlement)
+
+    def _floating_accrued(self, market: MarketSnapshot, settlement: date) -> float:
+        leg = self.coupon_leg
+        assert isinstance(leg, FloatingCouponLeg)
+        model = self.floating_leg(market)
+        basis = leg.accrual_basis
+        try:
+            return model.accrued_interest(settlement, rate_basis=basis)
+        except MissingMarketData:
+            if leg.projection_curve_id is None:
+                raise
+        source = market.projection_curve(leg.projection_curve_id, leg.rule.index)
+        curve = (
+            bootstrap_discount_curve(source)
+            if isinstance(source, CurveBootstrapRequest)
+            else source
+        )
+        return model.accrued_interest(settlement, curve, rate_basis=basis)
 
     def _rate_accrued(self, leg: RateAccrualCouponLeg, settlement: date) -> float:
         periods = [p for p in leg.periods if p.amount > 0.0]

@@ -25,8 +25,10 @@ projection curve for ``pv_start``, ``pv_forward`` and the coupons received (toda
 forwards realised). For ``pv_rolled`` the observations before ``d1`` keep today's
 forwards (the path to the horizon) and later ones are projected off the rolled
 projection curve; the discount curve rolls as for a fixed bond. Accrued interest of a
-floater has no core convention, so its accrued fields are None. P&L explain of a
-floater is not supported: it needs the fixings realised over the horizon.
+floater is left to the caller here, so its accrued fields are None
+(``Instrument.accrued(settlement, market)`` computes it since 0.33.0). P&L explain of
+a floater (0.33.0) takes the fixings at both dates: at the end market its coupons are
+re-projected with the fixings realised over the horizon.
 
 Amounts are RUB per bond; :func:`horizon_portfolio` scales by position quantity.
 
@@ -79,7 +81,7 @@ __all__ = [
 ]
 
 HORIZON_MODEL_VERSION = "rub-horizon-carry-v1"
-HorizonPolicy = Literal["maturity", "confirmed_put"]
+HorizonPolicy = Literal["maturity", "confirmed_put", "open_put"]
 
 
 @dataclass(frozen=True)
@@ -213,7 +215,7 @@ def _setup(
         settlement,
         horizon_settlement,
         redemption_date,
-        "maturity" if offer is None else "confirmed_put",
+        "maturity" if offer is None else policy,
         remaining,
         coupons_received,
         math.fsum(f.principal for f in received),
@@ -376,33 +378,86 @@ def explain_horizon_pnl(
     spread_convention: ZSpreadConvention | None = None,
     redemption_horizon: HorizonPolicy = "maturity",
     curve_cache: ShockedCurveCache | None = None,
+    fixings: FixingHistory | None = None,
+    end_fixings: FixingHistory | None = None,
+    projection_curve: DiscountCurve | CurveBootstrapRequest | None = None,
+    end_projection_curve: DiscountCurve | CurveBootstrapRequest | None = None,
+    strike_guard_bp: float | None = None,
 ) -> HorizonPnlExplain:
     """Explain the change from the start market to the end market (curve and spread).
 
     The horizon is the end curve's date. The end spread is given or calibrated from
-    the end dirty price at the horizon settlement. Floaters are rejected: explaining
-    their P&L needs the fixings realised over the horizon.
+    the end dirty price at the horizon settlement.
+
+    A RUB floater (0.33.0, BACKLOG #78) needs ``fixings`` dated at the start curve date
+    and ``end_fixings`` dated at the end curve date; its coupons project off
+    ``projection_curve`` / ``end_projection_curve`` (same dates), or off the discount
+    curves when those are None. Carry and rolldown are :func:`horizon_valuation`'s. At
+    the end market the remaining coupons are re-projected with the end fixings on the
+    end projection curve: ``rates`` is that repricing at the start spread, so it holds
+    the projection-curve move and the fixings published over the horizon against the
+    forwards that carry assumed; ``spread`` reprices the rolled flows at the end spread.
     """
-    if instrument.product is ProductType.FLOATING_BOND:
-        raise UnsupportedProduct(
-            "P&L explain of a floater is not supported: it needs the fixings realised over "
-            "the horizon and the end projection curve"
-        )
     convention = ZSpreadConvention() if spread_convention is None else spread_convention
     cache = ShockedCurveCache() if curve_cache is None else curve_cache
     start = _base_curve(start_curve, cache)
     end = _base_curve(end_curve, cache)
     horizon_date = end.curve_date
-    setup = _setup(instrument, calendar, start.curve_date, horizon_date, redemption_horizon)
+    floating = None
+    if instrument.product is ProductType.FLOATING_BOND:
+        if fixings is None or end_fixings is None:
+            raise UnsupportedProduct(
+                "P&L explain of a floater needs its fixings at the start and at the end "
+                "(fixings=, end_fixings=)"
+            )
+        start_projection = (
+            start if projection_curve is None else _base_curve(projection_curve, cache)
+        )
+        end_projection = (
+            end if end_projection_curve is None else _base_curve(end_projection_curve, cache)
+        )
+        if start_projection.curve_date != start.curve_date:
+            raise InvalidTerms("projection and discount curves must have the same date")
+        if end_projection.curve_date != horizon_date:
+            raise InvalidTerms("end projection and end discount curves must have the same date")
+        if end_fixings.valuation_date != horizon_date:
+            raise InvalidTerms("the end fixings must be dated at the end curve date")
+        floating = _FloatingInputs(fixings, start_projection, strike_guard_bp)
+    elif any(x is not None for x in (fixings, end_fixings, projection_curve, end_projection_curve)):
+        raise InvalidTerms("fixings and projection curves are for floaters only")
+    setup = _setup(
+        instrument, calendar, start.curve_date, horizon_date, redemption_horizon, floating
+    )
     s0 = _start_spread(setup, start, convention, start_spread_bp, start_dirty_price_rub)
     valuation = _valuation(setup, start, horizon_date, s0, convention)
-    end_setup = replace(setup, settlement=setup.horizon_settlement, pv_flows=setup.remaining)
-    s1 = _start_spread(end_setup, end, convention, end_spread_bp, end_dirty_price_rub)
     rolled = roll_curve(start, horizon_date)
     at = setup.horizon_settlement
-    pv_end = _price(setup.remaining, end, s1, at, convention)
-    rates = _price(setup.remaining, end, s0, at, convention) - valuation.pv_rolled_rub
-    spread = _price(setup.remaining, rolled, s1, at, convention) - valuation.pv_rolled_rub
+    end_flows, rolled_flows = setup.remaining, setup.remaining
+    if floating is not None:
+        assert end_fixings is not None and setup.reproject is not None
+        end_inputs = _FloatingInputs(end_fixings, end_projection, strike_guard_bp)
+        end_leg = _floating_leg(instrument, end_inputs, horizon_date, setup.redemption_date)
+        coupons = end_leg.project(end_projection, settlement_date=at)
+        _, offer = instrument.horizon(setup.policy, setup.settlement)
+        principal = tuple(
+            (f.payment_date, f.amount)
+            for f in instrument.cashflows(
+                after=at, horizon=setup.redemption_date, offer=offer
+            )
+        )
+        end_flows = tuple(
+            sorted((*principal, *((c.payment_date, c.amount_rub) for c in coupons)))
+        )
+        assert setup.projection is not None
+        rolled_projection = (
+            rolled if setup.projection is start else roll_curve(setup.projection, horizon_date)
+        )
+        rolled_flows = setup.reproject(rolled_projection)
+    end_setup = replace(setup, settlement=at, pv_flows=end_flows)
+    s1 = _start_spread(end_setup, end, convention, end_spread_bp, end_dirty_price_rub)
+    pv_end = _price(end_flows, end, s1, at, convention)
+    rates = _price(end_flows, end, s0, at, convention) - valuation.pv_rolled_rub
+    spread = _price(rolled_flows, rolled, s1, at, convention) - valuation.pv_rolled_rub
     total = pv_end + valuation.received_rub - valuation.pv_start_rub
     residual = total - (valuation.carry_rub + valuation.rolldown_rub + rates + spread)
     return HorizonPnlExplain(

@@ -46,6 +46,30 @@ futures prices and margined prices, RUONIA fixings with declared unpublished day
 curves dated the business date) and an assumed end for every open repo. See
 [portfolio-v3.md](portfolio-v3.md).
 
+**From 0.33.0** (review: [reviews/CORE_REVIEW_FOR_DESK_MONITOR.md](reviews/CORE_REVIEW_FOR_DESK_MONITOR.md) §7):
+nothing the backend calls today changes. What it can move into core:
+
+- one `value_portfolio` call per run: `ValuationPolicy(spread_kinds=((ofz_id, "ofz"), ...))`
+  instead of one call per spread kind (split `CS` by the rows' `spread_kind`);
+- `g_spread_curve_id=<KBD curve ID>` for the G-spread of RUB fixed bonds discounted on
+  RUONIA OIS (instead of MOEX's `GSPREADBP` or its own KBD lookups); omit it on a date
+  without KBD parameters;
+- `discount_margin=True` for the floater DM, `spread_buckets=True` for CS01 and the OFZ
+  basis by tenor (the concept pages split one number over two buckets today);
+- `horizon="open_put"` with `Offer(window_start=, window_end=)` from bondization
+  `offerdatestart` / `offerdateend`, instead of choosing the offer itself (rule F2);
+- `require_known_coupons=True` instead of its own check of unknown coupons (C7);
+- `Instrument.accrued(trade_date, market)` / `FloatingLeg.accrued_interest` instead of
+  `valuation.bonds._floater_accrued`; corporates with
+  `FloatingCouponLeg(accrual_basis=AccrualBasis.RATE_ACT_365)` and
+  `FloatingCouponPeriod(published_rate=valueprc / 100)`;
+- `explain_horizon_pnl(..., fixings=, end_fixings=, ...)` for floaters next to its flash
+  PnL (C5);
+- `bond_metrics_batch` for histories of yield, duration, G- and Z-spread.
+
+The backend pins core `==0.32.0` and the commit `c0af388`: move the pin to the 0.33.0
+commit to use them.
+
 ## Deprecations in 0.12.0 and what consumers should move to
 
 Nothing is removed before 1.0. Each call below now emits a `DeprecationWarning` (hidden by

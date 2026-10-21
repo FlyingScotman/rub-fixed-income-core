@@ -26,14 +26,14 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from itertools import pairwise
-from typing import Literal
+from typing import Literal, Protocol
 
 from ._money import finite_money, non_negative_money, positive_money
-from .canonical import OMIT_IF_DEFAULT, canonical_sha256
+from .canonical import OMIT_IF_DEFAULT, _canonical_value, canonical_sha256
 from .conventions import DayCount, calendar_fingerprint
 from .dates import BusinessCalendar, add_months
 from .discount import DiscountCurve, DiscountFactorCurve
-from .errors import MissingFixing, UnsupportedProduct
+from .errors import InvalidTerms, MissingFixing, MissingMarketData, UnsupportedProduct
 from .key_rate import KeyRateForwardCurve
 
 FixingIndex = Literal["ruonia", "key_rate"]
@@ -381,6 +381,12 @@ class FixingDateRule:
             raise ValueError("fixing offset unit must be business_days or calendar_days")
 
 
+class RateDayBasis(Protocol):
+    """Accrued days and days a year of a rate accrual (``domain.AccrualBasis``)."""
+
+    def days(self, start: date, end: date) -> tuple[int, int]: ...
+
+
 @dataclass(frozen=True)
 class FloatingCouponRule:
     """Contractual coupon formula: index return over the period plus a margin.
@@ -492,6 +498,9 @@ class FloatingCouponPeriod:
 
     ``published_coupon_rub`` is known cash and is used as is. MOEX shows 0 for
     coupons not yet fixed, so a zero is rejected: pass None for those.
+    ``published_rate`` (0.33.0, decimal a year, optional) is the rate the issuer
+    published with that coupon (bondization ``valueprc``); a leg that accrues on the
+    rate (:meth:`FloatingLeg.accrued_interest` with a ``rate_basis``) uses it.
     """
 
     accrual_start: date
@@ -499,6 +508,7 @@ class FloatingCouponPeriod:
     payment_date: date
     notional_rub: float
     published_coupon_rub: float | None = None
+    published_rate: float | None = field(default=None, metadata=OMIT_IF_DEFAULT)
 
     def __post_init__(self) -> None:
         if self.accrual_end <= self.accrual_start:
@@ -515,6 +525,11 @@ class FloatingCouponPeriod:
                     "a zero published coupon is ambiguous; pass None for an unfixed coupon"
                 )
             object.__setattr__(self, "published_coupon_rub", amount)
+        if self.published_rate is not None:
+            if self.published_coupon_rub is None:
+                raise ValueError("a published rate needs its published coupon")
+            if non_negative_money(self.published_rate, "published rate") > 1.0:
+                raise ValueError("the published rate is a decimal (0.15 = 15 %)")
 
 
 @dataclass(frozen=True)
@@ -612,7 +627,9 @@ class FloatingLeg:
         identity: dict[str, object] = {
             "model": FLOATING_MODEL_VERSION,
             "rule": self.rule.identifier,
-            "periods": [asdict(period) for period in self.periods],
+            # Canonical mappings: equal to ``asdict`` for periods without the 0.33.0
+            # ``published_rate``, so earlier identities keep their bytes.
+            "periods": [_canonical_value(period) for period in self.periods],
             "history": self.history.identity,
         }
         if self.strike_guard_bp is not None:
@@ -878,6 +895,78 @@ class FloatingLeg:
                     f"of {strike:.6f}, inside the {guard:g} bp guard; option time value is "
                     "not modelled"
                 )
+
+    def accrued_interest(
+        self,
+        settlement_date: date,
+        curve: DiscountFactorCurve | None = None,
+        *,
+        rate_basis: RateDayBasis | None = None,
+    ) -> float:
+        """Accrued coupon per bond at ``settlement_date``, rounded half-up to 0.01 (#81).
+
+        The rule MOEX ``ACCINT`` follows for RUB floaters (``docs/floating.md``):
+
+        - a published coupon, and a coupon fixed in advance (``fixing_date`` or
+          ``observation_window``: fully known at the period start), accrues pro rata on
+          its amount, ``amount * elapsed days / period days`` (OFZ-PK, the Minfin rule);
+          with ``rate_basis`` (corporates: ``AccrualBasis.RATE_ACT_365``) it accrues on
+          its rate instead, ``notional * rate * days / year`` from ``rate_basis.days``,
+          the rate being ``published_rate`` or the in-advance formula's rate (a published
+          coupon without a rate stays pro rata);
+        - a coupon set in arrears accrues the formula over the elapsed part
+          ``[accrual_start, settlement_date)``: the realised fixings of that sub-period
+          (its observation shift or lookback applied as for the whole coupon), the
+          margin, bounds, multiplier and day counts of the rule.
+
+        Settlement on a period start, after the last period or before the first gives 0.
+        A sub-period that still needs a projected rate takes it from ``curve``; without
+        one it raises :class:`MissingMarketData`.
+        """
+        for position, period in enumerate(self.periods):
+            if not period.accrual_start <= settlement_date < period.accrual_end:
+                continue
+            if settlement_date == period.accrual_start:
+                return 0.0
+            elapsed = (settlement_date - period.accrual_start).days
+            length = (period.accrual_end - period.accrual_start).days
+            rule = self.rule
+            try:
+                if period.published_coupon_rub is not None or (
+                    rule.fixing_date is not None or rule.observation_window is not None
+                ):
+                    known = self.coupon(position, curve, check_guard=False)
+                    rate = (
+                        period.published_rate
+                        if period.published_coupon_rub is not None
+                        else known.coupon_rate
+                    )
+                    if rate_basis is not None and rate is not None:
+                        days, year = rate_basis.days(period.accrual_start, settlement_date)
+                        raw = Decimal(repr(period.notional_rub)) * Decimal(repr(rate)) * days / year
+                        return float(raw.quantize(Decimal("0.01"), ROUND_HALF_UP))
+                    amount = known.amount_rub
+                    # Exact decimal pro rata: a float product can fall a hair below a half
+                    # kopeck (77.49 * 13 / 182 = 5.535 is 5.534999... in binary).
+                    raw = Decimal(repr(amount)) * elapsed / length
+                    return float(raw.quantize(Decimal("0.01"), ROUND_HALF_UP))
+                part = FloatingCouponPeriod(
+                    period.accrual_start, settlement_date, settlement_date, period.notional_rub
+                )
+                partial = FloatingLeg(rule, (part,), self.history)
+                amount = partial.coupon(0, curve, check_guard=False).amount_rub
+            except ValueError as exc:
+                if curve is None and "projection curve is required" in str(exc):
+                    raise MissingMarketData(
+                        f"accrued interest on {settlement_date.isoformat()} needs a projected "
+                        "rate: pass a projection curve"
+                    ) from exc
+                raise
+            return _round_half_up(amount, 2)
+        first, last = self.periods[0], self.periods[-1]
+        if settlement_date < first.accrual_start or settlement_date >= last.accrual_end:
+            return 0.0
+        raise InvalidTerms("no floating coupon period contains the settlement date")
 
     def project(
         self,

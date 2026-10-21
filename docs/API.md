@@ -1,4 +1,4 @@
-# API reference (0.16.0)
+# API reference (0.33.0)
 
 Everything below is importable from `rub_fixed_income`. Units: decimal rates/spreads unless
 the name ends in `_bp` (basis points) or `_pct` (percent); amounts in RUB per bond; clean
@@ -466,3 +466,23 @@ Each result has `pv_start`, `pv_forward` (today's curves read forward), `pv_roll
 | `RepoCarry.pv_rolled_rub`, `.rolldown_rub`, `.horizon_pnl_rub` | Repo theta (fields omitted at their defaults). |
 | `horizon_portfolio(..., fx_horizon="spot_held")`; `PortfolioHorizonResult.fx_forwards`, `.xccy_swaps`, `.cds`, `.fx_futures`, `.rate_futures`, `.ofz_futures`, `.fx_horizon`, `.derivative_rows()` | Every derivative carried; rows `FxForwardPositionHorizon`, `XccyPositionHorizon`, `CdsPositionHorizon`, `FxFuturesPositionHorizon`, `RateFuturesPositionHorizon`, `OfzFuturesPositionHorizon` (shape: `DerivativeHorizonHeader`). Covered rolldown now sums every row. |
 | `HORIZON_ADAPTERS`, `HORIZON_ROW_FIELDS`, `horizon_spot_date(business_date, spot, calendar, horizon_date)` | Carry registry and the horizon spot date (today's lag) in `portfolio_products`. |
+
+## Desk-monitor additions (0.33.0)
+
+Why each exists and what the desk should call: [the review](reviews/CORE_REVIEW_FOR_DESK_MONITOR.md),
+§6–§7. Every new field is omitted at its default; a policy using none of them values as
+0.32.0, byte for byte.
+
+| Name | Description |
+| --- | --- |
+| `ValuationPolicy(..., spread_kinds=((instrument_id, "credit" \| "ofz"), ...))`, `.spread_kind_for(instrument_id)` | Spread kind per instrument (core brief C8): one `value_portfolio` call for OFZ and corporates. Rows keep their own `spread_kind`; factor `CS` (and `factor_totals["CS"]`) sums own-spread risk of both kinds. |
+| `ValuationPolicy(..., g_spread_curve_id=None)` | A KBD curve (`rub_ofz_kbd_v1` from `ZcycParameters`) every RUB fixed-coupon bond reports `g_spread_bp` to, whatever its discount curve. Not a KBD from its parameters: `INVALID_TERMS`; absent: `MISSING_MARKET_DATA` (omit the field on a date without a KBD). |
+| `ValuationPolicy(..., discount_margin=False)`; `PositionValuation.discount_margin_bp`; `BondRiskEngine.discount_margin_bp()` | A floater's spread over its projection curve, in the policy's spread convention, that reprices its projected flows (published coupons, realised fixings, today's forwards, principal) to the dirty price. Equal to `spread_bp` on a single curve. |
+| `ValuationPolicy(..., spread_buckets=False)`; `PositionValuation.spread_buckets_rub`; `BondRiskEngine.spread_bucket_risk(*, bump_bp=1.0, risk=None)` | The central `CS` sensitivity split by `RISK_BUCKETS` in proportion to the discount-only key-rate risk (coupons held at their base projection). CS01 by tenor; the OFZ basis by tenor for an OFZ spread to RUONIA OIS (R18). Sums to the `CS` first order. |
+| `ValuationPolicy(..., require_known_coupons=False)` | Rejects (`MISSING_MARKET_DATA`) a fixed-coupon bond whose coupon periods have a gap, a zero amount or end before the horizon (core brief C7). |
+| `ValuationPolicy(horizon="open_put")`; `Offer(..., window_start=None, window_end=None)`, `Offer.is_open(on)`; `Instrument.horizon("open_put", settlement)`; `PositionValuation.horizon == "open_put"` | The first put after settlement, before maturity, whose exercise window has not closed on the settlement date, confirmed or not (core brief C1). `confirmed_put` is unchanged. |
+| `PortfolioScenario(..., spread_kind_shifts_bp=(("credit" \| "ofz", bp), ...))`, `.bond_shock(spread_kind)` | Bond spreads shifted by kind instead of `shock.spread_shift_bp` (an OFZ-basis or a credit-only shock). |
+| `FloatingLeg.accrued_interest(settlement, curve=None, *, rate_basis=None)`; `Instrument.accrued(settlement, market=None)`; `FloatingCouponPeriod(..., published_rate=None)`; `FloatingCouponLeg(..., accrual_basis=None)` | Floater accrued interest, rounded half-up to 0.01 (BACKLOG #81; conventions in [floating.md](floating.md)). A sub-period that needs a projected rate takes it from `curve` (the instrument path: its projection curve); without one, `MissingMarketData`. `value_portfolio` / `horizon_portfolio` use it when the quote has no accrued. |
+| `explain_horizon_pnl(..., fixings=None, end_fixings=None, projection_curve=None, end_projection_curve=None, strike_guard_bp=None)` | Floater P&L explain (BACKLOG #78). |
+| `BondMetricsInput(settlement_date, dirty_price, cashflows, key="")`, `.from_instrument(instrument, settlement_date, clean_price_pct, *, accrued_rub=None, horizon="maturity", key=None)`; `BondMetrics(key, effective_yield, macaulay_years, modified_duration, g_spread_bp, z_spread_bp, error=None)`; `bond_metrics_batch(inputs, *, kbd=None, curve=None, yield_convention=DEFAULT_YIELD_CONVENTION, spread_convention=None)`; `BATCH_MODEL_VERSION` | Vectorised history metrics (module `batch`): the scalar definitions, solved with numpy for many bonds at once; `curve` is a discount curve or KBD parameters (the formula's discount factors). An unsolvable bond gets None and `error`; the batch never fails as a whole. |
+| `kbd_effective_yields(params, tenors_years)` | `kbd_effective_yield` at many tenors (numpy), agreeing to about 1e-15. |

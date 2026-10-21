@@ -42,6 +42,7 @@ from .discount import (
     DiscountCurve,
     DiscountFactorCurve,
 )
+from .errors import InvalidTerms
 from .floating import FloatingCouponProjection, FloatingLeg
 
 # Bucket weights, the shocked-curve cache and curve helpers live in ._risk_common since
@@ -366,6 +367,86 @@ class BondRiskEngine:
     def two_curve(self) -> bool:
         """Whether coupons project off a curve separate from the discount curve."""
         return self.request.projection_curve is not None
+
+    def spread_bucket_risk(
+        self, *, bump_bp: float = 1.0, risk: BondRiskResult | None = None
+    ) -> tuple[float, ...]:
+        """Own-spread risk by bucket, RUB per bp for the position (signed by quantity).
+
+        The central parallel spread sensitivity (the ``CS`` factor: CS01, or the OFZ
+        spread risk) split over :data:`RISK_BUCKETS` in proportion to the discount-only
+        key-rate risk: the central sensitivity to a bucket shift of the discount curve
+        with every coupon held at its base projection. The buckets sum to the parallel
+        sensitivity. A fixed bond's discount-only risk is its bucket DV01; a floater's
+        excludes the coupon re-projection, so on a single curve (a RUONIA floater on
+        RUONIA OIS, an OFZ-PK) it is the risk of the spread or basis over that curve.
+
+        ``risk`` (central, the same bump) reuses a result already computed for this
+        engine where it holds the discount-only buckets (fixed bonds and two-curve
+        floaters).
+        """
+        bump = positive_money(bump_bp, "risk bump bp")
+        quantity = self.request.quantity
+        single_floater = self.request.floating_leg is not None and not self.two_curve
+        if (
+            risk is not None
+            and risk.difference == "central"
+            and risk.bump_bp == bump
+            and not single_floater
+        ):
+            units = [b.dv01_rub for b in risk.buckets]
+            parallel = risk.cs01_rub if self.request.spread_kind == "credit" else risk.ofz_spr01_rub
+        else:
+            held = self._flows(self._projection, self._projection, _ZERO_SHOCK)
+
+            def price(shifts: tuple[float, ...], spread: float) -> float:
+                curve = self._shocked_curve(shifts)
+                return price_cashflows(
+                    held,
+                    curve,
+                    spread=finite_money(self.spread_bp + spread, "shocked spread") * 1e-4,
+                    settlement_date=self.request.settlement_date,
+                    convention=self.request.spread_convention,
+                )
+
+            units = []
+            for i in range(len(RISK_BUCKETS)):
+                up = tuple(bump if i == j else 0.0 for j in range(len(RISK_BUCKETS)))
+                down = tuple(-s for s in up)
+                units.append((price(up, 0.0) - price(down, 0.0)) / (2.0 * bump) * quantity)
+            parallel = (
+                (self._price(_ZERO_SHOCK, bump) - self._price(_ZERO_SHOCK, -bump))
+                / (2.0 * bump)
+                * quantity
+            )
+        total = math.fsum(units)
+        if total == 0.0:
+            return tuple(0.0 for _ in units)
+        return tuple(finite_money(parallel * u / total, "spread bucket risk") for u in units)
+
+    def discount_margin_bp(self) -> float:
+        """A floater's discount margin, bp: the spread over its projection curve.
+
+        The base projected flows (published coupons, realised fixings and today's
+        forwards, principal) discounted on the projection curve plus this spread, in the
+        request's spread convention, reprice the base price. On a single curve it is the
+        calibrated spread itself; with a separate projection curve (a key-rate floater
+        discounted on RUONIA OIS) it is the margin over the key-rate forwards.
+        """
+        if self.request.floating_leg is None:
+            raise InvalidTerms("a discount margin needs a floating leg")
+        if not self.two_curve:
+            return self.spread_bp
+        projection = self._projection
+        flows = self._flows(projection, projection, _ZERO_SHOCK)
+        margin = solve_z_spread(
+            flows,
+            self.base_price_rub,
+            projection,
+            settlement_date=self.request.settlement_date,
+            convention=self.request.spread_convention,
+        )
+        return finite_money(margin * 10_000.0, "discount margin")
 
     @property
     def projection_curve_basis(self) -> str | None:

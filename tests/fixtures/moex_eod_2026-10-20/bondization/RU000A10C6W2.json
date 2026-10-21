@@ -1,0 +1,44 @@
+{
+"amortizations": {
+	"columns": ["isin", "name", "issuevalue", "amortdate", "facevalue", "initialfacevalue", "faceunit", "valueprc", "value", "value_rub", "data_source", "secid", "primary_boardid"], 
+	"data": [
+		["RU000A10C6W2", "ПАО Абрау – Дюрсо 002P-01", 500000000, "2027-01-19", 1000, 1000, "RUB", 100, 1000, 1000, "maturity", "RU000A10C6W2", "TQCB"]
+	]
+},
+"amortizations.cursor": {
+	"columns": ["INDEX", "TOTAL", "PAGESIZE"], 
+	"data": [
+		[0, 1, 1]
+	]
+},
+"coupons": {
+	"columns": ["isin", "name", "issuevalue", "coupondate", "recorddate", "startdate", "initialfacevalue", "facevalue", "faceunit", "value", "valueprc", "value_rub", "secid", "primary_boardid"], 
+	"data": [
+		["RU000A10C6W2", "ПАО Абрау – Дюрсо 002P-01", 500000000, "2026-06-23", "2026-06-22", "2026-05-24", 1000, 1000, "RUB", 12.74, 15.5000000000, 12.74, "RU000A10C6W2", "TQCB"],
+		["RU000A10C6W2", "ПАО Абрау – Дюрсо 002P-01", 500000000, "2026-07-23", "2026-07-22", "2026-06-23", 1000, 1000, "RUB", 12.74, 15.5000000000, 12.74, "RU000A10C6W2", "TQCB"],
+		["RU000A10C6W2", "ПАО Абрау – Дюрсо 002P-01", 500000000, "2026-08-22", "2026-08-21", "2026-07-23", 1000, 1000, "RUB", 12.74, 15.5000000000, 12.74, "RU000A10C6W2", "TQCB"],
+		["RU000A10C6W2", "ПАО Абрау – Дюрсо 002P-01", 500000000, "2026-09-21", "2026-09-18", "2026-08-22", 1000, 1000, "RUB", 12.74, 15.5000000000, 12.74, "RU000A10C6W2", "TQCB"],
+		["RU000A10C6W2", "ПАО Абрау – Дюрсо 002P-01", 500000000, "2026-10-21", "2026-10-20", "2026-09-21", 1000, 1000, "RUB", 12.74, 15.5000000000, 12.74, "RU000A10C6W2", "TQCB"],
+		["RU000A10C6W2", "ПАО Абрау – Дюрсо 002P-01", 500000000, "2026-11-20", "2026-11-19", "2026-10-21", 1000, 1000, "RUB", 12.74, 15.5000000000, 12.74, "RU000A10C6W2", "TQCB"],
+		["RU000A10C6W2", "ПАО Абрау – Дюрсо 002P-01", 500000000, "2026-12-20", "2026-12-18", "2026-11-20", 1000, 1000, "RUB", 12.74, 15.5000000000, 12.74, "RU000A10C6W2", "TQCB"],
+		["RU000A10C6W2", "ПАО Абрау – Дюрсо 002P-01", 500000000, "2027-01-19", "2027-01-18", "2026-12-20", 1000, 1000, "RUB", 12.74, 15.5000000000, 12.74, "RU000A10C6W2", "TQCB"]
+	]
+},
+"coupons.cursor": {
+	"columns": ["INDEX", "TOTAL", "PAGESIZE"], 
+	"data": [
+		[0, 8, 8]
+	]
+},
+"offers": {
+	"columns": ["isin", "name", "issuevalue", "offerdate", "offerdatestart", "offerdateend", "facevalue", "faceunit", "price", "value", "agent", "offertype", "secid", "primary_boardid"], 
+	"data": [
+
+	]
+},
+"coupons.cursor": {
+	"columns": ["INDEX", "TOTAL", "PAGESIZE"], 
+	"data": [
+		[0, 8, 8]
+	]
+}}

@@ -653,6 +653,32 @@ accrual on default as in the Standard Model code (half-day bias); hazard time AC
 - JTD = `side · N · ((1 - R) - c α_acc) - pv`, the bond rule's "value after minus value
   before" (DEC07): a protection seller loses on default like a bondholder.
 
+## Desk-monitor analytics (0.33.0)
+
+- **Floater accrued interest**: a coupon fixed in advance accrues pro rata on its amount
+  in exact decimals (OFZ-PK) or on its rate with `FloatingCouponLeg.accrual_basis`
+  (corporates, `notional * rate * days / 365`); a coupon set in arrears accrues the rule
+  over `[start, settlement)` with the realised fixings. Rounded half-up to 0.01. Details
+  and the MOEX evidence: [floating.md](floating.md), "Accrued interest".
+- **G-spread** (`ValuationPolicy.g_spread_curve_id`): the bond's effective annual yield
+  (ACT/365F) minus the KBD effective yield at its Macaulay duration in years, the
+  definition of MOEX `GSPREADBP` (552 of 564 rows exact on 2026-10-20). Only RUB
+  fixed-coupon bonds; floaters and linkers have none.
+- **Discount margin** (`discount_margin_bp`): the spread `m` with
+  `dirty = Σ CF_i · ((1 + r_proj(t_i) + m)^(-t_i))` on the projection curve's
+  settlement-forward zero rates in the policy's Z-spread convention (annual ACT/365F by
+  default), the flows being the base projection. On one curve it is the Z-spread.
+- **Spread risk by bucket** (`spread_buckets_rub`): `CS · d_k / Σ d`, `d_k` the central
+  discount-only bucket sensitivity (coupons held at their base projection, the same
+  bump). It sums to the central `CS`.
+- **`open_put` horizon**: the first put with `settlement < offer_date < maturity` whose
+  `window_end` is None or not before the settlement date; confirmation is ignored.
+- **History metrics** (`bond_metrics_batch`): the definitions of
+  `solve_effective_annual_yield`, `bond_duration`, `g_spread_bp` and `solve_z_spread`; on
+  `ZcycParameters` the discount factors are the formula's, `exp(-G(t) t / 10^4)`.
+- **MOEX `DURATION`** is the Macaulay duration at the published (rounded) `YIELDATWAP`,
+  rounded to a day; compare core durations at that yield, not at the close.
+
 ## Financed-bond accumulation
 
 `constant_daily_accumulation_periods(start, horizon, boundaries, r)`: factor per period

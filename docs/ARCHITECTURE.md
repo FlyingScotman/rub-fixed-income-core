@@ -31,10 +31,11 @@ or floats.
 | `errors.py` | Typed rejections with stable codes, all `ValueError` (0.9.0). |
 | `domain.py` | `Instrument`, `MarketSnapshot`, `Position` and their parts (0.10.0). |
 | `kbd.py` | MOEX KBD/G-curve evaluator, G-spread, materialised curve (0.11.0). |
+| `batch.py` | Vectorised history metrics: yield, duration, G- and Z-spread of many bonds at once (`bond_metrics_batch`, 0.33.0). |
 | `curve_specs.py` | Versioned curve-spec registry keyed by core spec IDs (0.11.0). |
 | `factors.py` | Desk factor vocabulary `IR\|curve\|bucket`, `CS`, `FX\|ccy`; sparse Hessian (0.11.0). |
 | `portfolio.py` | `value_portfolio`: a book against one `MarketSnapshot`, coded coverage, result contract v2 (0.11.0); `horizon_portfolio` (0.14.0; derivatives 0.30.0–0.31.0). |
-| `horizon.py` | Carry, rolldown and P&L explain to a horizon date (0.14.0). |
+| `horizon.py` | Carry, rolldown and P&L explain to a horizon date (0.14.0; floaters explained since 0.33.0). |
 | `_curve_views.py` | Curve views at a horizon (`forward_curve`, `roll_curve`, `roll_key_rate_curve`) and the FX spot rule `FxHorizon`, shared by every carry engine without an import cycle (0.31.0). |
 | `_deprecation.py` | `DeprecationWarning` helper for APIs kept until 1.0 (0.12.0). |
 | `tenors.py` | Tenor codes: `parse_tenor`, `add_tenor`, `resolve_tenor` with spot lag and business-day convention (0.16.0). |

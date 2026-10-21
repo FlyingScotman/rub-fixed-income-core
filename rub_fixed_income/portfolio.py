@@ -22,6 +22,7 @@ import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from datetime import date, datetime
+from itertools import pairwise
 from typing import Literal, cast
 
 from ._money import finite_money, positive_money
@@ -46,6 +47,7 @@ from .domain import (
     AccountingCategory,
     BondPriceObservation,
     CurveEntry,
+    FixedCouponLeg,
     FloatingCouponLeg,
     FxRate,
     FxSpot,
@@ -54,6 +56,7 @@ from .domain import (
     Offer,
     Position,
     ProductType,
+    RateAccrualCouponLeg,
 )
 from .errors import CoreRejection, InvalidTerms, MissingMarketData, UnsupportedProduct
 from .factors import (
@@ -184,12 +187,37 @@ class ValuationPolicy:
     held under every bump and scenario. The row records the resolved assumption in
     ``PositionValuation.exercise_assumption`` and a call as ``horizon="call"``. There is
     no default: a callable without an assumption is still rejected.
+
+    Desk-monitor additions (0.33.0), each omitted at its default so earlier policies,
+    job IDs and results keep their bytes:
+
+    - ``spread_kinds`` gives instruments their own spread kind, as ``(instrument_id,
+      "credit" | "ofz")`` pairs; the others take ``spread_kind``. One call then values
+      a book of OFZ and corporates (core brief C8). Factor ``CS`` is still each
+      position's own spread, so ``factor_totals["CS"]`` of a mixed book sums OFZ spread
+      risk and credit spread risk: split it by the rows' ``spread_kind``.
+    - ``g_spread_curve_id`` names a KBD curve (spec kind ``KBD_PARAMETRIC``) in the
+      snapshot: every RUB fixed-coupon bond then reports its G-spread to it, whatever its
+      discount curve (a bond discounted on RUONIA OIS has a G-spread too). None keeps the
+      rule of earlier releases: a G-spread only for a bond discounted on the KBD.
+    - ``discount_margin=True`` reports a floater's discount margin
+      (``PositionValuation.discount_margin_bp``): the spread over its projection curve,
+      in ``spread_convention``, that reprices its projected flows to the dirty price.
+    - ``require_known_coupons=True`` rejects a fixed-coupon bond whose coupon periods do
+      not run without a gap to its horizon (``MISSING_MARKET_DATA``), instead of valuing
+      it without the missing coupons (core brief C7).
+    - ``horizon="open_put"`` values to the first put whose exercise window is still open
+      on the settlement date (``Offer.window_end``), confirmed or not (core brief C1).
+    - ``spread_buckets=True`` reports each bond's own-spread risk by bucket
+      (``PositionValuation.spread_buckets_rub``, :meth:`BondRiskEngine.spread_bucket_risk`):
+      CS01 by tenor for credit, the OFZ basis by tenor for an OFZ discounted on RUONIA
+      OIS (OWNER_REQUESTS R18: the OFZ curve is RUONIA plus a basis).
     """
 
     discount_curve_id: str
     spread_kind: Literal["credit", "ofz"] = "credit"
     spread_convention: ZSpreadConvention = field(default_factory=ZSpreadConvention)
-    horizon: Literal["maturity", "confirmed_put"] = "maturity"
+    horizon: Literal["maturity", "confirmed_put", "open_put"] = "maturity"
     curve_overrides: tuple[tuple[str, str], ...] = ()
     include_second_order: bool = True
     bump_bp: float = 1.0
@@ -198,6 +226,13 @@ class ValuationPolicy:
     exercise_assumptions: tuple[tuple[str, ExerciseAssumption], ...] = field(
         default=(), metadata=OMIT_IF_DEFAULT
     )
+    spread_kinds: tuple[tuple[str, Literal["credit", "ofz"]], ...] = field(
+        default=(), metadata=OMIT_IF_DEFAULT
+    )
+    g_spread_curve_id: str | None = field(default=None, metadata=OMIT_IF_DEFAULT)
+    discount_margin: bool = field(default=False, metadata=OMIT_IF_DEFAULT)
+    require_known_coupons: bool = field(default=False, metadata=OMIT_IF_DEFAULT)
+    spread_buckets: bool = field(default=False, metadata=OMIT_IF_DEFAULT)
 
     def __post_init__(self) -> None:
         pairs = tuple(sorted(self.exercise_assumptions, key=lambda p: p[0]))
@@ -227,8 +262,24 @@ class ValuationPolicy:
             raise InvalidTerms("discount_curve_id is required")
         if self.spread_kind not in ("credit", "ofz"):
             raise InvalidTerms("spread_kind must be credit or ofz")
-        if self.horizon not in ("maturity", "confirmed_put"):
-            raise InvalidTerms("horizon must be maturity or confirmed_put")
+        kinds = tuple(sorted(tuple(p) for p in self.spread_kinds))
+        for instrument_id, kind in kinds:
+            if not isinstance(instrument_id, str) or not instrument_id:
+                raise InvalidTerms("spread kind instrument IDs must be non-empty strings")
+            if kind not in ("credit", "ofz"):
+                raise InvalidTerms("spread kinds must be credit or ofz")
+        if len({i for i, _ in kinds}) != len(kinds):
+            raise InvalidTerms("duplicate spread kind instrument")
+        object.__setattr__(self, "spread_kinds", kinds)
+        if self.g_spread_curve_id is not None and (
+            not isinstance(self.g_spread_curve_id, str) or not self.g_spread_curve_id
+        ):
+            raise InvalidTerms("g_spread_curve_id must be a non-empty string or None")
+        for flag in ("discount_margin", "require_known_coupons", "spread_buckets"):
+            if not isinstance(getattr(self, flag), bool):
+                raise TypeError(f"{flag} must be boolean")
+        if self.horizon not in ("maturity", "confirmed_put", "open_put"):
+            raise InvalidTerms("horizon must be maturity, confirmed_put or open_put")
         object.__setattr__(self, "curve_overrides", tuple(sorted(self.curve_overrides)))
         if len({i for i, _ in self.curve_overrides}) != len(self.curve_overrides):
             raise InvalidTerms("duplicate curve override")
@@ -238,6 +289,13 @@ class ValuationPolicy:
 
     def curve_for(self, instrument_id: str) -> str:
         return dict(self.curve_overrides).get(instrument_id, self.discount_curve_id)
+
+    def spread_kind_for(self, instrument_id: str) -> Literal["credit", "ofz"]:
+        """The spread kind of ``instrument_id``: its ``spread_kinds`` entry, else ``spread_kind``."""
+        for key, kind in self.spread_kinds:
+            if key == instrument_id:
+                return kind
+        return self.spread_kind
 
     def exercise_for(self, instrument_id: str) -> ExerciseAssumption | None:
         """The exercise assumption for ``instrument_id``, or None."""
@@ -277,6 +335,11 @@ class PortfolioScenario:
     unlisted curves move as above. A real curve moves only when it is listed. Derivative
     positions apply the same rule to each curve they read, ``shock.spread_shift_bp`` to
     CDS quoted spreads (``CS``) and ``fx_shocks_pct`` to their spot.
+
+    ``spread_kind_shifts_bp`` (0.33.0) moves bond spreads by kind, as ``("credit" |
+    "ofz", bp)`` pairs: a bond whose spread kind is listed takes that shift instead of
+    ``shock.spread_shift_bp``. A "+20 bp OFZ basis" scenario is ``(("ofz", 20.0),)`` on a
+    book whose OFZ are spread to RUONIA OIS; credit spreads then stay put.
     """
 
     name: str
@@ -288,10 +351,21 @@ class PortfolioScenario:
     curve_shifts_bp: tuple[tuple[str, tuple[float, ...]], ...] = field(
         default=(), metadata=OMIT_IF_DEFAULT
     )
+    spread_kind_shifts_bp: tuple[tuple[str, float], ...] = field(
+        default=(), metadata=OMIT_IF_DEFAULT
+    )
 
     def __post_init__(self) -> None:
         if not self.name:
             raise InvalidTerms("scenario name is required")
+        kinds = tuple(sorted(tuple(p) for p in self.spread_kind_shifts_bp))
+        for kind, move in kinds:
+            if kind not in ("credit", "ofz"):
+                raise InvalidTerms("spread kind shifts are for credit or ofz")
+            finite_money(cast(float, move), "spread kind shift bp")
+        if len({k for k, _ in kinds}) != len(kinds):
+            raise InvalidTerms("duplicate spread kind shift")
+        object.__setattr__(self, "spread_kind_shifts_bp", kinds)
         if self.projection_curve_shifts_bp is not None:
             object.__setattr__(
                 self, "projection_curve_shifts_bp", _shifts(tuple(self.projection_curve_shifts_bp))
@@ -339,6 +413,13 @@ class PortfolioScenario:
     def spread_shift_bp(self) -> float:
         return self.shock.spread_shift_bp
 
+    def bond_shock(self, spread_kind: str) -> BondScenario:
+        """The shock of a bond whose spread is of ``spread_kind`` (``spread_kind_shifts_bp``)."""
+        for kind, move in self.spread_kind_shifts_bp:
+            if kind == spread_kind:
+                return replace(self.shock, spread_shift_bp=move)
+        return self.shock
+
 
 @dataclass(frozen=True)
 class Rejection:
@@ -385,6 +466,13 @@ class PositionValuation:
     resolved assumption (``ResolvedExercise.identifier``, e.g.
     ``exercise:to_call:2027-03-25@call:2027-03-25``) in ``exercise_assumption``; an
     exercised call reads ``horizon="call"`` with the call date as ``horizon_date``.
+
+    ``discount_margin_bp`` (``ValuationPolicy.discount_margin``, floaters only) is the
+    spread over the projection curve that reprices the projected flows; it equals
+    ``spread_bp`` when the floater projects off its discount curve. ``horizon="open_put"``
+    marks a put chosen by the open-window rule (``ValuationPolicy.horizon``).
+    ``spread_buckets_rub`` (``ValuationPolicy.spread_buckets``) is the central ``CS``
+    sensitivity split by :data:`RISK_BUCKETS` (see ``BondRiskEngine.spread_bucket_risk``).
     """
 
     position_id: str
@@ -396,7 +484,7 @@ class PositionValuation:
     spec_id: str
     curve_basis: str
     settlement_date: date
-    horizon: Literal["maturity", "confirmed_put", "call"]
+    horizon: Literal["maturity", "confirmed_put", "open_put", "call"]
     horizon_date: date
     quantity: float
     current_nominal_rub: float
@@ -417,6 +505,8 @@ class PositionValuation:
     )
     currency_amounts: CurrencyAmounts | None = field(default=None, metadata=OMIT_IF_DEFAULT)
     exercise_assumption: str | None = field(default=None, metadata=OMIT_IF_DEFAULT)
+    discount_margin_bp: float | None = field(default=None, metadata=OMIT_IF_DEFAULT)
+    spread_buckets_rub: tuple[float, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
 
 
 @dataclass(frozen=True)
@@ -979,7 +1069,7 @@ def _exercised(
                 dirty = clean_price_pct_to_dirty_rub(
                     quote.clean_price_pct,
                     instrument.outstanding_face(settlement),
-                    _accrued(instrument, quote, settlement),
+                    _accrued(instrument, quote, settlement, snapshot),
                 )
             resolved = resolve_exercise(instrument, settlement, assumption, dirty_price_rub=dirty)
             memo[key] = exercised_instrument(instrument, resolved)
@@ -1046,13 +1136,23 @@ def _projection_curve(
     return outcome
 
 
-def _accrued(instrument: Instrument, quote: BondPriceObservation, settlement: date) -> float:
+def _accrued(
+    instrument: Instrument,
+    quote: BondPriceObservation,
+    settlement: date,
+    snapshot: MarketSnapshot | None = None,
+) -> float:
+    """The quote's accrued interest, else the instrument's own at ``settlement``.
+
+    A floater's own accrued (0.33.0, BACKLOG #81) comes from the snapshot's fixings by
+    :meth:`FloatingLeg.accrued_interest`; before 0.33.0 it was a rejection.
+    """
     if quote.accrued_per_bond is not None:
         return quote.accrued_per_bond
     if isinstance(instrument.coupon_leg, FloatingCouponLeg):
-        # Exchange accrual of a floater depends on how its current coupon is fixed;
-        # core does not assume a convention.
-        raise MissingMarketData("a floater's accrued interest must come with its quote")
+        if snapshot is None:
+            raise MissingMarketData("a floater's accrued interest must come with its quote")
+        return instrument.accrued(settlement, snapshot)
     return instrument.accrued(settlement)
 
 
@@ -1169,11 +1269,14 @@ def _value_position(
     if foreign:
         used_fx[currency] = FxRate(currency, fx)
     horizon_date, offer = instrument.horizon(policy.horizon, settlement)
+    if policy.require_known_coupons:
+        _check_known_coupons(instrument, settlement, horizon_date)
     flows = instrument.cashflows(after=settlement, horizon=horizon_date, offer=offer)
     if not flows:
         raise InvalidTerms("no cashflows remain after settlement")
+    spread_kind = policy.spread_kind_for(instrument.instrument_id)
     quote = snapshot.quote(instrument.instrument_id)
-    accrued = _accrued(instrument, quote, settlement)
+    accrued = _accrued(instrument, quote, settlement, snapshot)
     nominal = instrument.outstanding_face(settlement)
     # RUB amounts: unchanged for a RUB bond, converted at the snapshot rate otherwise.
     rub_flows: tuple[BondCashflow, ...] = (
@@ -1234,7 +1337,7 @@ def _value_position(
                 quantity=position.quantity,
                 curve=built.curve,
                 spread_convention=policy.spread_convention,
-                spread_kind=policy.spread_kind,
+                spread_kind=spread_kind,
             ),
             curve_cache=cache,
         )
@@ -1248,15 +1351,21 @@ def _value_position(
     )
     effective_yield, duration = _yield_and_duration(settlement, dirty_ccy, yield_flows, convention)
     g_spread = None
+    floating = isinstance(instrument.coupon_leg, FloatingCouponLeg)
     # A G-spread compares a fixed-rate yield with the KBD; a floater has none.
-    if built.kbd is not None and not isinstance(instrument.coupon_leg, FloatingCouponLeg):
+    kbd = _g_spread_kbd(policy, built, curve, currency) if not floating else None
+    if kbd is not None:
         # The KBD is effective annual on ACT/365F: compare on that basis.
         kbd_yield, kbd_tenor = (
             (effective_yield, duration)
             if convention == DEFAULT_YIELD_CONVENTION
             else _yield_and_duration(settlement, dirty_ccy, yield_flows, DEFAULT_YIELD_CONVENTION)
         )
-        g_spread = g_spread_bp(built.kbd, kbd_yield, kbd_tenor)
+        g_spread = g_spread_bp(kbd, kbd_yield, kbd_tenor)
+    margin = engine.discount_margin_bp() if floating and policy.discount_margin else None
+    spread_buckets = (
+        engine.spread_bucket_risk(bump_bp=policy.bump_bp, risk=risk) if policy.spread_buckets else ()
+    )
     jtd = (
         None
         if position.recovery_rate is None
@@ -1286,7 +1395,7 @@ def _value_position(
         built.entry.spec_id,
         basis,
         settlement,
-        "maturity" if offer is None else "confirmed_put",
+        _horizon_label(policy, offer),
         horizon_date,
         position.quantity,
         nominal_rub,
@@ -1294,7 +1403,7 @@ def _value_position(
         accrued_rub,
         dirty,
         risk.pv_rub,
-        policy.spread_kind,
+        spread_kind,
         policy.spread_convention.identifier,
         engine.spread_bp,
         effective_yield,
@@ -1304,8 +1413,71 @@ def _value_position(
         jtd,
         convention.identifier,
         amounts,
+        discount_margin_bp=margin,
+        spread_buckets_rub=spread_buckets,
     )
     return valuation, engine
+
+
+def _horizon_label(
+    policy: ValuationPolicy, offer: Offer | None
+) -> Literal["maturity", "confirmed_put", "open_put"]:
+    if offer is None:
+        return "maturity"
+    return "open_put" if policy.horizon == "open_put" else "confirmed_put"
+
+
+def _g_spread_kbd(
+    policy: ValuationPolicy,
+    built: _BuiltCurve,
+    curve: Callable[[str], _BuiltCurve],
+    currency: str,
+) -> ZcycParameters | None:
+    """The KBD parameters a bond's G-spread is measured to, or None for no G-spread.
+
+    Without ``g_spread_curve_id`` only a bond discounted on KBD parameters has one (the
+    rule before 0.33.0). With it, every RUB bond is measured to that curve, which must be
+    a KBD built from its parameters.
+    """
+    if policy.g_spread_curve_id is None:
+        return built.kbd
+    if currency != "RUB":
+        return None
+    kbd = curve(policy.g_spread_curve_id).kbd
+    if kbd is None:
+        raise InvalidTerms(
+            f"G-spread curve {policy.g_spread_curve_id} must be a KBD given by its parameters"
+        )
+    return kbd
+
+
+def _check_known_coupons(instrument: Instrument, settlement: date, horizon: date) -> None:
+    """Raise unless the fixed coupons run without a gap from settlement to ``horizon``.
+
+    ``ValuationPolicy.require_known_coupons`` (core brief C7). A zero amount counts as
+    unknown (MOEX lists coupons that are not set yet as 0). A bond without a coupon
+    leg is a zero-coupon bond and passes; floaters project their coupons and pass.
+    """
+    leg = instrument.coupon_leg
+    if not isinstance(leg, (FixedCouponLeg, RateAccrualCouponLeg)):
+        return
+    periods = [p for p in leg.periods if p.payment_date > settlement]
+    label = f"{instrument.instrument_id}: coupons are not known to the horizon {horizon}"
+    if not periods:
+        raise MissingMarketData(f"{label} (none after {settlement})")
+    for period in periods:
+        if period.payment_date > horizon:
+            break
+        if period.amount <= 0.0:
+            raise MissingMarketData(f"{label} (coupon paid {period.payment_date} has no amount)")
+    for left, right in pairwise(periods):
+        if left.payment_date >= horizon:
+            break
+        if right.accrual_start > left.accrual_end:
+            raise MissingMarketData(f"{label} (no coupon for {left.accrual_end}..{right.accrual_start})")
+    last = periods[-1]
+    if max(last.payment_date, last.accrual_end) < horizon:
+        raise MissingMarketData(f"{label} (the last known coupon ends {last.accrual_end})")
 
 
 def _floating_engine(
@@ -1343,7 +1515,7 @@ def _floating_engine(
             settlement_date=settlement,
             curve=built.curve,
             spread_convention=policy.spread_convention,
-            spread_kind=policy.spread_kind,
+            spread_kind=policy.spread_kind_for(instrument.instrument_id),
             dirty_price_rub=clean_price_pct_to_dirty_rub(quote.clean_price_pct, nominal, accrued),
             quantity=quantity,
             floating_leg=model,
@@ -1449,7 +1621,7 @@ def _value_linker_position(
             quantity=position.quantity,
             curve=built.curve,
             spread_convention=policy.spread_convention,
-            spread_kind=policy.spread_kind,
+            spread_kind=policy.spread_kind_for(instrument.instrument_id),
         ),
         curve_cache=cache,
     )
@@ -1492,7 +1664,7 @@ def _value_linker_position(
         accrued,
         dirty,
         risk.pv_rub,
-        policy.spread_kind,
+        policy.spread_kind_for(instrument.instrument_id),
         policy.spread_convention.identifier,
         engine.spread_bp,
         real_yield,
@@ -1500,6 +1672,11 @@ def _value_linker_position(
         None,
         linker_factor_risk(risk, curve_id, second),
         jtd,
+        spread_buckets_rub=(
+            engine.spread_bucket_risk(bump_bp=policy.bump_bp, risk=risk)
+            if policy.spread_buckets
+            else ()
+        ),
     )
     return valuation, prepared
 
@@ -1599,11 +1776,12 @@ def _run_scenario(
         engine = prepared[position.position_id]
         currency = fx_currency.get(position.position_id)
         move = 0.0 if currency is None else scenario.fx_move_pct(currency)
+        shock = scenario.bond_shock(engine.request.spread_kind)
         try:
             if named and curves is not None:
                 discount_id, projection_id = curves
                 repriced = engine.reprice(
-                    replace(scenario.shock, curve_shifts_bp=scenario.curve_shift(discount_id)),
+                    replace(shock, curve_shifts_bp=scenario.curve_shift(discount_id)),
                     projection_curve_shifts_bp=(
                         scenario.curve_shift(projection_id, projection=True)
                         if engine.two_curve and projection_id is not None
@@ -1612,7 +1790,7 @@ def _run_scenario(
                 )
             else:
                 repriced = engine.reprice(
-                    scenario.shock,
+                    shock,
                     projection_curve_shifts_bp=(
                         scenario.projection_curve_shifts_bp if engine.two_curve else None
                     ),
@@ -1904,7 +2082,7 @@ def _horizon_position(
         raise InvalidTerms(f"curve {curve_id} is not dated the snapshot business date")
     settlement = calendar.add_business_days(snapshot.business_date, instrument.settlement_lag_days)
     quote = snapshot.quote(instrument.instrument_id)
-    accrued = _accrued(instrument, quote, settlement)
+    accrued = _accrued(instrument, quote, settlement, snapshot)
     nominal = instrument.outstanding_face(settlement)
     fixings = projection_curve = None
     leg = instrument.coupon_leg
