@@ -1,0 +1,38 @@
+{
+"amortizations": {
+	"columns": ["isin", "name", "issuevalue", "amortdate", "facevalue", "initialfacevalue", "faceunit", "valueprc", "value", "value_rub", "data_source", "secid", "primary_boardid"], 
+	"data": [
+		["RU000A105MP6", "ДОМОДЕДОВО ФьюэлФ 002Р-01", 729003000, "2026-12-15", 1000, 1000, "RUB", 100, 1000, 1000, "maturity", "RU000A105MP6", "TQCB"]
+	]
+},
+"amortizations.cursor": {
+	"columns": ["INDEX", "TOTAL", "PAGESIZE"], 
+	"data": [
+		[0, 1, 1]
+	]
+},
+"coupons": {
+	"columns": ["isin", "name", "issuevalue", "coupondate", "recorddate", "startdate", "initialfacevalue", "facevalue", "faceunit", "value", "valueprc", "value_rub", "secid", "primary_boardid"], 
+	"data": [
+		["RU000A105MP6", "ДОМОДЕДОВО ФьюэлФ 002Р-01", 729003000, "2026-06-16", "2026-06-15", "2025-12-16", 1000, 1000, "RUB", 91.66, null, 91.66, "RU000A105MP6", "TQCB"],
+		["RU000A105MP6", "ДОМОДЕДОВО ФьюэлФ 002Р-01", 729003000, "2026-12-15", "2026-12-14", "2026-06-16", 1000, 1000, "RUB", null, null, null, "RU000A105MP6", "TQCB"]
+	]
+},
+"coupons.cursor": {
+	"columns": ["INDEX", "TOTAL", "PAGESIZE"], 
+	"data": [
+		[0, 2, 2]
+	]
+},
+"offers": {
+	"columns": ["isin", "name", "issuevalue", "offerdate", "offerdatestart", "offerdateend", "facevalue", "faceunit", "price", "value", "agent", "offertype", "secid", "primary_boardid"], 
+	"data": [
+		["RU000A105MP6", "ДОМОДЕДОВО ФьюэлФ 002Р-01", 729003000, "2026-06-02", "2026-05-26", "2026-06-01", 1000, "RUB", 100, 1084.95, null, "Оферта (состоялось)", "RU000A105MP6", "TQCB"]
+	]
+},
+"coupons.cursor": {
+	"columns": ["INDEX", "TOTAL", "PAGESIZE"], 
+	"data": [
+		[0, 2, 2]
+	]
+}}

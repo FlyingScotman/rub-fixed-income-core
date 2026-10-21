@@ -224,18 +224,60 @@ changing a bit of the result. `benchmarks/floater_bench.py` times 2k floaters.
   `Instrument.floating_leg(market, horizon=, strike_guard_bp=)` builds the model.
 - `value_portfolio` values RUB floaters (`FLOATING_BOND`). Single-curve when the leg
   projects off the position's discount curve, two-curve otherwise. Accrued interest
-  must come with the quote (`MISSING_MARKET_DATA` otherwise: core assumes no floater
-  accrual convention). `ValuationPolicy.cap_floor_guard_bp` is the guard;
+  is the quote's; a quote without it takes the floater's own (0.33.0, below; it was
+  `MISSING_MARKET_DATA` before). `ValuationPolicy.cap_floor_guard_bp` is the guard;
   `PortfolioScenario.projection_curve_shifts_bp` moves two-curve projection curves.
-  Yield and duration are on the base projected flows; `g_spread_bp` is None. A leg
+  Yield and duration are on the base projected flows; `g_spread_bp` is None. With
+  `ValuationPolicy.discount_margin` the row has `discount_margin_bp`, the spread over
+  the projection curve (equal to `spread_bp` on a single curve); with `spread_buckets`,
+  `spread_buckets_rub` holds the coupons at their projection, so on a single curve it
+  is the spread risk the rate buckets do not show. A leg
   without `projection_curve_id`, a non-RUB floater and a near-the-money bound are
   `UNSUPPORTED_PRODUCT`; missing fixings `MISSING_MARKET_DATA`.
 - `horizon_valuation(..., fixings=, projection_curve=, strike_guard_bp=)` carries a
   floater: start, forward and received coupons at today's forwards; the rolled value
   keeps today's forwards up to the horizon and projects later observations off the
   rolled projection curve. Floater accrued fields are None. `horizon_portfolio`
-  handles floaters as `value_portfolio` does. `explain_horizon_pnl` rejects floaters
-  (`UnsupportedProduct`): it would need the fixings realised over the horizon.
+  handles floaters as `value_portfolio` does.
+- `explain_horizon_pnl(..., fixings=, end_fixings=, projection_curve=,
+  end_projection_curve=)` explains a floater (0.33.0, BACKLOG #78): carry and rolldown
+  as above; at the end market the remaining coupons are re-projected with the end
+  fixings on the end projection curve, so `rates` holds the projection-curve move and
+  the fixings realised over the horizon against the forwards carry assumed; `spread`
+  reprices the rolled flows at the end spread; `residual` is the cross term. Without
+  both fixings a floater is still `UnsupportedProduct`.
+
+## Accrued interest (0.33.0, BACKLOG #81)
+
+`FloatingLeg.accrued_interest(settlement, curve=None, *, rate_basis=None)` and
+`Instrument.accrued(settlement, market)`, rounded half-up to 0.01, zero on a period
+start and outside the periods:
+
+- a coupon **fixed in advance** (published, `published_coupon_rub`, or a rule with a
+  `fixing_date` or an `observation_window`) accrues pro rata on its amount,
+  `amount * elapsed / period days`, in exact decimals (OFZ-PK, the Minfin rule as for
+  `FixedCouponLeg`). With `rate_basis` (`FloatingCouponLeg.accrual_basis`, e.g.
+  `AccrualBasis.RATE_ACT_365` for corporates) it accrues on the rate instead,
+  `notional * rate * days / year`, the rate being `published_rate` or the in-advance
+  formula's; a published coupon without a rate stays pro rata;
+- a coupon **set in arrears** accrues the rule over `[accrual_start, settlement)` with
+  the realised fixings: the observation shift or lookback applies to the sub-period as
+  to the whole coupon, and so do the margin, multiplier, bounds and day counts. When
+  the sub-period still needs a rate after the fixings' date (a settlement after the
+  business date without a shift), it is projected off `curve`; without one,
+  `MissingMarketData`.
+
+MOEX `ACCINT` on 2026-10-20 (every traded RUB floater, the family rules of the
+goldens): 430 of the 453 on modelled benchmarks exact, 443 within a kopeck (review §3; 13 more are on benchmarks core does not model: the KBD-linked `ZR_YLD_CRV`, RUONIA 6M). Two findings:
+
+- a coupon set in arrears keeps accruing the realised formula after MOEX has published
+  the full amount: the 13 bonds a kopeck off on the published pro rata are exact with
+  the formula. Pro rata stays the rule for a published coupon because the family
+  formula is not every bond's (BACKLOG #84); a backend with a curated in-arrears
+  formula can pass the running period without `published_coupon_rub` to get MOEX's
+  figure;
+- the first coupon of a new OFZ-PK issue (SU29031 on 2026-10-20, as SU29026/27,
+  BACKLOG #85) is not reproduced.
 
 The local portfolio worker (`FixedRubBondInput`, `run_local_risk`) still accepts
 fixed coupons only.

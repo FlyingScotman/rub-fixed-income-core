@@ -1,5 +1,75 @@
 # Changelog
 
+## 0.33.0 — what the Trading Desk Monitor needs: review, floater accrued and explain, history at scale
+
+Review of the core against the desk monitor's target interface
+(`docs/reviews/CORE_REVIEW_FOR_DESK_MONITOR.md`, in Russian), with a fresh MOEX ISS
+validation on the 2026-10-20 EOD (312-bond stratified sample, every traded RUB floater,
+OFZ-IN, live G-spreads) and the gaps it found that are sound to close now: core brief
+items C1, C7, C8 and BACKLOG #78, #81. Every new field of an existing type is omitted at
+its default, so earlier encodings, job IDs, pinned hashes and
+`portfolio_result_v2.json` / `portfolio_result_v3.json` are unchanged; a policy that
+uses none of the additions values exactly as 0.32.0.
+
+### Added
+
+- **Floater accrued interest** (BACKLOG #81): `FloatingLeg.accrued_interest(settlement,
+  curve=None, *, rate_basis=None)` and `Instrument.accrued(settlement, market)` for a
+  floating leg. A coupon fixed in advance (published, or a `fixing_date` /
+  `observation_window` rule) accrues pro rata on its amount in exact decimals (OFZ-PK) or,
+  with `rate_basis`, on its rate (corporates); a coupon set in arrears accrues the rule
+  over the elapsed part with the realised fixings. `FloatingCouponPeriod.published_rate`
+  and `FloatingCouponLeg.accrual_basis` carry the published rate and the basis.
+  `value_portfolio` and `horizon_portfolio` now value a floater whose quote has no
+  accrued (they rejected it with `MISSING_MARKET_DATA` before). MOEX `ACCINT` on
+  2026-10-20: 430 of the 453 traded RUB floaters on modelled benchmarks exact, 443 within a kopeck.
+- **Floater P&L explain** (BACKLOG #78): `explain_horizon_pnl(..., fixings=,
+  end_fixings=, projection_curve=, end_projection_curve=, strike_guard_bp=)`; at the end
+  market the coupons are re-projected with the fixings realised over the horizon, which
+  sit in `rates`. A floater without both fixings is still rejected.
+- **`ValuationPolicy` desk options**, each off by default:
+  - `spread_kinds`: `(instrument_id, "credit" | "ofz")` pairs, one call for a mixed
+    book (core brief C8); `ValuationPolicy.spread_kind_for`;
+  - `g_spread_curve_id`: a KBD curve every RUB fixed-coupon bond reports its G-spread to,
+    whatever its discount curve (a bond discounted on RUONIA OIS had none);
+  - `discount_margin`: `PositionValuation.discount_margin_bp` for floaters, the spread
+    over the projection curve (`BondRiskEngine.discount_margin_bp()`);
+  - `spread_buckets`: `PositionValuation.spread_buckets_rub`, the `CS` risk split by
+    bucket in proportion to the discount-only key-rate risk
+    (`BondRiskEngine.spread_bucket_risk`): CS01 by tenor, and the OFZ–RUONIA basis by
+    tenor for OFZ spread to RUONIA OIS (OWNER_REQUESTS R18);
+  - `require_known_coupons`: a fixed-coupon bond whose coupons do not run without a gap
+    to its horizon is rejected (`MISSING_MARKET_DATA`) instead of valued without them
+    (core brief C7);
+  - `horizon="open_put"`: the first put whose exercise window is still open on the
+    settlement date, confirmed or not (core brief C1); rows say `horizon="open_put"`.
+- **Offer exercise windows** (core brief C1): `Offer(window_start=None, window_end=None)`,
+  `Offer.is_open(on)`; `Instrument.horizon("open_put", settlement)`; `HorizonPolicy` and
+  `horizon_valuation(redemption_horizon=)` accept `"open_put"`.
+- **Spread-kind scenario shifts**: `PortfolioScenario(spread_kind_shifts_bp=(("ofz",
+  20.0),))` moves the spreads of one kind only (an OFZ-basis or a credit-spread shock);
+  `PortfolioScenario.bond_shock(kind)`.
+- **History at scale**: `bond_metrics_batch(inputs, *, kbd=None, curve=None,
+  yield_convention=..., spread_convention=None)` with `BondMetricsInput` (and
+  `.from_instrument`) and `BondMetrics`: effective yield, Macaulay and modified
+  duration, G-spread and Z-spread of many bonds at once with numpy, equal to the scalar
+  functions to about 1e-12; an unsolvable bond gets None and a reason. 300 bonds × 250
+  dates (74,430 bond-dates): 1.4 s, against 43 s for the scalar functions and about
+  250 s for first-order `value_portfolio` (`benchmarks/history_bench.py`).
+  `kbd_effective_yields(params, tenors)`: the KBD yield at many tenors.
+- **MOEX goldens of 2026-10-20** (`tests/test_moex_eod_2026_10_20_goldens.py`,
+  `tests/fixtures/moex_eod_2026-10-20/`): 32 bonds of every kind the desk holds;
+  `DURATION` is identified as the Macaulay days at the published `YIELDATWAP`, rounded
+  (155 of 155 bonds to maturity), and `GSPREADBP` as the yield minus the KBD at the
+  duration (552 of 564 live rows exact).
+
+### Changed
+
+- `value_portfolio` / `horizon_portfolio`: a floater quote without `accrued_per_bond`
+  takes the floater's own accrued instead of a `MISSING_MARKET_DATA` rejection.
+- `FloatingLeg.identity` builds its periods with the canonical mapping (bytes equal to
+  `asdict` for every period without `published_rate`).
+
 ## 0.32.0 — CBR decision dates held in the key-rate roll
 
 BACKLOG #109 completed (owner decision: a CBR meeting date does not move with the

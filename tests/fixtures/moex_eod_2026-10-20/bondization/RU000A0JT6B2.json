@@ -1,0 +1,50 @@
+{
+"amortizations": {
+	"columns": ["isin", "name", "issuevalue", "amortdate", "facevalue", "initialfacevalue", "faceunit", "valueprc", "value", "value_rub", "data_source", "secid", "primary_boardid"], 
+	"data": [
+		["RU000A0JT6B2", "ВЭБ.РФ об. сер. 19", 10000000000, "2032-09-23", 1000, 1000, "RUB", 100, 1000, 1000, "maturity", "RU000A0JT6B2", "TQCB"]
+	]
+},
+"amortizations.cursor": {
+	"columns": ["INDEX", "TOTAL", "PAGESIZE"], 
+	"data": [
+		[0, 1, 1]
+	]
+},
+"coupons": {
+	"columns": ["isin", "name", "issuevalue", "coupondate", "recorddate", "startdate", "initialfacevalue", "facevalue", "faceunit", "value", "valueprc", "value_rub", "secid", "primary_boardid"], 
+	"data": [
+		["RU000A0JT6B2", "ВЭБ.РФ об. сер. 19", 10000000000, "2026-10-01", "2026-09-30", "2026-04-02", 1000, 1000, "RUB", 74.3, 14.9000000000, 74.3, "RU000A0JT6B2", "TQCB"],
+		["RU000A0JT6B2", "ВЭБ.РФ об. сер. 19", 10000000000, "2027-04-01", "2027-03-31", "2026-10-01", 1000, 1000, "RUB", 70.91, 14.2200000000, 70.91, "RU000A0JT6B2", "TQCB"],
+		["RU000A0JT6B2", "ВЭБ.РФ об. сер. 19", 10000000000, "2027-09-30", "2027-09-29", "2027-04-01", 1000, 1000, "RUB", null, null, null, "RU000A0JT6B2", "TQCB"],
+		["RU000A0JT6B2", "ВЭБ.РФ об. сер. 19", 10000000000, "2028-03-30", "2028-03-29", "2027-09-30", 1000, 1000, "RUB", null, null, null, "RU000A0JT6B2", "TQCB"],
+		["RU000A0JT6B2", "ВЭБ.РФ об. сер. 19", 10000000000, "2028-09-28", "2028-09-27", "2028-03-30", 1000, 1000, "RUB", null, null, null, "RU000A0JT6B2", "TQCB"],
+		["RU000A0JT6B2", "ВЭБ.РФ об. сер. 19", 10000000000, "2029-03-29", "2029-03-28", "2028-09-28", 1000, 1000, "RUB", null, null, null, "RU000A0JT6B2", "TQCB"],
+		["RU000A0JT6B2", "ВЭБ.РФ об. сер. 19", 10000000000, "2029-09-27", "2029-09-26", "2029-03-29", 1000, 1000, "RUB", null, null, null, "RU000A0JT6B2", "TQCB"],
+		["RU000A0JT6B2", "ВЭБ.РФ об. сер. 19", 10000000000, "2030-03-28", "2030-03-27", "2029-09-27", 1000, 1000, "RUB", null, null, null, "RU000A0JT6B2", "TQCB"],
+		["RU000A0JT6B2", "ВЭБ.РФ об. сер. 19", 10000000000, "2030-09-26", "2030-09-25", "2030-03-28", 1000, 1000, "RUB", null, null, null, "RU000A0JT6B2", "TQCB"],
+		["RU000A0JT6B2", "ВЭБ.РФ об. сер. 19", 10000000000, "2031-03-27", "2031-03-26", "2030-09-26", 1000, 1000, "RUB", null, null, null, "RU000A0JT6B2", "TQCB"],
+		["RU000A0JT6B2", "ВЭБ.РФ об. сер. 19", 10000000000, "2031-09-25", "2031-09-24", "2031-03-27", 1000, 1000, "RUB", null, null, null, "RU000A0JT6B2", "TQCB"],
+		["RU000A0JT6B2", "ВЭБ.РФ об. сер. 19", 10000000000, "2032-03-25", "2032-03-24", "2031-09-25", 1000, 1000, "RUB", null, null, null, "RU000A0JT6B2", "TQCB"],
+		["RU000A0JT6B2", "ВЭБ.РФ об. сер. 19", 10000000000, "2032-09-23", "2032-09-22", "2032-03-25", 1000, 1000, "RUB", null, null, null, "RU000A0JT6B2", "TQCB"]
+	]
+},
+"coupons.cursor": {
+	"columns": ["INDEX", "TOTAL", "PAGESIZE"], 
+	"data": [
+		[0, 13, 13]
+	]
+},
+"offers": {
+	"columns": ["isin", "name", "issuevalue", "offerdate", "offerdatestart", "offerdateend", "facevalue", "faceunit", "price", "value", "agent", "offertype", "secid", "primary_boardid"], 
+	"data": [
+		["RU000A0JT6B2", "ВЭБ.РФ об. сер. 19", 10000000000, "2026-10-05", null, null, 1000, "RUB", 100, null, null, "Оферта", "RU000A0JT6B2", "TQCB"],
+		["RU000A0JT6B2", "ВЭБ.РФ об. сер. 19", 10000000000, "2027-04-05", "2027-03-23", "2027-04-01", 1000, "RUB", 100, null, null, "Оферта", "RU000A0JT6B2", "TQCB"]
+	]
+},
+"coupons.cursor": {
+	"columns": ["INDEX", "TOTAL", "PAGESIZE"], 
+	"data": [
+		[0, 13, 13]
+	]
+}}

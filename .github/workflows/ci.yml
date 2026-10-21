@@ -67,3 +67,10 @@ jobs:
         with:
           name: swap-benchmark
           path: swap-benchmark.json
+      - name: History benchmark
+        shell: bash
+        run: uv run python benchmarks/history_bench.py --bonds 300 --dates 250 --json history-benchmark.json | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: history-benchmark
+          path: history-benchmark.json

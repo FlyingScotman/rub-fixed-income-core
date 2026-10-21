@@ -4,7 +4,7 @@
 
 Written against core v0.6.0 (HEAD `454a78c`, 16 October 2026), then reconciled with **0.8.1** and updated release by release from 0.9.0.
 
-## Status after 0.7.0–0.32.0
+## Status after 0.7.0–0.33.0
 
 | Release | Delivered | Roadmap item | Remaining |
 |---|---|---|---|
@@ -35,6 +35,7 @@ Written against core v0.6.0 (HEAD `454a78c`, 16 October 2026), then reconciled w
 | 0.30.0 | Derivative carry in `horizon_portfolio`: swaps (carry, rolldown, received flows, horizon P&L) and repo legs (PV carry, interest carry, received flows) on the engines `value_portfolio` builds, rows `swaps` / `repos` on `PortfolioHorizonResult`, covered totals over bonds and carried derivatives, the `HORIZON_ADAPTERS` registry | BACKLOG #101 (swaps and repos) | Carry of FX forwards, XCCY, CDS and futures (#101); repo rolldown (#100); derivatives in the local worker (#102); basis scenarios (#103) |
 | 0.31.0 | Carry, rolldown and theta of every derivative: engine horizons for FX forwards and swaps, FX futures, XCCY, CDS, rate and OFZ futures and repo rolldown, on today's curves read forward and on rolled curves; the FX spot rule `spot_held` / `forwards_realised`; `horizon_portfolio` carries the whole mixed book (0.5 ms per position warm) | BACKLOG #101 (completed), #100 (repo rolldown) | Non-RUB CDS with forwards realised, OFZ futures through delivery, final-price rounding (#108); default-weighted CDS carry, horizon rebootstraps, funding (#110); derivatives in the local worker (#102); basis scenarios (#103) |
 | 0.32.0 | CBR decision dates held in the key-rate roll: `roll_key_rate_curve` keeps the next meeting and rolls only the tenor pillars; KEYRATE futures on the next decision have zero theta; horizon model versions v2 for swaps and rate futures | BACKLOG #109 (completed) | #108, #110; derivatives in the local worker (#102); basis scenarios (#103) |
+| 0.33.0 | Desk-monitor review (`docs/reviews/CORE_REVIEW_FOR_DESK_MONITOR.md`): MOEX ISS validation on the 2026-10-20 EOD (312-bond sample, every traded RUB floater, OFZ-IN, live G-spreads; `DURATION` identified as the days at the published `YIELDATWAP`); floater accrued interest (#81) and P&L explain (#78); `ValuationPolicy` options `spread_kinds` (C8), `g_spread_curve_id`, `discount_margin`, `spread_buckets` (CS01 and the OFZ basis by tenor, R18 first order), `require_known_coupons` (C7), `horizon="open_put"` with `Offer` exercise windows (C1); spread-kind scenario shifts; vectorised history metrics `bond_metrics_batch` (74k bond-dates in 1.4 s) | Core brief C1, C7, C8; BACKLOG #78, #81; 0.10 goldens extended | The basis as a curve factor with its Hessian (#111); callable floaters (#112); key-rate / RUONIA basis swaps (#113); floaters in the history batch (#114); #115–#121 |
 
 The sections below keep the original 0.6.0 baseline for traceability. Where they conflict with this table, **this table is current**.
 

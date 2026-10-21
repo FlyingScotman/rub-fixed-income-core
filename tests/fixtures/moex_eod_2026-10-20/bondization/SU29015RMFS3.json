@@ -1,0 +1,46 @@
+{
+"amortizations": {
+	"columns": ["isin", "name", "issuevalue", "amortdate", "facevalue", "initialfacevalue", "faceunit", "valueprc", "value", "value_rub", "data_source", "secid", "primary_boardid"], 
+	"data": [
+		["RU000A1025A7", "ОФЗ-ПК 29015 18\/10\/2028", 409796724000, "2028-10-18", 1000, 1000, "RUB", 100, 1000, 1000, "maturity", "SU29015RMFS3", "TQOB"]
+	]
+},
+"amortizations.cursor": {
+	"columns": ["INDEX", "TOTAL", "PAGESIZE"], 
+	"data": [
+		[0, 1, 1]
+	]
+},
+"coupons": {
+	"columns": ["isin", "name", "issuevalue", "coupondate", "recorddate", "startdate", "initialfacevalue", "facevalue", "faceunit", "value", "valueprc", "value_rub", "secid", "primary_boardid"], 
+	"data": [
+		["RU000A1025A7", "ОФЗ-ПК 29015 18\/10\/2028", 409796724000, "2026-07-22", "2026-07-21", "2026-04-22", 1000, 1000, "RUB", 35.44, 14.2100000000, 35.44, "SU29015RMFS3", "TQOB"],
+		["RU000A1025A7", "ОФЗ-ПК 29015 18\/10\/2028", 409796724000, "2026-10-21", "2026-10-20", "2026-07-22", 1000, 1000, "RUB", 34.81, 13.9600000000, 34.81, "SU29015RMFS3", "TQOB"],
+		["RU000A1025A7", "ОФЗ-ПК 29015 18\/10\/2028", 409796724000, "2027-01-20", "2027-01-19", "2026-10-21", 1000, 1000, "RUB", null, null, null, "SU29015RMFS3", "TQOB"],
+		["RU000A1025A7", "ОФЗ-ПК 29015 18\/10\/2028", 409796724000, "2027-04-21", "2027-04-20", "2027-01-20", 1000, 1000, "RUB", null, null, null, "SU29015RMFS3", "TQOB"],
+		["RU000A1025A7", "ОФЗ-ПК 29015 18\/10\/2028", 409796724000, "2027-07-21", "2027-07-20", "2027-04-21", 1000, 1000, "RUB", null, null, null, "SU29015RMFS3", "TQOB"],
+		["RU000A1025A7", "ОФЗ-ПК 29015 18\/10\/2028", 409796724000, "2027-10-20", "2027-10-19", "2027-07-21", 1000, 1000, "RUB", null, null, null, "SU29015RMFS3", "TQOB"],
+		["RU000A1025A7", "ОФЗ-ПК 29015 18\/10\/2028", 409796724000, "2028-01-19", "2028-01-18", "2027-10-20", 1000, 1000, "RUB", null, null, null, "SU29015RMFS3", "TQOB"],
+		["RU000A1025A7", "ОФЗ-ПК 29015 18\/10\/2028", 409796724000, "2028-04-19", "2028-04-18", "2028-01-19", 1000, 1000, "RUB", null, null, null, "SU29015RMFS3", "TQOB"],
+		["RU000A1025A7", "ОФЗ-ПК 29015 18\/10\/2028", 409796724000, "2028-07-19", "2028-07-18", "2028-04-19", 1000, 1000, "RUB", null, null, null, "SU29015RMFS3", "TQOB"],
+		["RU000A1025A7", "ОФЗ-ПК 29015 18\/10\/2028", 409796724000, "2028-10-18", "2028-10-17", "2028-07-19", 1000, 1000, "RUB", null, null, null, "SU29015RMFS3", "TQOB"]
+	]
+},
+"coupons.cursor": {
+	"columns": ["INDEX", "TOTAL", "PAGESIZE"], 
+	"data": [
+		[0, 10, 10]
+	]
+},
+"offers": {
+	"columns": ["isin", "name", "issuevalue", "offerdate", "offerdatestart", "offerdateend", "facevalue", "faceunit", "price", "value", "agent", "offertype", "secid", "primary_boardid"], 
+	"data": [
+
+	]
+},
+"coupons.cursor": {
+	"columns": ["INDEX", "TOTAL", "PAGESIZE"], 
+	"data": [
+		[0, 10, 10]
+	]
+}}

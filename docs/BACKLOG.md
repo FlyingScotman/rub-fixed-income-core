@@ -379,16 +379,20 @@ other repositories and must be changed there, not in this core.
 
 ## Floaters — 0.26.0
 
-78. **Floater P&L explain.** `explain_horizon_pnl` rejects floaters; it needs the fixings
-    realised over the horizon and the end projection curve.
+78. *(done in 0.33.0: `explain_horizon_pnl(..., fixings=, end_fixings=, projection_curve=,
+    end_projection_curve=)`)* **Floater P&L explain.** `explain_horizon_pnl` rejected
+    floaters; it needs the fixings realised over the horizon and the end projection curve.
 79. **Cap / floor time value.** A volatility model (e.g. Bachelier on the period average);
     today a bound nearer than the explicit guard is rejected.
 80. **Index-ratio averaging and announced key-rate decisions.** `RUONIA_INDEX` fixings
     and term RUONIA as an index are not modelled. History rows must precede the
     valuation date, so a key-rate decision announced before the cut but effective later
     is projected from the curve; CBR meeting dates are not an input.
-81. **Floater accrued convention** (MOEX `ACCINT` for in-arrears floaters), so quotes need
-    not carry the accrued. `HorizonValuation.accrued_*` is None for floaters today.
+81. *(done in 0.33.0: `FloatingLeg.accrued_interest`, `Instrument.accrued(settlement,
+    market)`; 430 of 453 traded RUB floaters exact on 2026-10-20, 443 within a kopeck)*
+    **Floater accrued convention** (MOEX `ACCINT` for in-arrears floaters), so quotes need
+    not carry the accrued. Open: `HorizonValuation.accrued_*` is still None for floaters;
+    a published in-arrears coupon accrues the realised formula at MOEX (#120).
 82. **Floaters in the local worker and non-RUB floaters.** `FixedRubBondInput` is fixed
     only; `value_portfolio` rejects non-RUB floaters.
 83. *(done in 0.29.0)* **Per-position model flags** in the portfolio result (e.g. `has_optionality`, the
@@ -501,3 +505,58 @@ other repositories and must be changed there, not in this core.
      rebootstrapping CDS and XCCY curves from held quotes at the horizon instead of
      rolling the built curves; funding of cash received and of variation margin to the
      horizon; a hashed horizon result contract if the backend persists it.
+
+## Desk-monitor review — 0.33.0
+
+Source: `docs/reviews/CORE_REVIEW_FOR_DESK_MONITOR.md` (§6 has the priorities and
+estimates). Done in 0.33.0: core brief C1 (open-window puts), C7 (known coupons), C8
+(spread kind per instrument), #78, #81, G-spread on any discount curve, floater discount
+margin, CS01 / OFZ basis by bucket, spread-kind scenario shifts, vectorised history
+metrics.
+
+111. **OFZ–RUONIA basis as a curve factor (R18, full).** 0.33.0 gives the basis risk by
+     bucket (`spread_buckets_rub`, first order) and a parallel basis scenario
+     (`spread_kind_shifts_bp`). A named basis curve `IR|<basis>|<bucket>` with its
+     Hessian block and bucket scenarios needs the discount-only factor split in the
+     engine (two-curve treatment of a single-curve floater) and a contract decision on
+     factor names. P1, about 3 days.
+112. **Callable floaters.** `exercised_instrument` rejects floating legs; the desk redeems
+     a callable floater at its call itself (`redeem_at_horizon`). Support `to_call` /
+     `maturity` for floating legs (`to_worst` needs projected yields). P2, 1–2 days.
+113. **Key rate vs RUONIA basis swaps.** A float-float swap is two swaps today (the
+     interface has a «Базис КС/RUONIA» row). A `BasisSwap` on the swap engine with both
+     projection curves and a spread leg. P1 when the book holds them, 2–3 days.
+114. **Floaters in the history batch.** `bond_metrics_batch` takes fixed flows; a
+     floater's history of DM or Z needs its coupons re-projected per date (today about
+     14 ms per bond-date through `value_portfolio`). Vectorise the projection over dates
+     for a fixed formula. P2, 3 days.
+115. **Input build for history.** `BondMetricsInput.from_instrument` costs about 0.09 ms
+     per bond-date (`Instrument.cashflows` and `accrued`), five times the batch solve.
+     A per-instrument flow table sliced by date would remove it. P2, 1 day.
+116. **Exact-decimal pro rata for fixed legs.** `accrued_interest` (OFZ pro rata) rounds
+     a float product; a product that is exactly a half kopeck can round down (the floater
+     path is exact since 0.33.0: SU29008 77.49 × 13 / 182). No OFZ-PD case was seen on
+     2026-10-15 or 2026-10-20 (30 of 30 exact), but fixing it changes accrued in the last
+     kopeck, so it needs a stated model change. P2, half a day.
+117. **Rate duration of floaters.** `macaulay_duration_years` of a floater is on its
+     projected flows (long); the interface needs the rate duration (about the time to the
+     next reset). The desk can take `-ΣIR / PV × 10⁴` from the factors; a row field would
+     make it explicit. P2, half a day.
+118. **MOEX `ZSPREAD` in the EOD history** is not identified (not bp; neither the annual
+     nor the continuous Z-spread to the KBD of the date). Until it is, compare core
+     Z-spreads with nothing published. P2, investigation.
+119. *(downstream)* **ISS data rules found in the review.** `TQOD` settles in USD, so
+     `ACCINT` of CNY / EUR bonds there is in USD; `DURATION` is at the published
+     `YIELDATWAP`; two offers a week apart without windows (RU000A10CJ84) give
+     `YIELDTOOFFER` to the second and `DURATION` to the first; bondization `offertype`
+     does not separate puts from calls («Оферта», «Оферта/Погашение»). The adapter
+     should pass `Offer.window_start/window_end` from `offerdatestart/offerdateend`.
+120. **Floater accrued after publication.** MOEX accrues a coupon set in arrears by the
+     realised formula even when the full coupon is published (13 bonds); core keeps pro
+     rata on a published amount because family formulas are not per bond (#84). With
+     curated formulas, an `in_arrears` flag on the leg could switch it. P2, half a day,
+     after #84.
+121. **First coupon of new OFZ-PK issues** (SU29031 2026-10-20, 0.51 RUB; as SU29026/27,
+     #85): the observation of the first period is not identified without the issue
+     terms. P2.
+

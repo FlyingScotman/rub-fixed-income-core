@@ -1,0 +1,42 @@
+{
+"amortizations": {
+	"columns": ["isin", "name", "issuevalue", "amortdate", "facevalue", "initialfacevalue", "faceunit", "valueprc", "value", "value_rub", "data_source", "secid", "primary_boardid"], 
+	"data": [
+		["RU000A109R19", "ГПБ Финанс 001Р-02Р", 10000000000, "2027-10-24", 1000, 1000, "RUB", 100, 1000, 1000, "maturity", "RU000A109R19", "TQCB"]
+	]
+},
+"amortizations.cursor": {
+	"columns": ["INDEX", "TOTAL", "PAGESIZE"], 
+	"data": [
+		[0, 1, 1]
+	]
+},
+"coupons": {
+	"columns": ["isin", "name", "issuevalue", "coupondate", "recorddate", "startdate", "initialfacevalue", "facevalue", "faceunit", "value", "valueprc", "value_rub", "secid", "primary_boardid"], 
+	"data": [
+		["RU000A109R19", "ГПБ Финанс 001Р-02Р", 10000000000, "2026-07-26", "2026-07-24", "2026-04-26", 1000, 1000, "RUB", 39.79, null, 39.79, "RU000A109R19", "TQCB"],
+		["RU000A109R19", "ГПБ Финанс 001Р-02Р", 10000000000, "2026-10-25", "2026-10-23", "2026-07-26", 1000, 1000, "RUB", 38.69, null, 38.69, "RU000A109R19", "TQCB"],
+		["RU000A109R19", "ГПБ Финанс 001Р-02Р", 10000000000, "2027-01-24", "2027-01-22", "2026-10-25", 1000, 1000, "RUB", null, null, null, "RU000A109R19", "TQCB"],
+		["RU000A109R19", "ГПБ Финанс 001Р-02Р", 10000000000, "2027-04-25", "2027-04-23", "2027-01-24", 1000, 1000, "RUB", null, null, null, "RU000A109R19", "TQCB"],
+		["RU000A109R19", "ГПБ Финанс 001Р-02Р", 10000000000, "2027-07-25", "2027-07-23", "2027-04-25", 1000, 1000, "RUB", null, null, null, "RU000A109R19", "TQCB"],
+		["RU000A109R19", "ГПБ Финанс 001Р-02Р", 10000000000, "2027-10-24", "2027-10-22", "2027-07-25", 1000, 1000, "RUB", null, null, null, "RU000A109R19", "TQCB"]
+	]
+},
+"coupons.cursor": {
+	"columns": ["INDEX", "TOTAL", "PAGESIZE"], 
+	"data": [
+		[0, 6, 6]
+	]
+},
+"offers": {
+	"columns": ["isin", "name", "issuevalue", "offerdate", "offerdatestart", "offerdateend", "facevalue", "faceunit", "price", "value", "agent", "offertype", "secid", "primary_boardid"], 
+	"data": [
+		["RU000A109R19", "ГПБ Финанс 001Р-02Р", 10000000000, "2026-10-25", null, null, 1000, "RUB", 100, null, null, "Оферта\/Погашение", "RU000A109R19", "TQCB"]
+	]
+},
+"coupons.cursor": {
+	"columns": ["INDEX", "TOTAL", "PAGESIZE"], 
+	"data": [
+		[0, 6, 6]
+	]
+}}

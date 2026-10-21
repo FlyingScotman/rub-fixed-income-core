@@ -22,6 +22,8 @@ import math
 from dataclasses import dataclass
 from datetime import date, timedelta
 
+import numpy as np
+
 from ._money import finite_money
 from .conventions import CurveConvention, DayCount
 from .discount import DiscountCurve
@@ -33,6 +35,7 @@ __all__ = [
     "g_spread_bp",
     "kbd_discount_curve",
     "kbd_effective_yield",
+    "kbd_effective_yields",
     "kbd_zero_rate_bp",
 ]
 
@@ -92,6 +95,29 @@ def kbd_zero_rate_bp(params: ZcycParameters, tenor_years: float) -> float:
 def kbd_effective_yield(params: ZcycParameters, tenor_years: float) -> float:
     """Effective annual yield as a decimal, as MOEX publishes it (in %)."""
     return math.expm1(kbd_zero_rate_bp(params, tenor_years) / 10_000.0)
+
+
+def kbd_effective_yields(params: ZcycParameters, tenors_years: object) -> tuple[float, ...]:
+    """:func:`kbd_effective_yield` at many tenors at once (numpy), in input order.
+
+    The same formula summed in floating point rather than with ``math.fsum``: results
+    agree with the scalar function to about 1e-15. Tenors must be positive and finite.
+    """
+    t = np.asarray(tenors_years, dtype=float).ravel()
+    if t.size == 0:
+        return ()
+    return tuple(float(v) for v in _effective_yield_array(params, t))
+
+
+def _effective_yield_array(params: ZcycParameters, t: np.ndarray) -> np.ndarray:
+    if not np.all(np.isfinite(t)) or np.any(t <= 0.0):
+        raise ValueError("tenors must be positive and finite")
+    decay = np.exp(-t / params.t1)
+    loading = params.t1 / t * (1.0 - decay)
+    zero = params.b1 + params.b2 * loading + params.b3 * (loading - decay)
+    for g, centre, width in zip(params.g, _CENTRES, _WIDTHS, strict=True):
+        zero = zero + g * np.exp(-(((t - centre) / width) ** 2))
+    return np.expm1(zero / 10_000.0)
 
 
 def g_spread_bp(params: ZcycParameters, bond_effective_yield: float, tenor_years: float) -> float:

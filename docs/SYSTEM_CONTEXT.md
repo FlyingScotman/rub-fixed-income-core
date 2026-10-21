@@ -1,6 +1,6 @@
 # System context: where this library fits
 
-As of 16 October 2026 (library 0.12.0; written at 0.8.1). rub-fixed-income-core is the **calculation core** of the Trading Desk Monitor, a RUB fixed-income desk analytics system.
+As of 21 October 2026 (library 0.33.0; first written at 0.8.1, refreshed for core brief C4). rub-fixed-income-core is the **calculation core** of the Trading Desk Monitor, a RUB fixed-income desk analytics system. How the desk uses it today and what its interface still needs: [reviews/CORE_REVIEW_FOR_DESK_MONITOR.md](reviews/CORE_REVIEW_FOR_DESK_MONITOR.md).
 
 The full system architecture lives in the sibling repository **trading_desk_monitor**, folder `docs/architecture/`. With the usual side-by-side checkout it is at [`../../trading_desk_monitor/docs/architecture/README.md`](../../trading_desk_monitor/docs/architecture/README.md). Read its README first: it holds the component map, the interface catalogue and the reading order. These relative links resolve only in the local checkout, not on GitHub.
 
@@ -8,8 +8,8 @@ The full system architecture lives in the sibling repository **trading_desk_moni
 
 | Component | Repository | Relation to core |
 |---|---|---|
-| Desk backend + frontend | `trading_desk_monitor` | **The only runtime consumer.** It imports a pinned, tagged release of core in-process, builds core domain objects from market snapshots and private desk data, and calls pricing and risk |
-| Market-data hub | `market-data-server` (package `mdhub`) | **No direct dependency in either direction.** The hub publishes snapshots; the backend translates them into core objects |
+| Desk backend + frontend | `trading_desk_monitor` | **The only runtime consumer.** It imports core in-process, pinned by commit from this repository's GitHub (`backend/pyproject.toml` `[tool.uv.sources]`; release tags stop at `v0.3.0`), builds core domain objects from market snapshots and private desk data, and calls pricing and risk. Production installs a wheel built from that commit (Windows wheelhouse) |
+| Market-data hub | `market-data-server` (package `mdhub`) | **No direct dependency in either direction.** One hub on a VPS serves every consumer (ADR-001, amended 18 October 2026); the backend pulls its snapshots and history API into its own cache and translates them into core objects |
 | PnL tool | `pnl_tool` (local) | None |
 
 ## What core must and must not do
@@ -36,6 +36,7 @@ Decisions are in `trading_desk_monitor/docs/architecture/adr/`.
 | [PRODUCT_ROADMAP.md](PRODUCT_ROADMAP.md) | **The development plan for this library**: package 0 (foundations), packages 1–9 (floaters, IRS, non-RUB, FX, futures, REPO, XCCY, CDS, special products), and acceptance criteria. Maintained here |
 | [ARCHITECTURE.md](ARCHITECTURE.md), [CONVENTIONS.md](CONVENTIONS.md), [API.md](API.md), [risk.md](risk.md), [second-order-local-risk.md](second-order-local-risk.md), [local-worker.md](local-worker.md) | Internals of this library |
 | [BACKLOG.md](BACKLOG.md) | Smaller fixes, including downstream items |
+| [reviews/CORE_REVIEW_FOR_DESK_MONITOR.md](reviews/CORE_REVIEW_FOR_DESK_MONITOR.md) | Review against the desk monitor's target interface (in Russian): MOEX validation, coverage matrix, performance, gaps |
 
 ## Relevant system documents
 

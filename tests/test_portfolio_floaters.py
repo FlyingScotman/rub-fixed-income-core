@@ -294,8 +294,14 @@ def test_point_in_time_fixings_and_coded_rejections() -> None:
         _codes(snapshot=snapshot(fixings=(FixingEntry("KEY_RATE", key_rate()),)))["p-FRN-1C"]
         == "MISSING_MARKET_DATA"
     )
+    # 0.33.0 (#81): a quote without accrued takes the floater's own, from its fixings.
     no_accrued = snapshot(quotes=(BondPriceObservation("FRN-1C", 99.6, "waprice"),))
-    assert _codes(snapshot=no_accrued, positions=positions()[:1]) == {
+    assert _codes(snapshot=no_accrued, positions=positions()[:1]) == {}
+    no_fixings = snapshot(
+        quotes=(BondPriceObservation("FRN-1C", 99.6, "waprice"),),
+        fixings=(FixingEntry("KEY_RATE", key_rate()),),
+    )
+    assert _codes(snapshot=no_fixings, positions=positions()[:1]) == {
         "p-FRN-1C": "MISSING_MARKET_DATA"
     }
     wrong_spec = (floater("FRN-KEY", "RUB_OIS", index="key_rate", fixing_id="KEY_RATE"),)
@@ -351,7 +357,7 @@ def test_caps_and_floors_follow_the_guard_policy() -> None:
         replace(POLICY, cap_floor_guard_bp=-1.0)
 
 
-def test_floaters_carry_to_the_horizon_and_explain_is_rejected() -> None:
+def test_floaters_carry_to_the_horizon_and_explain_needs_both_fixings() -> None:
     horizon = BUSINESS_DATE + timedelta(days=30)
     carry = horizon_portfolio(
         snapshot=snapshot(),
@@ -366,7 +372,8 @@ def test_floaters_carry_to_the_horizon_and_explain_is_rejected() -> None:
         assert row.per_bond.pv_start_rub == pytest.approx(valued.dirty_price_rub, rel=1e-10)
         assert row.per_bond.accrued_start_rub is None and row.per_bond.accrued_end_rub is None
         assert row.horizon_pnl_rub == pytest.approx(row.per_bond.horizon_pnl_rub * row.quantity)
-    with pytest.raises(UnsupportedProduct, match="P&L explain of a floater"):
+    # 0.33.0 (#78): a floater is explained with its fixings at both dates.
+    with pytest.raises(UnsupportedProduct, match="P&L explain of a floater needs"):
         explain_horizon_pnl(
             instruments()[0], OIS, OIS, CALENDAR, start_spread_bp=0.0, end_spread_bp=0.0
         )
