@@ -467,6 +467,20 @@ Each result has `pv_start`, `pv_forward` (today's curves read forward), `pv_roll
 | `horizon_portfolio(..., fx_horizon="spot_held")`; `PortfolioHorizonResult.fx_forwards`, `.xccy_swaps`, `.cds`, `.fx_futures`, `.rate_futures`, `.ofz_futures`, `.fx_horizon`, `.derivative_rows()` | Every derivative carried; rows `FxForwardPositionHorizon`, `XccyPositionHorizon`, `CdsPositionHorizon`, `FxFuturesPositionHorizon`, `RateFuturesPositionHorizon`, `OfzFuturesPositionHorizon` (shape: `DerivativeHorizonHeader`). Covered rolldown now sums every row. |
 | `HORIZON_ADAPTERS`, `HORIZON_ROW_FIELDS`, `horizon_spot_date(business_date, spot, calendar, horizon_date)` | Carry registry and the horizon spot date (today's lag) in `portfolio_products`. |
 
+## The KBD as a risk curve (0.34.0)
+
+Why: [proposals/kbd-risk-curve.md](proposals/kbd-risk-curve.md) (in Russian). Every new
+field is omitted at its default.
+
+| Name | Description |
+| --- | --- |
+| `CurveConvention(..., zero_shock="continuous" \| "annual")` | The unit of a bucket shock of a `DiscountCurve`: continuous zero rates, or effective annual zero yields (`curve_basis = "annual_zero"`), which sum with par OIS risk. |
+| spec `rub_ofz_kbd_v2`; `CurveSpec.zero_shock`; `kbd_discount_curve(params, curve_date=None, *, horizon_years=30, zero_shock="continuous")` | The KBD as a risk curve in annual yields. |
+| `FloatingCouponRule(index="kbd", ..., index_tenor_years=T, convexity=None)`; `FixingHistory("kbd", ..., tenor_years=T)` | MOEX `ZR_YLD_CRV`: the KBD yield at a constant maturity, a single fixing; projected as the forward yield over the tenor ([floating.md](floating.md)). |
+| `ConstantMaturityConvexity(normal_vol_bp)`, `.adjust(forward, years_to_fixing, tenor_years)` | Optional convexity adjustment of a projected constant-maturity fixing. |
+| `FloatingCouponPeriod(..., margin=None)` | The period's margin, replacing the rule's. |
+| `basis_view(risk, base_curve_id, curve_id, basis_id)` | The same `FactorRisk` on the base curve and the basis `curve − base` (first order and Hessian). |
+
 ## Desk-monitor additions (0.33.0)
 
 Why each exists and what the desk should call: [the review](reviews/CORE_REVIEW_FOR_DESK_MONITOR.md),

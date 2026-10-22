@@ -44,6 +44,7 @@ The input type selects the basis, which is recorded in every result:
 | Curve input | `curve_basis` | Shock operation |
 | --- | --- | --- |
 | `DiscountCurve` | `continuous_zero` | Overlay a piecewise-linear shift on continuous zero rates: `DF'(t) = DF(t) exp(-s(t) t / 10000)` |
+| `DiscountCurve` with `convention.zero_shock="annual"` (0.34.0) | `annual_zero` | Shift the effective annual zero yield: `DF'(t) = (DF(t)^(-1/t) + s(t) / 10000)^(-t)` |
 | `CurveBootstrapRequest` | `ois_quote` | Interpolate the shift to each original OIS quote's maturity, add it to the decimal par rate, then bootstrap again using the same conventions |
 
 The zero overlay evaluates the original curve at each required date, preserving
@@ -70,6 +71,13 @@ universal sparse Hessian. Quote risk and zero-rate risk are not interchangeable:
 downstream scenario/market-move vectors must use the same basis as the risks.
 The caller identifies whether its actual curve represents RUONIA; this generic
 math module does not certify a market curve's source or quality.
+
+**Units across curves (0.34.0).** A continuous-zero bp is larger than an annual one:
+`dP/dr_cont = (1 + y) dP/dy_annual`, 14–16 % at RUB rates of 2026. Par OIS quote risk,
+annual Z-spread risk (`ofz_spr01_rub`, `cs01_rub`) and `annual_zero` risk agree to
+0.5–2 % on OFZ (docs/proposals/kbd-risk-curve.md §2.1), so a KBD risk curve
+(`rub_ofz_kbd_v2`) is bumped in annual yields to sum with RUONIA OIS risk. Hedge ratios
+do not depend on the unit as long as both sides use the same one.
 
 ## Risk definitions
 

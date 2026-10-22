@@ -78,6 +78,8 @@ class CurveSpec:
     stub: str | None = None
     calendars: tuple[str, ...] = ()
     sources: tuple[str, ...] = ()
+    # Unit of a bucket shock of the built DiscountCurve (``CurveConvention.zero_shock``).
+    zero_shock: str = "continuous"
 
 
 _SPECS = (
@@ -91,6 +93,19 @@ _SPECS = (
         model_version=KBD_MODEL_VERSION,
         description="MOEX zero-coupon OFZ yield curve (KBD/G-curve) from B1..B3, T1, G1..G9; "
         "continuous zero rate, effective annual published yields",
+    ),
+    CurveSpec(
+        spec_id="rub_ofz_kbd_v2",
+        kind=CurveKind.KBD_PARAMETRIC,
+        currency="RUB",
+        time_day_count=DayCount.ACT_365_FIXED,
+        interpolation="kbd-formula; materialised log-linear-df (daily to 2Y, weekly to 5Y, "
+        "monthly to 30Y), flat-forward beyond",
+        model_version=KBD_MODEL_VERSION,
+        description="The KBD of rub_ofz_kbd_v1 as a risk curve: bucket shocks move the "
+        "effective annual zero yields MOEX publishes (annual_zero), the unit that sums with "
+        "par RUONIA OIS risk",
+        zero_shock="annual",
     ),
     CurveSpec(
         spec_id="rub_ruonia_ois_legacy_v1",

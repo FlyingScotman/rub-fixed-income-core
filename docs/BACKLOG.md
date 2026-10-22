@@ -514,7 +514,8 @@ estimates). Done in 0.33.0: core brief C1 (open-window puts), C7 (known coupons)
 margin, CS01 / OFZ basis by bucket, spread-kind scenario shifts, vectorised history
 metrics.
 
-111. **OFZ–RUONIA basis as a curve factor (R18, full).** 0.33.0 gives the basis risk by
+111. *(done in 0.34.0 by option C of docs/proposals/kbd-risk-curve.md: OFZ on the KBD
+     risk curve `rub_ofz_kbd_v2`, the basis as a view, `basis_view`)* **OFZ–RUONIA basis as a curve factor (R18, full).** 0.33.0 gives the basis risk by
      bucket (`spread_buckets_rub`, first order) and a parallel basis scenario
      (`spread_kind_shifts_bp`). A named basis curve `IR|<basis>|<bucket>` with its
      Hessian block and bucket scenarios needs the discount-only factor split in the
@@ -560,3 +561,30 @@ metrics.
      #85): the observation of the first period is not identified without the issue
      terms. P2.
 
+## KBD as a risk curve — 0.34.0
+
+Source: `docs/proposals/kbd-risk-curve.md` (in Russian) and the owner's decisions of
+2026-10-22 (option C; KBD bumped in annual yields; OFZ-PK on RUONIA; convexity optional
+until a volatility source exists; instrument terms from the market-data hub). Done in
+0.34.0: `rub_ofz_kbd_v2` (`annual_zero` risk), the KBD constant-maturity index with
+period margins and an optional convexity adjustment, goldens of ten KBD floaters,
+`basis_view`.
+
+122. **Volatility for the constant-maturity convexity.** `ConstantMaturityConvexity`
+     takes a normal volatility of the KBD yield; there is no market source (no RUB
+     swaption or OFZ option quotes). Candidates: realised volatility of KBD yields by
+     tenor from the hub's ZCYC history (a hub dataset), with a stated window and an
+     expiry term structure; then the payment-timing adjustment. Until decided the desk
+     values without it. P2, investigation then 1–2 days.
+123. *(downstream: market-data hub)* **Terms of KBD floaters.** The hub's
+     `floater_formulas` give `ZR_YLD_CRV` and today's margin only. The hub is to publish
+     the tenor, the fixing offset (in ZCYC publication days), the rate rounding and the
+     margin by period, curated from issue documents with evidence (a hub session was
+     started on 2026-10-22). Open rules: Avtodor BO-002R-01, FPK 001R-05, VTB T2-3,
+     Gazprom Capital 001B-02/03, RZD 001B-01/02, GTLK 001P-01, and the KAMAZ coupons
+     rounded to 0.0001 % in 2022–2024.
+124. *(downstream: TDM)* **Migration to option C.** OFZ discounted on the KBD
+     (`curve_overrides`, spec `rub_ofz_kbd_v2`), `ofz_spr01` as the spread to the KBD,
+     KBD floaters out of the fallback, `RUB OFZ` a real scenario curve, the cockpit with
+     a «КБД / RUONIA + базис» view (`basis_view`), the fallback duration proxy divided by
+     `1 + y`; see `docs/CONSUMERS.md`.

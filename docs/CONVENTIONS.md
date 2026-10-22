@@ -195,6 +195,18 @@ the node grid, log-linear between nodes, flat-forward beyond 30Y. G-spread is th
 effective annual yield minus the KBD yield at an explicit tenor (the portfolio uses the
 Macaulay duration at that yield).
 
+**The KBD as a risk curve (0.34.0).** Spec `rub_ofz_kbd_v2` is the same curve with bucket
+shocks of the effective annual yield MOEX publishes (`CurveConvention.zero_shock="annual"`,
+`curve_basis = "annual_zero"`): `Y'(t) = Y(t) + Σ w_i(t)·s_i` on the 11 pillars and hat
+weights of RUONIA. Its DV01 sums with par RUONIA OIS DV01 (they agree to 0.5–2 % on OFZ)
+and equals annual Z-spread risk on the curve date. `rub_ofz_kbd_v1` keeps continuous
+zero shocks, 1 + y times larger, and every stored result on it. Desk decision of
+2026-10-22 (docs/proposals/kbd-risk-curve.md, option C): OFZ discounted on the KBD with
+their own spread to it (`ofz_spr01` is OFZ rich/cheap to the KBD); corporates on RUONIA
+OIS plus credit spread; OFZ-PK on RUONIA; KBD-linked floaters project off the KBD.
+`basis_view(risk, base, curve, basis)` shows the same risk on RUONIA and the
+KBD − RUONIA basis.
+
 ## Desk risk factors (0.11.0)
 
 `IR|<curve_id>|<bucket>` (1 bp at one of the 11 bucket pillars), `CS` (1 bp of own credit or
@@ -225,6 +237,8 @@ Every convention is a term of `FloatingCouponRule`; core infers none (see
 | Averaging | `compounded`, `arithmetic`, `single_fixing` | arithmetic "Ставка RUONIA" and key rate, compounded "Индекс RUONIA" and term RUONIA 3M |
 | Rounding | `rate_rounding_decimals`, `amount_rounding_decimals` (fully fixed coupons only) | in arrears: amount to the kopeck from the unrounded rate; in advance: rate to 0.01 % first |
 | Floor / cap | `CouponRateBounds(applies_to, floor, cap)` | not seen in the golden set |
+| KBD index (`ZR_YLD_CRV`, 0.34.0) | `index="kbd"`, `index_tenor_years`, `single_fixing` with `FixingDateRule("accrual_start", N, "business_days")` on the ZCYC publication calendar, `rate_rounding_decimals=2`; `FloatingCouponPeriod.margin` for a margin reset at an offer | the effective annual KBD yield at 7Y (N = 5) or 5Y (N = 4) plus the margin, in advance, ACT/365F; KAMAZ listed five coupons of 2022–2024 to 0.0001 % |
+| Constant-maturity convexity | `ConstantMaturityConvexity(normal_vol_bp)` (default none: the deterministic forward) | no volatility source decided yet |
 
 **Optionality policy.** Floors and caps are priced at intrinsic value on the projected
 rate, accepted only when that rate is at least the explicit `strike_guard_bp`
