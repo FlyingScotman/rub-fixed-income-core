@@ -514,7 +514,8 @@ estimates). Done in 0.33.0: core brief C1 (open-window puts), C7 (known coupons)
 margin, CS01 / OFZ basis by bucket, spread-kind scenario shifts, vectorised history
 metrics.
 
-111. **OFZ–RUONIA basis as a curve factor (R18, full).** 0.33.0 gives the basis risk by
+111. *(done in 0.34.0 by option C of docs/proposals/kbd-risk-curve.md: OFZ on the KBD
+     risk curve `rub_ofz_kbd_v2`, the basis as a view, `basis_view`)* **OFZ–RUONIA basis as a curve factor (R18, full).** 0.33.0 gives the basis risk by
      bucket (`spread_buckets_rub`, first order) and a parallel basis scenario
      (`spread_kind_shifts_bp`). A named basis curve `IR|<basis>|<bucket>` with its
      Hessian block and bucket scenarios needs the discount-only factor split in the
@@ -560,10 +561,37 @@ metrics.
      #85): the observation of the first period is not identified without the issue
      terms. P2.
 
+## KBD as a risk curve — 0.34.0
+
+Source: `docs/proposals/kbd-risk-curve.md` (in Russian) and the owner's decisions of
+2026-10-22 (option C; KBD bumped in annual yields; OFZ-PK on RUONIA; convexity optional
+until a volatility source exists; instrument terms from the market-data hub). Done in
+0.34.0: `rub_ofz_kbd_v2` (`annual_zero` risk), the KBD constant-maturity index with
+period margins and an optional convexity adjustment, goldens of ten KBD floaters,
+`basis_view`.
+
+122. **Volatility for the constant-maturity convexity.** `ConstantMaturityConvexity`
+     takes a normal volatility of the KBD yield; there is no market source (no RUB
+     swaption or OFZ option quotes). Candidates: realised volatility of KBD yields by
+     tenor from the hub's ZCYC history (a hub dataset), with a stated window and an
+     expiry term structure; then the payment-timing adjustment. Until decided the desk
+     values without it. P2, investigation then 1–2 days.
+123. *(downstream: market-data hub)* **Terms of KBD floaters.** The hub's
+     `floater_formulas` give `ZR_YLD_CRV` and today's margin only. The hub is to publish
+     the tenor, the fixing offset (in ZCYC publication days), the rate rounding and the
+     margin by period, curated from issue documents with evidence (a hub session was
+     started on 2026-10-22). Open rules: Avtodor BO-002R-01, FPK 001R-05, VTB T2-3,
+     Gazprom Capital 001B-02/03, RZD 001B-01/02, GTLK 001P-01, and the KAMAZ coupons
+     rounded to 0.0001 % in 2022–2024.
+124. *(downstream: TDM)* **Migration to option C.** OFZ discounted on the KBD
+     (`curve_overrides`, spec `rub_ofz_kbd_v2`), `ofz_spr01` as the spread to the KBD,
+     KBD floaters out of the fallback, `RUB OFZ` a real scenario curve, the cockpit with
+     a «КБД / RUONIA + базис» view (`basis_view`), the fallback duration proxy divided by
+     `1 + y`; see `docs/CONSUMERS.md`.
 
 ## Never-called perpetuals — unreleased
 
-122. *(done)* **Perpetuals never called** (owner's position: Russian perpetuals are
+125. *(done)* **Perpetuals never called** (owner's position: Russian perpetuals are
      practically never called). `ExerciseAssumption.never_called()`: a dated callable
      runs to maturity, a perpetual pays its listed coupons and then the last one at the
      same step forever (`perpetual.PerpetualTail`), valued exactly: curve read to 30
@@ -575,19 +603,21 @@ metrics.
      A truncated stream needs 50–60 years for 1 bp of Z-spread (30 years: 12–36 bp,
      `tests/test_perpetual.py`). About 75 ms per perpetual with the Hessian against
      about 10 ms for a dated bond.
-123. **Horizon P&L of a never-called perpetual.** `horizon_portfolio` rejects it
+126. **Horizon P&L of a never-called perpetual.** `horizon_portfolio` rejects it
      (`UNSUPPORTED_PRODUCT`): carry and roll-down need the tail priced at the horizon
      date in `horizon.py` (the tail's anchor and the curve read move with the date).
      `value_assumed_portfolio` rejects it too (the native path prices the tail). P1,
      1 day.
-124. **Perpetuals with a coupon formula.** A floater perpetual (RUONIA or key rate plus a
+127. **Perpetuals with a coupon formula.** A floater perpetual (RUONIA or key rate plus a
      margin) needs its floating leg continued to the tail with the projection (with #112,
      callable floaters); a perpetual whose coupon resets every N years to the KBD / OFZ
-     yield of N years plus a margin needs the KBD projection of the shared KBD framework
-     (the KBD floater work): the reset coupon is the forward KBD yield at the reset
-     date, its rate risk on the KBD as a projection curve. Until then `never_called`
-     rejects a floating leg, and an unknown listed coupon is not continued. P1.
-125. *(downstream)* **TDM: no call by default.** In `backend/src/desk/valuation/bonds.py`:
+     yield of N years plus a margin is the KBD constant-maturity index of 0.34.0
+     (`FixingIndex` `"kbd"`, `index_tenor_years=N`) fixed once per reset period: its
+     floating leg continued past the listed periods, the reset coupon the forward KBD
+     yield at the reset date, its rate risk on the KBD as a projection curve. Until then
+     `never_called` rejects a floating leg, and an unknown listed coupon is not
+     continued. P1.
+128. *(downstream)* **TDM: no call by default.** In `backend/src/desk/valuation/bonds.py`:
      replace `perpetual_call` / `PERPETUAL_CALL_YEARS` (a call assumed in five years) by
      passing the perpetual to core as listed, with its calls, and
      `ValuationPolicy.exercise_assumptions=((id, ExerciseAssumption.never_called()), ...)`
@@ -597,7 +627,7 @@ metrics.
      continued at the last rate. Note `perpetual: no call assumed` in `assumptions`.
      Expect higher DV01 / CS01 (about twice) and lower yields and Z-spreads on discount
      perpetuals than under the five-year call.
-126. **Long-end risk on a quoted OIS curve.** A curve bootstrapped from RUB OIS quotes
+129. **Long-end risk on a quoted OIS curve.** A curve bootstrapped from RUB OIS quotes
      ends at 10 years and extrapolates flat-forward from its last two nodes, so every
      flow past 10 years moves with the 7Y–10Y forward: under quote risk
      (`ois_quote`) a never-called perpetual's DV01 is a large 7Y / 10Y pair of opposite

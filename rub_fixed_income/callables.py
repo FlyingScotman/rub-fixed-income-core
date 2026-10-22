@@ -11,7 +11,7 @@ named assumption:
 - ``to_worst``: the redemption date (a call or maturity) with the lowest effective
   yield at the given price. It is resolved once, at the quoted price, and then held
   fixed: risk and scenarios do not switch the exercise date;
-- ``never_called`` (BACKLOG #122): no call is ever exercised. A dated bond runs to
+- ``never_called`` (BACKLOG #125): no call is ever exercised. A dated bond runs to
   maturity (as ``to_maturity``); a perpetual pays its coupons forever: the listed
   coupons, then the last one again at the same step without end
   (:class:`~rub_fixed_income.perpetual.PerpetualTail`, valued exactly). For a perpetual

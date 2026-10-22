@@ -1,4 +1,4 @@
-"""Never-called perpetuals: the endless coupon stream (BACKLOG #122).
+"""Never-called perpetuals: the endless coupon stream (BACKLOG #125).
 
 Analytic perpetuities on flat curves, the tail against its materialised flows on the
 KBD and on shocked curves, the convergence of a truncated stream, the
@@ -13,6 +13,7 @@ from dataclasses import replace
 from datetime import date, timedelta
 from itertools import pairwise
 from pathlib import Path
+from typing import Literal
 
 import pytest
 from test_assumed_portfolio import book_positions, book_snapshot, callable_bond, perpetual
@@ -76,12 +77,14 @@ KBD_FIXTURE = (
 )
 
 
-def kbd(horizon_years: int = 30) -> DiscountCurve:
+def kbd(
+    horizon_years: int = 30, zero_shock: Literal["continuous", "annual"] = "continuous"
+) -> DiscountCurve:
     row = json.loads(KBD_FIXTURE.read_text(encoding="utf-8"))["params"]["data"][0]
     params = ZcycParameters(
         date.fromisoformat(row[0]), row[2], row[3], row[4], row[5], tuple(row[6:15])
     )
-    return kbd_discount_curve(params, horizon_years=horizon_years)
+    return kbd_discount_curve(params, horizon_years=horizon_years, zero_shock=zero_shock)
 
 
 def materialised(
@@ -197,8 +200,12 @@ def listed_and_tail() -> tuple[tuple[BondCashflow, ...], PerpetualTail]:
     return listed, PerpetualTail(listed[-1].payment_date, 29.92, period_months=3)
 
 
-def test_risk_engine_with_a_tail_equals_the_engine_on_materialised_flows() -> None:
-    curve = kbd()
+@pytest.mark.parametrize("zero_shock", ["continuous", "annual"])
+def test_risk_engine_with_a_tail_equals_the_engine_on_materialised_flows(
+    zero_shock: Literal["continuous", "annual"],
+) -> None:
+    """Bucket shocks in continuous zero rates and in annual yields (``rub_ofz_kbd_v2``)."""
+    curve = kbd(zero_shock=zero_shock)
     listed, tail = listed_and_tail()
     common = {
         "settlement_date": curve.curve_date,

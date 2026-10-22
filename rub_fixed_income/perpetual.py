@@ -1,4 +1,4 @@
-"""The coupon stream of a perpetual bond that is never called (BACKLOG #122).
+"""The coupon stream of a perpetual bond that is never called (BACKLOG #125).
 
 Russian perpetuals (bank AT1 and others) are rarely called in practice, so the desk
 values them by default as an endless stream of coupons. A
@@ -16,8 +16,8 @@ The tail is valued exactly, without materialising its flows on the instrument:
   :data:`TAIL_CURVE_YEARS` (30) years from the curve date; beyond, where every curve
   core builds is flat-forward (the KBD materialises to 30 years, RUONIA OIS to 10) and
   the bucket shocks are flat (20Y+), they follow the curve's own flat-forward rate,
-  read from the curve and checked. A curve that is not flat-forward there is read
-  date by date instead;
+  read from the curve and checked. A curve that is not flat-forward there (an
+  annual-yield shock of the 20Y+ bucket bends it) is read date by date instead;
 - at an effective yield, ``sum a (1 + y)^-t``.
 
 The sum runs to :data:`TAIL_SUM_YEARS` (600) years past the anchor and adds the
@@ -232,13 +232,20 @@ def _discount_factors(curve: DiscountFactorCurve, ordinals: np.ndarray) -> np.nd
 def _read(curve: DiscountFactorCurve, ordinals: np.ndarray) -> np.ndarray:
     """Discount factors read from the curve at each date.
 
-    A bucket-shocked view of a base curve (the risk engine's) is evaluated at once,
-    ``DF_base(t) exp(-shift(t) t)`` with the bucket weights of each date cached on the
-    base curve, as the view itself evaluates it date by date.
+    A bucket-shocked view of a base curve (the risk engine's) is evaluated at once, as
+    the view evaluates it date by date: ``DF_base(t) exp(-shift(t) t)`` for a
+    continuous-zero shock, ``(DF_base(t)^(-1/t) + shift(t))^(-t)`` for an annual-yield
+    shock (``CurveConvention.zero_shock``), with the bucket weights of each date cached
+    on the base curve.
     """
     if isinstance(curve, _ZeroShockCurve) and ordinals.size:
         times, weights, base = _shock_terms(curve.base, ordinals)
         shift = weights @ np.asarray(curve.shifts, dtype=float) * 1e-4
+        if curve.base.convention.zero_shock == "annual":
+            growth = base ** (-1.0 / times) + shift
+            if np.any(growth <= 0.0):
+                raise ValueError("shocked annual yield must exceed -100 %")
+            return np.asarray(growth ** (-times))
         return np.asarray(base * np.exp(-shift * times))
     return np.asarray([curve.discount_factor(date.fromordinal(int(o))) for o in ordinals], float)
 

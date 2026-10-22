@@ -103,7 +103,7 @@ class BondRiskRequest:
     discounts and the spread stays a margin over ``curve``. Both curves are dated
     alike and each is shocked in its own basis with its own 11 buckets.
 
-    ``perpetual_tail`` (BACKLOG #122) adds a never-called perpetual's coupons after its
+    ``perpetual_tail`` (BACKLOG #125) adds a never-called perpetual's coupons after its
     last listed one, valued exactly on every shocked curve and spread
     (``perpetual.tail_pv_at_spread``); ``cashflows`` are then the listed coupons. Fixed
     coupons only.

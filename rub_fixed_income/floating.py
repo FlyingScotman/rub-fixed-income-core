@@ -9,6 +9,11 @@ effective date) or a single fixing date in advance or in arrears. Observations d
 before the history's valuation date come from published fixings and never move under
 curve shocks; later observations are overnight forwards of the projection curve.
 
+The KBD index (0.34.0, MOEX ``ZR_YLD_CRV``) is a constant-maturity rate: one fixing of
+the effective annual KBD zero yield at a fixed tenor, published with the ZCYC curve. A
+projected fixing is the forward of that yield on the projection curve (the KBD),
+optionally with a convexity adjustment from an explicit normal volatility.
+
 Floors and caps bound one period's rate, on the benchmark average or on the all-in
 rate. They are priced at intrinsic value on the projected rate, which is accepted only
 when the projected rate is at least an explicit guard away from every strike: time
@@ -36,7 +41,7 @@ from .discount import DiscountCurve, DiscountFactorCurve
 from .errors import InvalidTerms, MissingFixing, MissingMarketData, UnsupportedProduct
 from .key_rate import KeyRateForwardCurve
 
-FixingIndex = Literal["ruonia", "key_rate"]
+FixingIndex = Literal["ruonia", "key_rate", "kbd"]
 IndexAveraging = Literal["compounded", "arithmetic", "single_fixing"]
 CouponSource = Literal["published", "fixed_by_history", "partially_projected", "projected"]
 DayUnit = Literal["business_days", "calendar_days"]
@@ -47,9 +52,32 @@ FixingAnchor = Literal["accrual_start", "accrual_end", "payment_date"]
 FLOATING_MODEL_VERSION = "rub-floating-coupon-v1"
 KEY_RATE_PROJECTION_MODEL_VERSION = "key-rate-projection-df-v1"
 
-# RUONIA is published for every business day; the key rate stays in force until changed.
-_DAILY_PUBLISHED: Mapping[str, bool] = {"ruonia": True, "key_rate": False}
-_LABELS: Mapping[str, str] = {"ruonia": "RUONIA", "key_rate": "key rate"}
+# RUONIA and the KBD are published for every business day of their publication calendar;
+# the key rate stays in force until changed.
+_DAILY_PUBLISHED: Mapping[str, bool] = {"ruonia": True, "key_rate": False, "kbd": True}
+_LABELS: Mapping[str, str] = {"ruonia": "RUONIA", "key_rate": "key rate", "kbd": "KBD"}
+_MAX_INDEX_TENOR_YEARS = 30.0
+
+
+def _index_tenor(value: float | None, index: str, name: str) -> float | None:
+    """A KBD index needs its constant maturity in years; the other indexes take none."""
+    if index != "kbd":
+        if value is not None:
+            raise ValueError(f"{name} is a term of the KBD index only")
+        return None
+    if value is None:
+        raise ValueError(f"the KBD index needs {name}")
+    tenor = positive_money(value, name)
+    if tenor > _MAX_INDEX_TENOR_YEARS:
+        raise ValueError(f"{name} must not exceed {_MAX_INDEX_TENOR_YEARS:g} years")
+    return tenor
+
+
+def _tenor_days(tenor_years: float) -> int:
+    """The forward's length: the tenor in ACT/365F days (the KBD's time basis)."""
+    return max(1, round(tenor_years * 365.0))
+
+
 _DAY_UNITS = ("business_days", "calendar_days")
 
 
@@ -123,6 +151,10 @@ class FixingHistory:
     (2023-12-29, the working Saturday 2024-12-28, 2025-12-30): mark it a holiday and the
     previous fixing covers it, as in MOEX coupons. With the official calendar the day is a
     missing fixing and raises; core never fills it.
+
+    The KBD (0.34.0) has one history per tenor: ``tenor_years`` is the constant maturity
+    and the rows are the effective annual KBD zero yields at it (``kbd_effective_yield``
+    of each day's ZCYC publication), on the ZCYC publication calendar.
     """
 
     index: FixingIndex
@@ -134,10 +166,14 @@ class FixingHistory:
     known_at_utc: str | None = None
     _dates: tuple[date, ...] = field(init=False, repr=False, compare=False)
     published_at: tuple[datetime, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
+    tenor_years: float | None = field(default=None, metadata=OMIT_IF_DEFAULT)
 
     def __post_init__(self) -> None:
         if self.index not in _DAILY_PUBLISHED:
-            raise ValueError("fixing index must be ruonia or key_rate")
+            raise ValueError("fixing index must be ruonia, key_rate or kbd")
+        object.__setattr__(
+            self, "tenor_years", _index_tenor(self.tenor_years, self.index, "tenor_years")
+        )
         if not isinstance(self.calendar, BusinessCalendar):
             raise TypeError("calendar must be a BusinessCalendar")
         if not isinstance(self.snapshot_id, str) or not self.snapshot_id.strip():
@@ -238,6 +274,8 @@ class FixingHistory:
         }
         if self.published_at:
             identity["published_at_sha256"] = canonical_sha256(self.published_at)
+        if self.tenor_years is not None:
+            identity["tenor_years"] = self.tenor_years
         return identity
 
     def rate(self, observation: date) -> tuple[float, bool]:
@@ -362,6 +400,37 @@ class ObservationWindow:
 
 
 @dataclass(frozen=True)
+class ConstantMaturityConvexity:
+    """Convexity adjustment of a projected constant-maturity fixing (KBD index, 0.34.0).
+
+    The forward ``F`` of a T-year zero yield is not its expectation: the payoff is linear
+    in the yield, the zero bond it prices is convex in it. With a normal (absolute)
+    volatility ``sigma`` of that yield, ``t`` years to the fixing (ACT/365F from the curve
+    date), the adjustment for a zero yield is
+
+        ``F + 0.5 * sigma^2 * t * (T + 1) / (1 + F)``
+
+    (``-G''(F) / G'(F)`` of ``G(y) = (1 + y)^-T``). The timing of the payment after the
+    fixing is not adjusted. The volatility is an explicit input in basis points a year;
+    without this term (the default) a projected fixing is the deterministic forward.
+    """
+
+    normal_vol_bp: float
+
+    def __post_init__(self) -> None:
+        vol = non_negative_money(self.normal_vol_bp, "normal volatility bp")
+        object.__setattr__(self, "normal_vol_bp", vol)
+
+    def adjust(self, forward: float, years_to_fixing: float, tenor_years: float) -> float:
+        if years_to_fixing <= 0.0:
+            return forward
+        sigma = self.normal_vol_bp * 1e-4
+        return forward + 0.5 * sigma * sigma * years_to_fixing * (tenor_years + 1.0) / (
+            1.0 + forward
+        )
+
+
+@dataclass(frozen=True)
 class FixingDateRule:
     """Single fixing date: ``offset_days`` before ``anchor``, in business or calendar days.
 
@@ -402,6 +471,13 @@ class FloatingCouponRule:
 
     ``observation_days="calendar"`` (key rate only) observes each calendar day's rate in
     force; ``"business"`` takes the latest business day on or before each day.
+
+    ``index="kbd"`` (0.34.0, MOEX ``ZR_YLD_CRV``) is the effective annual KBD zero yield at
+    the constant maturity ``index_tenor_years``, one fixing (``single_fixing`` with a
+    ``fixing_date``, in advance for every bond seen), on ACT/365F. A projected fixing is
+    the forward yield of the projection curve over ``[fixing, fixing + tenor)``,
+    ``exp(ln(DF(fixing) / DF(fixing + tenor)) / tenor) - 1``, plus the ``convexity``
+    adjustment when one is given.
     """
 
     index: FixingIndex
@@ -418,10 +494,27 @@ class FloatingCouponRule:
     observation_days: ObservationDays = field(default="business", metadata=OMIT_IF_DEFAULT)
     fixing_date: FixingDateRule | None = field(default=None, metadata=OMIT_IF_DEFAULT)
     observation_window: ObservationWindow | None = field(default=None, metadata=OMIT_IF_DEFAULT)
+    index_tenor_years: float | None = field(default=None, metadata=OMIT_IF_DEFAULT)
+    convexity: ConstantMaturityConvexity | None = field(default=None, metadata=OMIT_IF_DEFAULT)
 
     def __post_init__(self) -> None:
         if self.index not in _DAILY_PUBLISHED:
-            raise ValueError("coupon index must be ruonia or key_rate")
+            raise ValueError("coupon index must be ruonia, key_rate or kbd")
+        object.__setattr__(
+            self,
+            "index_tenor_years",
+            _index_tenor(self.index_tenor_years, self.index, "index_tenor_years"),
+        )
+        if self.convexity is not None:
+            if not isinstance(self.convexity, ConstantMaturityConvexity):
+                raise TypeError("convexity must be a ConstantMaturityConvexity")
+            if self.index != "kbd":
+                raise ValueError("a convexity adjustment applies to the KBD index only")
+        if self.index == "kbd":
+            if self.averaging != "single_fixing":
+                raise ValueError("the KBD index is a single fixing (single_fixing averaging)")
+            if self.rate_day_count is not DayCount.ACT_365_FIXED:
+                raise ValueError("the KBD index is on ACT/365F (rate_day_count)")
         if self.averaging not in ("compounded", "arithmetic", "single_fixing"):
             raise ValueError("averaging must be compounded, arithmetic or single_fixing")
         object.__setattr__(self, "margin", finite_money(self.margin, "coupon margin"))
@@ -489,6 +582,10 @@ class FloatingCouponRule:
                 payload[name] = asdict(value)
         if self.observation_days != "business":
             payload["observation_days"] = self.observation_days
+        if self.index_tenor_years is not None:
+            payload["index_tenor_years"] = self.index_tenor_years
+        if self.convexity is not None:
+            payload["convexity"] = asdict(self.convexity)
         return canonical_sha256(payload)
 
 
@@ -501,6 +598,8 @@ class FloatingCouponPeriod:
     ``published_rate`` (0.33.0, decimal a year, optional) is the rate the issuer
     published with that coupon (bondization ``valueprc``); a leg that accrues on the
     rate (:meth:`FloatingLeg.accrued_interest` with a ``rate_basis``) uses it.
+    ``margin`` (0.34.0, decimal a year, optional) replaces the rule's margin for this
+    period: a margin reset at an offer.
     """
 
     accrual_start: date
@@ -509,8 +608,11 @@ class FloatingCouponPeriod:
     notional_rub: float
     published_coupon_rub: float | None = None
     published_rate: float | None = field(default=None, metadata=OMIT_IF_DEFAULT)
+    margin: float | None = field(default=None, metadata=OMIT_IF_DEFAULT)
 
     def __post_init__(self) -> None:
+        if self.margin is not None:
+            object.__setattr__(self, "margin", finite_money(self.margin, "period margin"))
         if self.accrual_end <= self.accrual_start:
             raise ValueError("coupon accrual end must follow its start")
         if self.payment_date < self.accrual_end:
@@ -609,6 +711,8 @@ class FloatingLeg:
             raise TypeError("history must be a FixingHistory")
         if self.rule.index != self.history.index:
             raise ValueError("coupon rule and fixing history index differ")
+        if self.rule.index_tenor_years != self.history.tenor_years:
+            raise ValueError("coupon rule and fixing history tenors differ")
         periods = tuple(self.periods)
         if not periods or not all(isinstance(p, FloatingCouponPeriod) for p in periods):
             raise ValueError("at least one FloatingCouponPeriod is required")
@@ -691,6 +795,9 @@ class FloatingLeg:
             else:
                 observation = _previous_business_day(calendar, fixing_day)
                 following = calendar.add_business_days(observation, 1)
+            if rule.index_tenor_years is not None:
+                # A constant-maturity fixing reads the curve over the index tenor.
+                following = observation + timedelta(days=_tenor_days(rule.index_tenor_years))
             segments.append(self._segment(start, end, observation, following))
         else:
             if rule.observation_shift is not None:
@@ -795,7 +902,8 @@ class FloatingLeg:
         unbounded = index_rate
         if bounds is not None and bounds.applies_to == "index_rate":
             bounded_index, bound = bounds.clamp(index_rate)
-        coupon_rate = rule.multiplier * bounded_index + rule.margin
+        margin = rule.margin if period.margin is None else period.margin
+        coupon_rate = rule.multiplier * bounded_index + margin
         if bounds is not None and bounds.applies_to == "coupon_rate":
             unbounded = coupon_rate
             coupon_rate, bound = bounds.clamp(coupon_rate)
@@ -856,6 +964,10 @@ class FloatingLeg:
                     source = bridge[0]  # type: ignore[index]
                 if source is None:
                     raise ValueError("a projection curve is required for unfixed observations")
+                if self.rule.index_tenor_years is not None:
+                    rate = _constant_maturity_forward(self.rule, segment, source)
+                    single = rate
+                    continue
                 memo = memos.get(id(source))
                 if memo is None:
                     memo = memos[id(source)] = _forward_memo(source, day_count)
@@ -951,7 +1063,11 @@ class FloatingLeg:
                     raw = Decimal(repr(amount)) * elapsed / length
                     return float(raw.quantize(Decimal("0.01"), ROUND_HALF_UP))
                 part = FloatingCouponPeriod(
-                    period.accrual_start, settlement_date, settlement_date, period.notional_rub
+                    period.accrual_start,
+                    settlement_date,
+                    settlement_date,
+                    period.notional_rub,
+                    margin=period.margin,
                 )
                 partial = FloatingLeg(rule, (part,), self.history)
                 amount = partial.coupon(0, curve, check_guard=False).amount_rub
@@ -1003,6 +1119,24 @@ class FloatingLeg:
 
 
 _FORWARD_MEMO_SIZE = 65_536
+
+
+def _constant_maturity_forward(
+    rule: FloatingCouponRule, segment: _Segment, curve: DiscountFactorCurve
+) -> float:
+    """The projected KBD fixing: the forward effective annual yield over the tenor."""
+    tau = segment.forward_tau
+    growth = curve.discount_factor(segment.observation) / curve.discount_factor(
+        segment.next_observation
+    )
+    forward = math.expm1(math.log(growth) / tau)
+    if not math.isfinite(forward):
+        raise ValueError("projection curve produced a non-finite constant-maturity forward")
+    if rule.convexity is not None:
+        assert rule.index_tenor_years is not None
+        years = max((segment.observation - curve.curve_date).days, 0) / 365.0
+        forward = rule.convexity.adjust(forward, years, rule.index_tenor_years)
+    return forward
 
 
 def _forward_memo(curve: DiscountFactorCurve, day_count: DayCount) -> dict[int, float]:

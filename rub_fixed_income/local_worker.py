@@ -155,7 +155,7 @@ class LocalScenario:
 
     def __post_init__(self) -> None:
         _text(self.name, "scenario name")
-        if self.curve_basis not in ("continuous_zero", "ois_quote"):
+        if self.curve_basis not in ("continuous_zero", "annual_zero", "ois_quote"):
             raise ValueError("unknown scenario curve_basis")
 
 
@@ -249,7 +249,7 @@ def run_local_risk(
     """
     _text(run_id, "run_id")
     _aware(as_of)
-    if curve_basis not in ("continuous_zero", "ois_quote"):
+    if curve_basis not in ("continuous_zero", "annual_zero", "ois_quote"):
         raise ValueError("unknown curve_basis")
     if not isinstance(include_second_order, bool):
         raise TypeError("include_second_order must be boolean")

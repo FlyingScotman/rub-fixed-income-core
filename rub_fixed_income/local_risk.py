@@ -11,6 +11,7 @@ from datetime import date
 from typing import Literal
 
 from ._money import non_negative_money, positive_money
+from ._risk_common import _curve_basis
 from ._version import __version__
 from .canonical import OMIT_IF_DEFAULT, canonical_sha256
 from .cashflows import BondCashflow, clean_price_pct_to_dirty_rub
@@ -25,7 +26,7 @@ from .risk import (
     ShockedCurveCache,
 )
 
-CurveRiskBasis = Literal["continuous_zero", "ois_quote"]
+CurveRiskBasis = Literal["continuous_zero", "annual_zero", "ois_quote"]
 
 
 @dataclass(frozen=True)
@@ -48,8 +49,8 @@ class RiskRunContext:
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{name} must be a nonempty string")
-        if self.curve_basis not in ("continuous_zero", "ois_quote"):
-            raise ValueError("curve_basis must be continuous_zero or ois_quote")
+        if self.curve_basis not in ("continuous_zero", "annual_zero", "ois_quote"):
+            raise ValueError("curve_basis must be continuous_zero, annual_zero or ois_quote")
 
 
 @dataclass(frozen=True)
@@ -148,9 +149,7 @@ def prepare_local_bond_risk(
     nominal = positive_money(source.current_nominal_rub, "current nominal")
     clean = positive_money(source.clean_price_pct, "clean price percent")
     accrued = non_negative_money(source.accrued_interest_rub, "accrued interest")
-    expected_basis = (
-        "ois_quote" if isinstance(source.curve, CurveBootstrapRequest) else "continuous_zero"
-    )
+    expected_basis = _curve_basis(source.curve)
     if source.context.curve_basis != expected_basis:
         raise ValueError("curve input does not match the explicit curve_basis")
     engine = BondRiskEngine(

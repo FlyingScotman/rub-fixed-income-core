@@ -408,7 +408,7 @@ Details and formulas: [callables.md](callables.md).
 | `resolve_exercise(instrument, settlement, assumption, *, dirty_price_rub=None)` | `ResolvedExercise` (exercise, date, price, `identifier`); `to_worst` needs the price. |
 | `exercised_instrument(instrument, resolved)` | `ExercisedBond(instrument, resolved, source_sha256)`: the deterministic fixed bond; par calls only (`UnsupportedProduct` otherwise). |
 | `perpetual_current_yield(coupon_rate, clean_price_pct)` | MOEX's published perpetual yield (coupon over clean price). |
-| `PerpetualTail(anchor_date, amount, period_days=None, period_months=None)`, `perpetual_tail(periods)`, `perpetual_yield(settlement, dirty_price, cashflows, tail, convention)` → `PerpetualYield(effective_yield, macaulay_duration_years, modified_duration_years)`, `PERPETUAL_TAIL_MODEL_VERSION` | A never-called perpetual's coupons after the listed ones, forever (module `perpetual`, BACKLOG #122); `ExercisedBond.perpetual_tail`; `BondRiskRequest(..., perpetual_tail=)`, `price_cashflows` / `solve_z_spread(..., perpetual_tail=)`. |
+| `PerpetualTail(anchor_date, amount, period_days=None, period_months=None)`, `perpetual_tail(periods)`, `perpetual_yield(settlement, dirty_price, cashflows, tail, convention)` → `PerpetualYield(effective_yield, macaulay_duration_years, modified_duration_years)`, `PERPETUAL_TAIL_MODEL_VERSION` | A never-called perpetual's coupons after the listed ones, forever (module `perpetual`, BACKLOG #125); `ExercisedBond.perpetual_tail`; `BondRiskRequest(..., perpetual_tail=)`, `price_cashflows` / `solve_z_spread(..., perpetual_tail=)`. |
 | `option_adjusted_spread(...)` | Always raises `UnsupportedProduct` (no short-rate model). |
 | `PassThroughTerms(instrument_id, currency, original_face, current_face, coupon_rate, accrual_basis, periods, payments_per_year, calendar_id, settlement_lag_days=1, cleanup_call_fraction=None, isin=None, issuer_id=None)`, `PassThroughPeriod(accrual_start, accrual_end, payment_date, scheduled_principal=0.0)` | Pool terms from the current state; periods contiguous; the last pays the remainder. |
 | `PrepaymentAssumption(cpr, exercise_cleanup_call=False)` | Constant annual CPR in `[0, 1)`; `.smm(payments_per_year)`, `.identifier`. |
@@ -442,7 +442,7 @@ byte for byte; a book with a derivative position returns v3.
 | `PortfolioRiskResultV3` | v2 fields plus `swaps`, `fx_forwards`, `xccy_swaps`, `cds`, `fx_futures`, `rate_futures`, `ofz_futures`, `repos` (row types `SwapPositionValuation` … `RepoPositionValuation`), `position_models` (`PositionModel`), `hessian_totals` (`HessianTotal`), `jtd_totals` (`JtdTotal`), `jtd_total_rub`, `fx_spots`, `credit_curves` (`CreditCurveUse`); `.derivative_rows()`. |
 | `PORTFOLIO_RESULT_SCHEMA_V3`, `verify_portfolio_result_v3(result)` | `rub-portfolio-risk-result.v3` and its hash check (`verify_portfolio_result` stays v2-only). `portfolio_result_to_json` writes both versions; `portfolio_result_from_json` reads both. |
 | `PortfolioScenario(..., curve_shifts_bp=((curve_id, shifts), ...))`, `.curve_shift(curve_id, *, projection=False)`, `.named_curve_shift(curve_id)`, `.spread_shift_bp` | Per-curve shift vectors for every product (BACKLOG #43); omitted at the default. |
-| `ValuationPolicy(..., exercise_assumptions=((instrument_id, ExerciseAssumption), ...))`, `.exercise_for(instrument_id)`; `PositionValuation.exercise_assumption`, `horizon="call"` / `"perpetual"` | Native exercise assumptions (BACKLOG #50, #122); omitted at the defaults. |
+| `ValuationPolicy(..., exercise_assumptions=((instrument_id, ExerciseAssumption), ...))`, `.exercise_for(instrument_id)`; `PositionValuation.exercise_assumption`, `horizon="call"` / `"perpetual"` | Native exercise assumptions (BACKLOG #50, #125); omitted at the defaults. |
 | `PRODUCT_ADAPTERS` | Position type -> valuation adapter (`portfolio_products`); the extension point for new products. |
 | `ExpiredContract` (`EXPIRED_CONTRACT`), `SettledLeg` (`SETTLED_LEG`), `UndeclaredFixingGap` (`UNDECLARED_FIXING_GAP`), `MissingBasketPrice` (`MISSING_BASKET_PRICE`) | New coded rejections (subclasses of `InvalidTerms`, `MissingFixing`, `MissingMarketData`). |
 | `swap_convention("rub_ruonia_ois_moex_v2")`; `SwapConvention(..., float_compounding="rate_day_count" \| "nfa_act")` | The v2 swap side (BACKLOG #61): NFA `RUB-RUONIA-OIS-COMPOUND`, `n_i / Act` weights and `(growth - 1) * Act / d * Act/Act ISDA`; the field is omitted at its default. |
@@ -467,6 +467,20 @@ Each result has `pv_start`, `pv_forward` (today's curves read forward), `pv_roll
 | `RepoCarry.pv_rolled_rub`, `.rolldown_rub`, `.horizon_pnl_rub` | Repo theta (fields omitted at their defaults). |
 | `horizon_portfolio(..., fx_horizon="spot_held")`; `PortfolioHorizonResult.fx_forwards`, `.xccy_swaps`, `.cds`, `.fx_futures`, `.rate_futures`, `.ofz_futures`, `.fx_horizon`, `.derivative_rows()` | Every derivative carried; rows `FxForwardPositionHorizon`, `XccyPositionHorizon`, `CdsPositionHorizon`, `FxFuturesPositionHorizon`, `RateFuturesPositionHorizon`, `OfzFuturesPositionHorizon` (shape: `DerivativeHorizonHeader`). Covered rolldown now sums every row. |
 | `HORIZON_ADAPTERS`, `HORIZON_ROW_FIELDS`, `horizon_spot_date(business_date, spot, calendar, horizon_date)` | Carry registry and the horizon spot date (today's lag) in `portfolio_products`. |
+
+## The KBD as a risk curve (0.34.0)
+
+Why: [proposals/kbd-risk-curve.md](proposals/kbd-risk-curve.md) (in Russian). Every new
+field is omitted at its default.
+
+| Name | Description |
+| --- | --- |
+| `CurveConvention(..., zero_shock="continuous" \| "annual")` | The unit of a bucket shock of a `DiscountCurve`: continuous zero rates, or effective annual zero yields (`curve_basis = "annual_zero"`), which sum with par OIS risk. |
+| spec `rub_ofz_kbd_v2`; `CurveSpec.zero_shock`; `kbd_discount_curve(params, curve_date=None, *, horizon_years=30, zero_shock="continuous")` | The KBD as a risk curve in annual yields. |
+| `FloatingCouponRule(index="kbd", ..., index_tenor_years=T, convexity=None)`; `FixingHistory("kbd", ..., tenor_years=T)` | MOEX `ZR_YLD_CRV`: the KBD yield at a constant maturity, a single fixing; projected as the forward yield over the tenor ([floating.md](floating.md)). |
+| `ConstantMaturityConvexity(normal_vol_bp)`, `.adjust(forward, years_to_fixing, tenor_years)` | Optional convexity adjustment of a projected constant-maturity fixing. |
+| `FloatingCouponPeriod(..., margin=None)` | The period's margin, replacing the rule's. |
+| `basis_view(risk, base_curve_id, curve_id, basis_id)` | The same `FactorRisk` on the base curve and the basis `curve − base` (first order and Hessian). |
 
 ## Desk-monitor additions (0.33.0)
 

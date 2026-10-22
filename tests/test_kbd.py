@@ -10,9 +10,11 @@ from pathlib import Path
 import pytest
 
 from rub_fixed_income import (
+    RISK_BUCKETS,
     BondCashflow,
     BondRiskEngine,
     BondRiskRequest,
+    CurveConvention,
     InvalidTerms,
     ZcycParameters,
     ZSpreadConvention,
@@ -21,6 +23,7 @@ from rub_fixed_income import (
     kbd_effective_yield,
     kbd_zero_rate_bp,
 )
+from rub_fixed_income.serialization import to_dict
 
 FIXTURES = Path(__file__).parent / "fixtures" / "kbd"
 
@@ -96,3 +99,55 @@ def test_g_spread_and_pricing_on_the_kbd_curve() -> None:
     risk = engine.risk(difference="central")
     assert engine.spread_bp == pytest.approx(0.0, abs=1e-8)
     assert {b.bucket for b in risk.buckets if abs(b.dv01_rub) > 1e-9} == {"5Y"}
+
+
+def _zero_engine(curve: object, maturity: date, trade_date: date) -> BondRiskEngine:
+    dirty = 1000.0 * curve.discount_factor(maturity)  # type: ignore[attr-defined]
+    return BondRiskEngine(
+        BondRiskRequest(
+            (BondCashflow(maturity, 1000.0),),
+            trade_date,
+            curve,  # type: ignore[arg-type]
+            ZSpreadConvention(),
+            "ofz",
+            dirty_price_rub=dirty,
+        )
+    )
+
+
+def test_annual_zero_shock_moves_the_published_kbd_yield() -> None:
+    """0.34.0: ``zero_shock="annual"`` bumps the effective annual yield MOEX publishes.
+
+    A 7Y zero on the KBD: the annual DV01 is the derivative of ``1000 (1 + Y)^-t`` in Y,
+    and the continuous DV01 is (1 + Y) times it, the unit gap to par RUONIA risk."""
+    params, _ = load("zcyc_2026-10-15.json")
+    maturity = params.trade_date + timedelta(days=7 * 365)
+    continuous = kbd_discount_curve(params)
+    annual = kbd_discount_curve(params, zero_shock="annual")
+    assert continuous.nodes == annual.nodes
+    assert continuous.convention.identifier != annual.convention.identifier
+    assert annual.convention.identifier.endswith(":shock=annual")
+    e_cont = _zero_engine(continuous, maturity, params.trade_date)
+    e_ann = _zero_engine(annual, maturity, params.trade_date)
+    assert e_cont.base_price_rub == e_ann.base_price_rub
+    assert e_cont.base_id != e_ann.base_id
+    r_cont = e_cont.risk(difference="central")
+    r_ann = e_ann.risk(difference="central")
+    assert (r_cont.curve_basis, r_ann.curve_basis) == ("continuous_zero", "annual_zero")
+    y = kbd_effective_yield(params, 7.0)
+    expected = -7.0 * 1000.0 * (1.0 + y) ** -8.0 * 1e-4
+    assert r_ann.buckets[RISK_BUCKETS.index("7Y")].dv01_rub == pytest.approx(expected, rel=1e-6)
+    assert r_ann.parallel_dv01_rub == pytest.approx(expected, rel=1e-6)
+    assert r_cont.parallel_dv01_rub / r_ann.parallel_dv01_rub == pytest.approx(1.0 + y, rel=1e-6)
+    # The Z-spread is annual too: on the curve date it moves the same yield.
+    assert r_ann.ofz_spr01_rub == pytest.approx(r_ann.parallel_dv01_rub, rel=1e-9)
+
+
+def test_annual_zero_shock_is_an_explicit_convention() -> None:
+    params, _ = load("zcyc_2026-10-15.json")
+    with pytest.raises(ValueError, match="zero_shock"):
+        CurveConvention(zero_shock="monthly")  # type: ignore[arg-type]
+    default = CurveConvention()
+    assert "zero_shock" not in to_dict(default)
+    assert to_dict(CurveConvention(zero_shock="annual"))["zero_shock"] == "annual"
+    assert kbd_discount_curve(params).convention == default

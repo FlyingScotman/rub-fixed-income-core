@@ -16,7 +16,7 @@ from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from enum import Enum
 from itertools import pairwise
-from typing import Literal
+from typing import Literal, cast
 
 from ._money import finite_money, positive_money
 from .canonical import OMIT_IF_DEFAULT
@@ -36,7 +36,7 @@ from .floating import (
     FloatingLeg,
 )
 from .inflation import CpiSeries, IndexedCouponLeg, IndexedPrincipalLeg
-from .kbd import ZcycParameters
+from .kbd import ZcycParameters, kbd_discount_curve
 from .key_rate import KeyRateForwardCurve
 from .rate_futures import RuoniaFixings, RuoniaIndexValue
 from .xccy import IndexFixings, XccyCurveBootstrapRequest
@@ -1059,14 +1059,32 @@ class MarketSnapshot:
         """The curve under ``curve_id`` checked as a projection curve for ``index``.
 
         RUONIA projects off a RUONIA OIS spec (quotes or the built curve), the key rate
-        off a ``rub_key_rate_projection_v1`` curve; both must be dated the business date.
+        off a ``rub_key_rate_projection_v1`` curve, the KBD index off a KBD spec (its ZCYC
+        parameters, built with the spec's shock unit, or the built curve); all must be
+        dated the business date.
         """
         entry = self.curve(curve_id)
         spec = get_curve_spec(entry.spec_id)
         source = entry.curve
-        expected = {"ruonia": CurveKind.OIS_BOOTSTRAP, "key_rate": CurveKind.KEY_RATE_PROJECTION}
+        expected = {
+            "ruonia": CurveKind.OIS_BOOTSTRAP,
+            "key_rate": CurveKind.KEY_RATE_PROJECTION,
+            "kbd": CurveKind.KBD_PARAMETRIC,
+        }
         if spec.kind is not expected[index]:
             raise InvalidTerms(f"curve {curve_id} ({spec.spec_id}) cannot project the {index}")
+        if spec.kind is CurveKind.KBD_PARAMETRIC:
+            shock = cast(Literal["continuous", "annual"], spec.zero_shock)
+            if isinstance(source, ZcycParameters):
+                if source.trade_date != self.business_date:
+                    raise InvalidTerms(f"curve {curve_id} is not dated the snapshot business date")
+                return kbd_discount_curve(source, zero_shock=shock)
+            if not (
+                isinstance(source, DiscountCurve)
+                and source.model_version == spec.model_version
+                and source.convention.zero_shock == shock
+            ):
+                raise InvalidTerms(f"curve {curve_id} does not match spec {spec.spec_id}")
         if spec.kind is CurveKind.OIS_BOOTSTRAP and isinstance(
             source, (CurveBootstrapRequest, DiscountCurve)
         ):

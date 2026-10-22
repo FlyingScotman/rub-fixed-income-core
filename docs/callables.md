@@ -25,7 +25,7 @@ make-whole calls and notice periods are not modelled.
 | `to_maturity()` | maturity, no call exercised | MOEX's treatment of call bonds without a set call date, and core's behaviour before (the default) |
 | `to_call(date)` | the listed call on `date` | MOEX's treatment when the call date is set (`CALLOPTIONYIELD`) |
 | `to_worst()` | the call or maturity with the lowest yield at the quoted price | resolved once, at the price, then held fixed; a perpetual's candidates are its calls and never being called |
-| `never_called()` | no call, ever: a dated bond's maturity, a perpetual's endless coupons | the desk default for Russian perpetuals and callables (BACKLOG #122); see [Perpetuals](#perpetuals) |
+| `never_called()` | no call, ever: a dated bond's maturity, a perpetual's endless coupons | the desk default for Russian perpetuals and callables (BACKLOG #125); see [Perpetuals](#perpetuals) |
 
 `assumed_coupons` (on any of the three) are coupon periods the caller assumes after the
 instrument's known periods, for example the coupon after a reset. They must be of the
@@ -93,7 +93,7 @@ or `to_worst()` over both; it has no maturity (`to_maturity` raises
 `UnsupportedProduct`). Coupons past the known periods (resets) for a call must be passed
 as `assumed_coupons`; otherwise the call is rejected.
 
-### Never called: the endless coupon stream (BACKLOG #122)
+### Never called: the endless coupon stream (BACKLOG #125)
 
 Russian perpetuals (bank AT1 and others) are rarely called, so the desk values them by
 default as never called: the listed coupons, then the **last listed coupon again, at
@@ -107,7 +107,7 @@ period_months)`, built by `perpetual_tail(periods)`):
   unknown coupon (amount 0, as MOEX lists a coupon not set yet) is not continued; such a
   bond usually has a put and is valued to it (`ValuationPolicy.horizon`). A perpetual
   whose coupon follows a formula (a floater, a reset on the KBD) needs its projection
-  and is not continued (BACKLOG #124).
+  and is not continued (BACKLOG #127).
 
 **Exact tail.** The tail is valued exactly, not truncated (a stream cut at 30 years
 loses about a point of price and 12–36 bp of Z-spread at RUB rates; 50–60 years are
@@ -177,7 +177,7 @@ without one (`UNSUPPORTED_PRODUCT`). A never-called perpetual reads `horizon="pe
 `exercise:never_called@never`, the model flag `perpetual_tail`; its effective yield and
 Macaulay duration are the stream's. When the policy's `horizon` (`confirmed_put`,
 `open_put`) picks a put, the perpetual is valued to the put instead. Its horizon P&L
-(`horizon_portfolio`) is not modelled yet (`UNSUPPORTED_PRODUCT`, BACKLOG #123).
+(`horizon_portfolio`) is not modelled yet (`UNSUPPORTED_PRODUCT`, BACKLOG #126).
 
 `value_assumed_portfolio` wraps `value_portfolio` without assumptions in the policy (and
 rejects a never-called perpetual: only the native path prices its tail):
