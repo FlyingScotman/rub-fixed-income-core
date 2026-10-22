@@ -231,17 +231,24 @@ other repositories and must be changed there, not in this core.
     pair; coverage codes for settled legs and missing implied curves; factor totals shared
     with bonds and futures (`IR|curve|bucket`, `FX|ccy`, `FXBASIS|ccy`); one shocked-curve
     cache and implied curve per pair per job; a new result-contract version.
-46. **Points-fixed RUB risk.** On an implied foreign curve a RUB shock holds the implied
+46. *(done in 0.35.0 beside the factors; as the factor basis: #128)* **Points-fixed RUB
+    risk.** On an implied foreign curve a RUB shock holds the implied
     foreign zero rates, so the points move. A "points held" basis would rebuild the
     implied curve under RUB shocks and needs a factor for the points.
+    `points_held_rub_risk` (engines) and `ValuationPolicy.fx_points_held_risk` (rows)
+    hold every outright (`DF_for' = DF_for · DF_rub' / DF_rub`, equal to a rebuild of the
+    implied curve at its quote dates).
 47. **SRATE methodology.** Confirm the indicator's spot and time window from the MOEX
     methodology (now reachable on `fs.moex.com` with the Russian Trusted Root CA), then
     tighten the golden from a statistical to a per-day check.
 48. **CETS term swaps.** A 1W–6M points golden needs days with trades, or MOEX's
     indicative term rates if ISS publishes them; `PREVPRICE` is usually days old.
-49. **USD/RUB, EUR/RUB, NDFs, end-of-month rule.** Spot lag and USD calendar from
+49. *(partly done in 0.35.0: NDF fixing date and source on the leg, `NdfConvention`
+    date rule, a published fixing freezes the leg, `FxFixing` in the snapshot)*
+    **USD/RUB, EUR/RUB, NDFs, end-of-month rule.** Spot lag and USD calendar from
     confirmations (OTC only since 2024); NDF fixing source and lag, and freezing a
-    published fixing; the end-of-month rule for FX tenors.
+    published fixing; the end-of-month rule for FX tenors. Open: the spot lag and
+    calendars, the end-of-month rule, and the firm's NDF source and lags (#126).
 
 ## Callables, perpetuals, pass-throughs — 0.20.0
 
@@ -474,7 +481,8 @@ other repositories and must be changed there, not in this core.
      explicit `fx_horizon` (`"spot_held"` or `"forwards_realised"`). Limits in #108.
 102. **Derivatives in the local worker** (`run_local_risk`; its contract v1 is fixed RUB
      bonds), including FX futures (#33) and rate futures (#87).
-103. **Basis scenarios.** `PortfolioScenario` cannot shift `FXBASIS`, `XCCYBASIS` or
+103. *(done in 0.35.0: `PortfolioScenario.basis_shifts_bp` by factor key)* **Basis
+     scenarios.** `PortfolioScenario` cannot shift `FXBASIS`, `XCCYBASIS` or
      `FUTBASIS`; desk scenarios that move a basis need shift entries per basis key.
 104. **Shared FX futures engines.** Rate and OFZ futures share one engine per contract;
      FX futures still build one per position (`fx_futures` has no `for_quantity`).
@@ -567,7 +575,8 @@ metrics.
      registered spec: the Bundesbank's published series and their coupon / compounding
      convention need a primary source before a `eur_bund_par_proxy_v1`. Until then only
      ECB AAA par yields are a EUR proxy. P2.
-123. **Proxies for FX products.** `ProductContext.foreign_fx_curve` (FX forwards, XCCY)
+123. *(done in 0.35.0: `ValuationPolicy.fx_curve_fallbacks`; a proxy only as a fallback,
+     with a calibrated `FxBasis`)* **Proxies for FX products.** `ProductContext.foreign_fx_curve` (FX forwards, XCCY)
      accepts `*_discount_factors_v1` and XCCY curves only; a desk that wants FX forwards on
      a UST proxy needs a decision (proxy credit in covered parity) and the spec kind in
      that check. Belongs with the FX package (P7). P2.
@@ -586,3 +595,28 @@ metrics.
      reproduced (log-linear DF nodes from the curve date); the bill BEY uses a 365-day
      year. Numbers move only inside the proxy's own basis; tighten if a desk compares
      with Treasury's published spot rates. P2.
+
+## FX for any currency, crosses, NDF fixings — 0.35.0
+
+Done in 0.35.0 (FX-forward gap analysis, core packages C1–C3; roadmap review P7):
+per-currency foreign specs for every currency (`<ccy>_discount_factors_v1`,
+`<ccy>_fx_implied_v1` with `FxImpliedCurveRequest`), crosses without RUB
+(`fx_crosses`, `FxCrossInstrument`), NDF fixings (#49, part), points-held RUB risk (#46),
+basis scenarios (#103), FX fallbacks to proxies (#123).
+
+126. *(owner, downstream)* **The firm's NDF terms.** Fixing source (CBR official rate,
+     MOEX fixing, other), fixing lag and the value date the fixing refers to, and the
+     settlement currency of the book's `FXNDF` trades; the TradeLevel report carries
+     `FXNDF Reset Date`, `Reset Price` and `Settlement Currency`. Core takes them as
+     `NdfConvention` / leg terms; the backend maps the source to `FxFixing.source`.
+127. **NDFs settled in a foreign currency and cross NDFs.** An offshore-style USD/RUB NDF
+     settles `N · (1 − K / fixing)` USD (a quanto-like ratio, not linear in the forward);
+     a cross NDF needs both fixings. Both are rejected today. P2, when the book has them.
+128. **Points-held risk as the factor basis.** Today the points-held RUB risk is a row
+     field beside the factors; a points-held factor set (`IR|<rub>|*` with points held,
+     the foreign curve as the points factor) would need its Hessian and an owner decision
+     on what the desk's RUB DV01 means on an implied curve. P2.
+129. *(downstream)* **Hub and monitor inputs for FX.** FX swap points in the snapshot
+     (hub WP-H1) mapped to `FxSwapPointsQuote` in RUB per one unit; FX spots with value
+     dates and settlement calendars (WP-H2, H5); CBR / MOEX fixings by date as `FxFixing`
+     with `published_at`; FORTS FX futures prices as `FxOutrightQuote` for USD / EUR.

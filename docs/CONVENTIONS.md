@@ -249,7 +249,8 @@ filled.
   a caller-built `DiscountCurve` (log-linear DF nodes, model `ois-logdf-v1`, ACT/365F,
   dated the snapshot business date). Since 0.34.0 also the built CNY XCCY curve
   (`cny_ruonia_xccy_v1`, CNY under RUB collateral, model `xccy-cny-logdf-v1`) and the
-  government par-yield proxies below. Never a curve of another currency: a missing curve
+  government par-yield proxies below; since 0.35.0 a built curve implied from FX swaps
+  (`<ccy>_fx_implied_v1`, model `fx-implied-logdf-v1`; its quotes are for FX products only). Never a curve of another currency: a missing curve
   is `MISSING_MARKET_DATA`, unless the policy names same-currency
   `foreign_curve_fallbacks`; a fallback is used only when the named curve is absent from
   the snapshot and the row records it (`curve_fallback_from`).
@@ -387,7 +388,29 @@ synthetic quotes.
   rejected; legs on it are outstanding.
 - **Risk.** Buckets, shocks and signs as for bonds; the spot factor `FX|<ccy>` is a 1 %
   relative move and is exact (PV is linear in spot), and the Hessian carries FX × rates
-  cross terms. An implied foreign curve has zero basis by construction.
+  cross terms. An implied foreign curve has zero basis by construction. Default RUB
+  risk holds the foreign curve (the points move); `points_held_rub_risk` (0.35.0,
+  BACKLOG #46) holds every outright instead, `DF_for' = DF_for · DF_rub' / DF_rub`.
+- **Any currency (0.35.0).** `<ccy>_discount_factors_v1` and `<ccy>_fx_implied_v1`
+  resolve for every three-letter code other than RUB (`CurveKind.DISCOUNT_FACTORS`,
+  `CurveKind.FX_IMPLIED`; ACT/365F, log-linear DF, model `ois-logdf-v1` /
+  `fx-implied-logdf-v1`). Quote units come from the confirmation (100 for JPY, KZT and
+  other currencies quoted per 100 units); `FxSpot.rub_per_unit` is per one unit and is
+  multiplied by the trade's `quote_units`.
+- **NDF (0.35.0, BACKLOG #49).** A cash-settled leg's `value_date` is the date its
+  fixing rate is the spot for; `fixing_date` ≤ value and payment dates. From the fixing
+  date the published rate (`FxFixing`, RUB per one unit, by currency, source and date;
+  point-in-time with `published_at`) freezes the leg: `PV = N/q · (fixing − K) ·
+  DF_rub(P)`, RUB risk only, outstanding to the payment date. On the fixing date before
+  publication the leg is projected (`fixing_pending`); after it a missing fixing rejects.
+  Source and lags are trade terms (`NdfConvention`); none is built in, and settlement is
+  in RUB only. Public market practice for reference: EMTA NDF templates fix on a
+  "valuation date" a stated number of business days before settlement in the fixing
+  centre; the owner confirms the firm's source and lag.
+- **Crosses (0.35.0).** An X/Y leg is the X/RUB and Y/RUB forwards whose RUB amounts
+  cancel (`fx_cross_rub_legs`): each currency on its own curve, spot and basis, both
+  discounted to RUB on the RUB curve; FX delta per currency against RUB (`FX|X`,
+  `FX|Y`), no cross delta. A cash-settled cross leg pays in RUB.
 
 ## Interest-rate swaps (package 2)
 
@@ -531,12 +554,19 @@ Full reference: [portfolio-v3.md](portfolio-v3.md).
 - **Futures PV.** The pending variation margin from `margined_price` to the snapshot
   price, undiscounted; RUON margins follow the specification's rounding.
 - **FX basis.** Always explicit per (currency, foreign curve) (`FxBasis`); 0 on an
-  implied or XCCY-bootstrapped curve.
+  implied or XCCY-bootstrapped curve. On a `<ccy>_fx_implied_v1` curve (0.35.0) it is
+  zero without an entry, and an entry must be zero.
+- **FX fallbacks (0.35.0, BACKLOG #123).** `ValuationPolicy.fx_curve_fallbacks` replaces
+  an FX product's foreign curve only when it is absent from the snapshot, by a curve of
+  the same currency; a par-yield proxy is accepted only so, with its own calibrated
+  `FxBasis` (the proxy's credit is in the basis, not in parity).
 - **JTD.** By bond `issuer_id` / CDS reference entity; one sign rule (DEC07). A CDS uses the
   position's recovery when stated, else the credit curve's.
 - **Scenarios.** Per-curve shifts win over the shock for the named curves in every
   role; `spread_shift_bp` moves `CS` of bonds, CDS quotes and OFZ futures baskets;
-  `fx_shocks_pct` moves FX spots and conversions; bases are held.
+  `fx_shocks_pct` moves FX spots and conversions; `basis_shifts_bp` (0.35.0, #103) moves
+  the bases it names by factor key (`FXBASIS|<ccy>`, `XCCYBASIS|<ccy>`,
+  `FUTBASIS|<contract>`); other bases are held.
 - **Model flags.** Fixed vocabulary listed in [portfolio-v3.md](portfolio-v3.md); sorted.
 
 ## Horizon valuation: carry and rolldown (0.14.0)

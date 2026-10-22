@@ -35,6 +35,7 @@ from .floating import (
     FloatingCouponRule,
     FloatingLeg,
 )
+from .fx_forwards import FxImpliedCurveRequest
 from .inflation import CpiSeries, IndexedCouponLeg, IndexedPrincipalLeg
 from .kbd import ZcycParameters
 from .key_rate import KeyRateForwardCurve
@@ -706,7 +707,10 @@ class CurveEntry:
     v3) also read a :class:`~rub_fixed_income.key_rate.KeyRateForwardCurve` under
     ``rub_key_rate_swap_v1`` (key-rate swap projection, dated the business date) and an
     :class:`~rub_fixed_income.xccy.XccyCurveBootstrapRequest` under
-    ``cny_ruonia_xccy_v1`` (the CNY curve from XCCY par quotes). Bonds reject both.
+    ``cny_ruonia_xccy_v1`` (the CNY curve from XCCY par quotes), and (0.35.0) an
+    :class:`~rub_fixed_income.fx_forwards.FxImpliedCurveRequest` under a
+    ``<ccy>_fx_implied_v1`` spec (FX swap points, built on the snapshot FX spot). Bonds
+    reject all three.
     """
 
     curve_id: str
@@ -717,6 +721,7 @@ class CurveEntry:
         | ZcycParameters
         | KeyRateForwardCurve
         | XccyCurveBootstrapRequest
+        | FxImpliedCurveRequest
     )
 
     def __post_init__(self) -> None:
@@ -809,6 +814,33 @@ class FxBasis:
         object.__setattr__(self, "basis_bp", finite_money(self.basis_bp, "FX basis bp"))
         if not isinstance(self.day_count, DayCount):
             raise TypeError("day_count must be a DayCount")
+
+
+@dataclass(frozen=True)
+class FxFixing:
+    """A published FX fixing (0.35.0): the settlement rate of NDF legs of ``currency``.
+
+    ``rub_per_unit`` RUB per one unit, fixed on ``fixing_date`` by ``source`` (the text
+    an NDF leg names in ``FxForwardLeg.fixing_source``, for example the backend's code
+    for the CBR official rate). ``published_at`` (UTC offset), when given, makes the
+    fixing point-in-time: a snapshot cut before it does not see it.
+    """
+
+    currency: str
+    source: str
+    fixing_date: date
+    rub_per_unit: float
+    published_at: datetime | None = None
+    evidence_id: str | None = None
+
+    def __post_init__(self) -> None:
+        _foreign(self.currency, "FX fixing currency")
+        _text(self.source, "FX fixing source")
+        if not isinstance(self.fixing_date, date):
+            raise TypeError("fixing_date must be a date")
+        object.__setattr__(self, "rub_per_unit", positive_money(self.rub_per_unit, "FX fixing"))
+        if self.published_at is not None:
+            _aware(self.published_at, "published_at")
 
 
 @dataclass(frozen=True)
@@ -926,6 +958,7 @@ class MarketSnapshot:
     index_fixings: tuple[IndexFixingEntry, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
     ruonia_fixings: tuple[RuoniaFixingsEntry, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
     ruonia_index: tuple[RuoniaIndexValue, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
+    fx_fixings: tuple[FxFixing, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
 
     def __post_init__(self) -> None:
         _text(self.snapshot_id, "snapshot_id")
@@ -1002,6 +1035,20 @@ class MarketSnapshot:
             *(e.fixing_id for e in self.ruonia_fixings),
         ]
         _unique(fixing_ids, "fixing_id across fixing collections")
+        object.__setattr__(
+            self,
+            "fx_fixings",
+            tuple(sorted(self.fx_fixings, key=lambda e: (e.currency, e.source, e.fixing_date))),
+        )
+        for fixing in self.fx_fixings:
+            if not isinstance(fixing, FxFixing):
+                raise TypeError("fx_fixings entries must be FxFixing")
+            if fixing.fixing_date > self.business_date:
+                raise InvalidTerms("an FX fixing cannot postdate the snapshot business date")
+        _unique(
+            [f"{e.currency}|{e.source}|{e.fixing_date.isoformat()}" for e in self.fx_fixings],
+            "FX fixing",
+        )
         object.__setattr__(
             self, "ruonia_index", tuple(sorted(self.ruonia_index, key=lambda e: e.index_date))
         )
@@ -1112,6 +1159,20 @@ class MarketSnapshot:
             f"no FX basis for {currency} on curve {foreign_curve_id!r} in snapshot "
             f"{self.snapshot_id}"
         )
+
+    def fx_fixing(self, currency: str, source: str, fixing_date: date) -> FxFixing | None:
+        """The published fixing of ``currency`` by ``source`` on ``fixing_date``, as known at
+        ``known_at`` (one published later is not seen); None when there is none."""
+        for entry in self.fx_fixings:
+            if (
+                entry.currency == currency
+                and entry.source == source
+                and entry.fixing_date == fixing_date
+            ):
+                if entry.published_at is not None and entry.published_at > self.known_at:
+                    return None
+                return entry
+        return None
 
     def credit_curve(self, reference_entity: str, currency: str) -> CreditCurveEntry:
         for entry in self.credit_curves:

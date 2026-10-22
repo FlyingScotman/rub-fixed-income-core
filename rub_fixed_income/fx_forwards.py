@@ -19,6 +19,14 @@ market data, calendar or exchange specification is looked up here.
 ``FxForwardRiskEngine.horizon`` carries a forward or swap to a horizon (BACKLOG #101)
 on today's curves read forward and on rolled curves, with the basis held and the
 horizon spot set by a stated ``FxHorizon`` rule (:class:`FxForwardHorizonValuation`).
+
+NDFs (0.35.0, BACKLOG #49): a cash-settled leg names its fixing (``fixing_date``,
+``fixing_source``); once the fixing is published (``fixing_rate``) the leg is frozen at
+``N / q * (fixing - K) * DF_rub(P)``: no FX delta, no foreign-curve or basis risk, only
+the RUB discounting to the payment date. :class:`NdfConvention` derives the fixing and
+value dates from the payment date (or back) by the confirmation's business-day lags.
+``points_held_rub_risk`` (BACKLOG #46) gives the RUB curve risk with every outright
+held, the alternative to the default where the foreign curve is held and the points move.
 """
 
 from __future__ import annotations
@@ -26,7 +34,7 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from typing import Literal
 
 from ._curve_views import FxHorizon
@@ -41,7 +49,7 @@ from ._risk_common import (
     _shock_curve,
     _snapshot_curve,
 )
-from .canonical import canonical_sha256
+from .canonical import OMIT_IF_DEFAULT, canonical_sha256
 from .conventions import BusinessDayConvention, CurveConvention, DayCount
 from .dates import BusinessCalendar
 from .discount import (
@@ -66,14 +74,18 @@ __all__ = [
     "FxForwardHorizonValuation",
     "FxForwardLeg",
     "FxForwardLegValuation",
+    "FxForwardPointsHeldRisk",
     "FxForwardRiskEngine",
     "FxForwardRiskRequest",
     "FxForwardRiskResult",
     "FxForwardScenarioResult",
     "FxForwardSecondOrderRisk",
+    "FxImpliedCurveRequest",
     "FxOutrightQuote",
     "FxSwap",
     "FxSwapPointsQuote",
+    "NdfConvention",
+    "NdfDates",
     "cip_implied_foreign_rate",
     "cip_implied_rub_rate",
     "cip_outright",
@@ -505,6 +517,62 @@ def implied_foreign_curve(
     )
 
 
+@dataclass(frozen=True)
+class FxImpliedCurveRequest:
+    """FX swap points and outrights of ``currency`` against RUB, to build an implied curve.
+
+    Held under a ``<ccy>_fx_implied_v1`` curve entry. ``value_portfolio`` builds it with
+    :func:`implied_foreign_curve` on the snapshot :class:`~rub_fixed_income.domain.FxSpot`
+    of ``currency`` (its rate and value date) and the snapshot RUB curve
+    ``rub_curve_id``, once per job, so the curve, the spot and the RUB curve of every
+    product that reads it are the same. Points and outrights are in RUB per **one** unit
+    of ``currency`` (the units of ``FxSpot.rub_per_unit``); the quotes must reach
+    ``curve_date`` (a ``TOD/TOM`` swap), which is the snapshot business date.
+    """
+
+    currency: str
+    curve_date: date
+    rub_curve_id: str
+    quotes: tuple[FxSwapPointsQuote | FxOutrightQuote, ...]
+    convention: CurveConvention | None = None
+
+    def __post_init__(self) -> None:
+        _foreign_currency(self.currency)
+        if not isinstance(self.curve_date, date):
+            raise TypeError("curve_date must be a date")
+        _text(self.rub_curve_id, "rub_curve_id")
+        object.__setattr__(self, "quotes", tuple(self.quotes))
+        if not self.quotes:
+            raise InvalidTerms("an implied curve needs at least one quote")
+        labels = set()
+        for quote in self.quotes:
+            if not isinstance(quote, (FxSwapPointsQuote, FxOutrightQuote)):
+                raise TypeError("quotes must be FxSwapPointsQuote or FxOutrightQuote")
+            if quote.label in labels:
+                raise InvalidTerms(f"duplicate quote label {quote.label!r}")
+            labels.add(quote.label)
+        if self.convention is not None and not isinstance(self.convention, CurveConvention):
+            raise TypeError("convention must be a CurveConvention or None")
+
+    def build(
+        self,
+        rub_curve: DiscountCurve | CurveBootstrapRequest,
+        spot_rate: float,
+        spot_value_date: date,
+    ) -> DiscountCurve:
+        """The implied curve on ``rub_curve`` and a spot in RUB per one unit."""
+        rub = _resolved_curve(rub_curve, "rub_curve")
+        if rub.curve_date != self.curve_date:
+            raise InvalidTerms("the RUB curve is not dated the implied curve's date")
+        return implied_foreign_curve(
+            rub_curve=rub,
+            spot_rate=spot_rate,
+            spot_value_date=spot_value_date,
+            quotes=self.quotes,
+            convention=self.convention,
+        )
+
+
 # --- Instruments ----------------------------------------------------------------------
 
 
@@ -536,12 +604,27 @@ class FxForwardLeg:
     ``payment_date`` is when the leg's RUB value is paid. ``None`` means the value date
     (a deliverable leg). A cash-settled leg pays ``N / q * (F(T) - K)`` on its
     explicit payment date instead.
+
+    NDF fixing (0.35.0, each omitted at None), only on a cash-settled leg:
+
+    - ``fixing_date``: the day the settlement rate is fixed (on or before the value and
+      payment dates); ``value_date`` is then the date the fixing rate is the spot for,
+      whose covered-parity forward it realises (:class:`NdfConvention`);
+    - ``fixing_source``: the rate source named in the confirmation (for example the CBR
+      official rate or a MOEX fixing); core does not interpret it, ``value_portfolio``
+      looks the published rate up under it;
+    - ``fixing_rate``: the published fixing, in the trade's quote units (RUB per ``q``
+      foreign units, as ``contract_rate``). With it the leg pays the known
+      ``N / q * (fixing_rate - K)`` on the payment date.
     """
 
     value_date: date
     notional_foreign: float
     contract_rate: float
     payment_date: date | None = None
+    fixing_date: date | None = field(default=None, metadata=OMIT_IF_DEFAULT)
+    fixing_source: str | None = field(default=None, metadata=OMIT_IF_DEFAULT)
+    fixing_rate: float | None = field(default=None, metadata=OMIT_IF_DEFAULT)
 
     def __post_init__(self) -> None:
         if not isinstance(self.value_date, date):
@@ -553,10 +636,126 @@ class FxForwardLeg:
             raise InvalidTerms("a forward leg needs a nonzero foreign notional")
         object.__setattr__(self, "notional_foreign", notional)
         object.__setattr__(self, "contract_rate", positive_money(self.contract_rate, "rate"))
+        self._check_fixing()
+
+    def _check_fixing(self) -> None:
+        if self.fixing_date is None and self.fixing_source is None and self.fixing_rate is None:
+            return
+        if self.payment_date is None:
+            raise InvalidTerms("NDF fixing terms belong to a cash-settled leg (payment_date)")
+        if self.fixing_date is None:
+            raise InvalidTerms("an NDF fixing source or rate needs its fixing_date")
+        if not isinstance(self.fixing_date, date):
+            raise TypeError("fixing_date must be a date or None")
+        if self.fixing_date > self.value_date or self.fixing_date > self.payment_date:
+            raise InvalidTerms("the fixing date cannot follow the value or payment date")
+        if self.fixing_source is not None:
+            _text(self.fixing_source, "fixing_source")
+        if self.fixing_rate is not None:
+            object.__setattr__(
+                self, "fixing_rate", positive_money(self.fixing_rate, "NDF fixing rate")
+            )
 
     @property
     def settlement_date(self) -> date:
         return self.value_date if self.payment_date is None else self.payment_date
+
+    @property
+    def is_fixed(self) -> bool:
+        """True once the leg's settlement rate is known (``fixing_rate``)."""
+        return self.fixing_rate is not None
+
+
+@dataclass(frozen=True)
+class NdfDates:
+    fixing_date: date
+    value_date: date
+    payment_date: date
+
+
+def _business_days_before(calendar: BusinessCalendar, value: date, count: int) -> date:
+    calendar.require_covered(value)
+    current = value
+    taken = 0
+    while taken < count:
+        current -= timedelta(days=1)
+        if calendar.is_business_day(current):
+            taken += 1
+    calendar.require_covered(current)
+    return current
+
+
+@dataclass(frozen=True)
+class NdfConvention:
+    """The date rule of a cash-settled (NDF) leg, as its confirmation states it.
+
+    - ``fixing_source``: the settlement rate source (text, not interpreted by core);
+    - ``fixing_lag_days``: settlement business days from the fixing date to the payment
+      date (EMTA templates call the fixing date the valuation date);
+    - ``value_lag_days``: business days from the fixing date to the value date the fixing
+      rate is a spot rate for (the forward the fixing realises): the source's own spot
+      lag, for example 1 for a rate set for tomorrow's settlement, or the
+      ``fixing_lag_days`` when the rate is the spot for the payment date.
+
+    No lag or source is assumed: they are trade terms. ``calendar`` is the pair's
+    settlement calendar (for example a ``joint_calendar``); a payment date on a holiday
+    is rejected rather than rolled.
+    """
+
+    fixing_source: str
+    fixing_lag_days: int
+    value_lag_days: int
+
+    def __post_init__(self) -> None:
+        _text(self.fixing_source, "fixing_source")
+        for name in ("fixing_lag_days", "value_lag_days"):
+            value = getattr(self, name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise InvalidTerms(f"{name} must be a nonnegative integer")
+
+    def from_payment(self, payment_date: date, calendar: BusinessCalendar) -> NdfDates:
+        """Fixing and value dates of a leg paid on ``payment_date``."""
+        if not calendar.is_business_day(payment_date):
+            raise InvalidTerms(
+                f"NDF payment date {payment_date.isoformat()} is not a business day of "
+                f"calendar {calendar.version}"
+            )
+        fixing = _business_days_before(calendar, payment_date, self.fixing_lag_days)
+        return NdfDates(
+            fixing, calendar.add_business_days(fixing, self.value_lag_days), payment_date
+        )
+
+    def from_fixing(self, fixing_date: date, calendar: BusinessCalendar) -> NdfDates:
+        """Value and payment dates of a leg fixed on ``fixing_date``."""
+        if not calendar.is_business_day(fixing_date):
+            raise InvalidTerms(
+                f"NDF fixing date {fixing_date.isoformat()} is not a business day of "
+                f"calendar {calendar.version}"
+            )
+        return NdfDates(
+            fixing_date,
+            calendar.add_business_days(fixing_date, self.value_lag_days),
+            calendar.add_business_days(fixing_date, self.fixing_lag_days),
+        )
+
+    def leg(
+        self,
+        dates: NdfDates,
+        notional_foreign: float,
+        contract_rate: float,
+        *,
+        fixing_rate: float | None = None,
+    ) -> FxForwardLeg:
+        """The cash-settled :class:`FxForwardLeg` on ``dates`` with this source."""
+        return FxForwardLeg(
+            dates.value_date,
+            notional_foreign,
+            contract_rate,
+            dates.payment_date,
+            fixing_date=dates.fixing_date,
+            fixing_source=self.fixing_source,
+            fixing_rate=fixing_rate,
+        )
 
 
 @dataclass(frozen=True)
@@ -633,7 +832,9 @@ class FxForwardRiskRequest:
     then carries the whole cross-currency basis), or calibrated with
     :func:`fx_forward_basis_bp` when it is, for example, a foreign OIS curve. Each
     curve's type selects its risk basis as in ``BondRiskRequest``. A leg whose value
-    date or payment date precedes the curve date has settled and is rejected.
+    date or payment date precedes the curve date has settled and is rejected; a fixed
+    NDF leg (``fixing_rate``) only when its payment date does, and an unfixed one whose
+    fixing date precedes the curve date needs its published fixing.
     """
 
     instrument: FxForward | FxSwap
@@ -658,10 +859,17 @@ class FxForwardRiskRequest:
         if self.spot_value_date < curve_date:
             raise InvalidTerms("spot value date cannot predate curve valuation")
         for leg in self.instrument.legs:
-            if leg.value_date < curve_date or leg.settlement_date < curve_date:
+            if leg.settlement_date < curve_date or (
+                not leg.is_fixed and leg.value_date < curve_date
+            ):
                 raise InvalidTerms(
                     f"{self.instrument.trade_id}: a leg settled before the curve date "
                     f"({leg.value_date.isoformat()}); value only outstanding legs"
+                )
+            if not leg.is_fixed and leg.fixing_date is not None and leg.fixing_date < curve_date:
+                raise InvalidTerms(
+                    f"{self.instrument.trade_id}: the leg fixed on "
+                    f"{leg.fixing_date.isoformat()}; pass its published fixing_rate"
                 )
         object.__setattr__(self, "spot_rate", positive_money(self.spot_rate, "spot rate"))
         object.__setattr__(self, "basis_bp", finite_money(self.basis_bp, "basis bp"))
@@ -679,6 +887,9 @@ class FxForwardBucketRisk:
 
 @dataclass(frozen=True)
 class FxForwardLegValuation:
+    """One leg. A fixed NDF leg (0.35.0) reports its ``fixing_date`` and ``fixing_rate``
+    (both omitted at None) and its ``forward_rate`` is the fixing."""
+
     value_date: date
     payment_date: date
     notional_foreign: float
@@ -687,6 +898,50 @@ class FxForwardLegValuation:
     forward_points: float
     rub_discount_factor: float
     pv_rub: float
+    fixing_date: date | None = field(default=None, metadata=OMIT_IF_DEFAULT)
+    fixing_rate: float | None = field(default=None, metadata=OMIT_IF_DEFAULT)
+
+
+@dataclass(frozen=True)
+class FxForwardPointsHeldRisk:
+    """RUB curve risk with the swap points held (BACKLOG #46), RUB of PV per bp.
+
+    Every covered-parity outright stays put under the RUB shift: the foreign discount
+    factors move with the RUB ones, ``DF_for'(t) = DF_for(t) * DF_rub'(t) / DF_rub(t)``
+    (on a curve implied from FX swaps this is rebuilding it at its quote dates). Only
+    the discounting of each leg's ``N / q * (F - K)`` to its payment date is left, so an
+    at-market forward has almost none. The default risk (``risk``) holds the foreign
+    curve instead and lets the points move; foreign-curve, basis and spot risk are the
+    same in both. Fixed NDF legs read only the RUB curve and are identical in both.
+    """
+
+    base_id: str
+    difference: str
+    bump_bp: float
+    rub_buckets: tuple[FxForwardBucketRisk, ...]
+    rub_dv01_rub: float
+    rub_parallel_dv01_rub: float
+    model_version: str = FX_FORWARD_RISK_MODEL_VERSION
+
+
+@dataclass(frozen=True)
+class _PointsHeldCurve:
+    """The foreign curve that keeps every outright when the RUB curve moves to ``shocked``."""
+
+    foreign: DiscountFactorCurve
+    rub: DiscountFactorCurve
+    shocked: DiscountFactorCurve
+
+    @property
+    def curve_date(self) -> date:
+        return self.foreign.curve_date
+
+    def discount_factor(self, target: date) -> float:
+        return (
+            self.foreign.discount_factor(target)
+            * self.shocked.discount_factor(target)
+            / self.rub.discount_factor(target)
+        )
 
 
 @dataclass(frozen=True)
@@ -817,6 +1072,7 @@ class _Leg:
     units: float  # notional / quote_units
     contract_rate: float
     tau: float  # basis accrual from the spot date, signed
+    fixed: float | None = None  # a published NDF fixing (quote units): RUB-only leg
 
 
 @dataclass(frozen=True)
@@ -853,6 +1109,7 @@ class FxForwardRiskEngine:
                 leg.notional_foreign / instrument.quote_units,
                 leg.contract_rate,
                 _signed_years(req.basis_day_count, req.spot_value_date, leg.value_date),
+                leg.fixing_rate,
             )
             for leg in instrument.legs
         )
@@ -912,9 +1169,25 @@ class FxForwardRiskEngine:
     def _values(self, moves: _Moves) -> tuple[float, float]:
         """(foreign legs' RUB PV, RUB legs' PV) under the moves."""
         rub_shifts, foreign_shifts, basis_shift, spot_shift = moves
-        req = self.request
         try:
             rub, foreign = self._curves(rub_shifts, foreign_shifts)
+        except (OverflowError, ZeroDivisionError) as exc:
+            raise ValueError("shock is outside the supported numerical domain") from exc
+        return self._values_on(rub, foreign, basis_shift, spot_shift)
+
+    def _values_on(
+        self,
+        rub: DiscountFactorCurve,
+        foreign: DiscountFactorCurve,
+        basis_shift: float,
+        spot_shift: float,
+    ) -> tuple[float, float]:
+        """(foreign legs' RUB PV, RUB legs' PV) on the given curves.
+
+        A fixed NDF leg is RUB only: ``N/q * (K - fixing) * DF_rub(P)`` in the second.
+        """
+        req = self.request
+        try:
             spot = req.spot_rate * (1.0 + spot_shift / 100.0)
             basis = finite_money(req.basis_bp + basis_shift, "shocked basis") * 1e-4
             spot_date = req.spot_value_date
@@ -927,6 +1200,9 @@ class FxForwardRiskEngine:
             rub_pv = []
             for leg in self._legs:
                 df = rub.discount_factor(leg.payment_date)
+                if leg.fixed is not None:
+                    rub_pv.append(leg.units * (leg.contract_rate - leg.fixed) * df)
+                    continue
                 carry = df / rub.discount_factor(leg.value_date)
                 growth = foreign.discount_factor(leg.value_date) * math.exp(basis * leg.tau)
                 foreign_pv.append(leg.units * spot_pv * growth * carry)
@@ -947,7 +1223,11 @@ class FxForwardRiskEngine:
         basis = req.basis_bp * 1e-4
         rows = []
         for leg, terms in zip(self._legs, req.instrument.legs, strict=True):
-            forward = self._forward(leg, req.spot_rate, self._rub_curve, self._foreign_curve, basis)
+            forward = (
+                leg.fixed
+                if leg.fixed is not None
+                else self._forward(leg, req.spot_rate, self._rub_curve, self._foreign_curve, basis)
+            )
             df = self._rub_curve.discount_factor(leg.payment_date)
             rows.append(
                 FxForwardLegValuation(
@@ -959,6 +1239,8 @@ class FxForwardRiskEngine:
                     forward_points=forward - req.spot_rate,
                     rub_discount_factor=df,
                     pv_rub=finite_money(leg.units * (forward - leg.contract_rate) * df, "leg PV"),
+                    fixing_date=terms.fixing_date if leg.fixed is not None else None,
+                    fixing_rate=leg.fixed,
                 )
             )
         return tuple(rows)
@@ -1032,6 +1314,47 @@ class FxForwardRiskEngine:
             ),
             foreign_parallel_dv01_rub=sensitivity((_ZERO_SHOCK, parallel, 0.0, 0.0)),
             basis01_rub=sensitivity((_ZERO_SHOCK, _ZERO_SHOCK, bump, 0.0)),
+        )
+
+    def points_held_rub_risk(
+        self, *, bump_bp: float = 1.0, difference: Literal["forward", "central"] = "central"
+    ) -> FxForwardPointsHeldRisk:
+        """RUB bucket and parallel risk with the swap points held (:class:`FxForwardPointsHeldRisk`)."""
+        bump = positive_money(bump_bp, "risk bump bp")
+        if difference not in ("forward", "central"):
+            raise ValueError("difference must be forward or central")
+        req = self.request
+        size = len(RISK_BUCKETS)
+
+        def pv(shifts: tuple[float, ...]) -> float:
+            try:
+                rub = _shock_curve(req.rub_curve, self._rub_curve, shifts, self.curve_cache)
+                held = _PointsHeldCurve(self._foreign_curve, self._rub_curve, rub)
+            except (OverflowError, ZeroDivisionError) as exc:
+                raise ValueError("shock is outside the supported numerical domain") from exc
+            foreign, rub_legs = self._values_on(rub, held, 0.0, 0.0)
+            return foreign - rub_legs
+
+        def sensitivity(shifts: tuple[float, ...]) -> float:
+            up = pv(shifts)
+            if difference == "central":
+                down = pv(tuple(-s for s in shifts))
+                return finite_money((up - down) / (2.0 * bump), "sensitivity")
+            return finite_money((up - self.base_pv_rub) / bump, "sensitivity")
+
+        buckets = tuple(
+            FxForwardBucketRisk(
+                bucket, sensitivity(tuple(bump if i == j else 0.0 for j in range(size)))
+            )
+            for i, bucket in enumerate(RISK_BUCKETS)
+        )
+        return FxForwardPointsHeldRisk(
+            base_id=self.base_id,
+            difference=difference,
+            bump_bp=bump,
+            rub_buckets=buckets,
+            rub_dv01_rub=finite_money(math.fsum(b.dv01_rub for b in buckets), "RUB DV01"),
+            rub_parallel_dv01_rub=sensitivity((bump,) * size),
         )
 
     def reprice(self, scenario: FxFuturesScenario) -> FxForwardScenarioResult:
@@ -1174,19 +1497,25 @@ class FxForwardRiskEngine:
             if leg.payment_date > horizon_date:
                 remaining.append(leg)
                 continue
-            fixing = spot if held else self._forward(leg, spot, rub, foreign, basis)
+            if leg.fixed is not None:
+                fixing = leg.fixed
+            else:
+                fixing = spot if held else self._forward(leg, spot, rub, foreign, basis)
             cash.append(leg.units * (fixing - leg.contract_rate))
         received = finite_money(math.fsum(cash), "received")
 
         def pv(rub_view: _HorizonView, foreign_view: _HorizonView, label: str) -> float:
             values = []
             for leg in remaining:
+                df = rub_view.discount_factor(leg.payment_date)
+                if leg.fixed is not None:
+                    values.append(leg.units * (leg.fixed - leg.contract_rate) * df)
+                    continue
                 tau = _signed_years(day_count, horizon_spot_date, leg.value_date)
                 parity = _parity(
                     horizon_spot, rub_view, foreign_view, horizon_spot_date, leg.value_date
                 )
                 outright = positive_money(parity * math.exp(basis * tau), "horizon forward rate")
-                df = rub_view.discount_factor(leg.payment_date)
                 values.append(leg.units * (outright - leg.contract_rate) * df)
             return finite_money(math.fsum(values), label)
 

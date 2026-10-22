@@ -44,6 +44,7 @@ overnight forwards are a key-rate path. It never discounts a bond.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
@@ -52,6 +53,7 @@ from .conventions import CurveConvention, DayCount, OisSwapConvention
 from .dates import BusinessCalendar
 from .errors import InvalidTerms, UnknownCurveSpec
 from .floating import KEY_RATE_PROJECTION_MODEL_VERSION
+from .fx_forwards import FX_IMPLIED_CURVE_MODEL_VERSION
 from .kbd import KBD_MODEL_VERSION
 from .key_rate import CONVENTION_ID as KEY_RATE_SWAP_CONVENTION_ID
 
@@ -60,6 +62,8 @@ __all__ = [
     "PAR_YIELD_PROXY_MODEL_VERSION",
     "CurveKind",
     "CurveSpec",
+    "foreign_discount_spec_id",
+    "fx_implied_spec_id",
     "get_curve_spec",
     "ois_curve_convention",
 ]
@@ -74,6 +78,7 @@ class CurveKind(Enum):
     KEY_RATE_PROJECTION = "key_rate_projection"
     REAL_DISCOUNT_FACTORS = "real_discount_factors"
     PAR_YIELD_PROXY = "par_yield_proxy"
+    FX_IMPLIED = "fx_implied"
 
 
 @dataclass(frozen=True)
@@ -202,8 +207,10 @@ _DISCOUNT_SOURCES = {
     "USD": "SOFR data",
     "EUR": "ESTR data",
 }
-_FOREIGN_SPECS = tuple(
-    CurveSpec(
+
+
+def _discount_factors_spec(currency: str, source: str) -> CurveSpec:
+    return CurveSpec(
         spec_id=f"{currency.lower()}_discount_factors_v1",
         kind=CurveKind.DISCOUNT_FACTORS,
         currency=currency,
@@ -215,8 +222,65 @@ _FOREIGN_SPECS = tuple(
         "ACT/365F curve time. Core does not bootstrap or certify it; risk shifts its "
         "continuous zero rates",
     )
-    for currency, source in _DISCOUNT_SOURCES.items()
+
+
+def _fx_implied_spec(currency: str) -> CurveSpec:
+    return CurveSpec(
+        spec_id=f"{currency.lower()}_fx_implied_v1",
+        kind=CurveKind.FX_IMPLIED,
+        currency=currency,
+        time_day_count=DayCount.ACT_365_FIXED,
+        interpolation="log-linear-df between the outright dates, flat-forward extrapolation",
+        model_version=FX_IMPLIED_CURVE_MODEL_VERSION,
+        description=f"{currency} discount curve under RUB collateral implied from {currency}/RUB "
+        "FX swap points and outrights by covered parity on a RUB curve "
+        "(fx_forwards.implied_foreign_curve): DF(T)/DF(s) = (F(T)/S) * DF_rub(T)/DF_rub(s) "
+        "at every outright date, anchored at DF = 1 on the curve date. Held as the built "
+        "DiscountCurve, or as an FxImpliedCurveRequest (quotes, the RUB curve ID) that "
+        "core builds on the snapshot FX spot. The FX basis on it is zero by construction; "
+        "risk shifts its continuous zero rates",
+    )
+
+
+_FOREIGN_SPECS = tuple(
+    _discount_factors_spec(currency, source) for currency, source in _DISCOUNT_SOURCES.items()
 )
+_GENERIC_SPEC = re.compile(r"^([a-z]{3})_(discount_factors|fx_implied)_v1$")
+
+
+def _currency_code(currency: str) -> str:
+    if (
+        not isinstance(currency, str)
+        or len(currency) != 3
+        or not currency.isascii()
+        or not currency.isalpha()
+        or not currency.isupper()
+    ):
+        raise InvalidTerms("currency must be a three-letter upper-case code such as CHF")
+    if currency == "RUB":
+        raise InvalidTerms("RUB has no foreign curve spec")
+    return currency
+
+
+def foreign_discount_spec_id(currency: str) -> str:
+    """``<ccy>_discount_factors_v1``: caller-built discount factors of ``currency``."""
+    return f"{_currency_code(currency).lower()}_discount_factors_v1"
+
+
+def fx_implied_spec_id(currency: str) -> str:
+    """``<ccy>_fx_implied_v1``: the curve of ``currency`` implied from FX swaps against RUB."""
+    return f"{_currency_code(currency).lower()}_fx_implied_v1"
+
+
+def _generic_spec(spec_id: str) -> CurveSpec | None:
+    match = _GENERIC_SPEC.match(spec_id) if isinstance(spec_id, str) else None
+    if match is None or match.group(1) == "rub":
+        return None
+    currency = match.group(1).upper()
+    if match.group(2) == "fx_implied":
+        return _fx_implied_spec(currency)
+    return _discount_factors_spec(currency, "the hub's data")
+
 
 # Package 7: the CNY discount curve under RUB collateral, bootstrapped from MOEX XCS
 # CNYRUB par quotes (``xccy.bootstrap_xccy_curve``, ``xccy.xcs_cnyrub_convention``).
@@ -346,10 +410,13 @@ CURVE_SPECS = MappingProxyType(
 
 
 def get_curve_spec(spec_id: str) -> CurveSpec:
-    try:
-        return CURVE_SPECS[spec_id]
-    except KeyError:
-        raise UnknownCurveSpec(f"unknown curve spec {spec_id!r}") from None
+    """The registered spec, or a generated per-currency foreign spec (see the module doc)."""
+    spec = CURVE_SPECS.get(spec_id)
+    if spec is None:
+        spec = _generic_spec(spec_id)
+    if spec is None:
+        raise UnknownCurveSpec(f"unknown curve spec {spec_id!r}")
+    return spec
 
 
 def ois_curve_convention(spec_id: str, calendar: BusinessCalendar | None = None) -> CurveConvention:

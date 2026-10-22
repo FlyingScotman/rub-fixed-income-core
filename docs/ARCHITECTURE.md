@@ -39,7 +39,8 @@ or floats.
 | `_curve_views.py` | Curve views at a horizon (`forward_curve`, `roll_curve`, `roll_key_rate_curve`) and the FX spot rule `FxHorizon`, shared by every carry engine without an import cycle (0.31.0). |
 | `_deprecation.py` | `DeprecationWarning` helper for APIs kept until 1.0 (0.12.0). |
 | `tenors.py` | Tenor codes: `parse_tenor`, `add_tenor`, `resolve_tenor` with spot lag and business-day convention (0.16.0). |
-| `fx_forwards.py` | OTC FX forwards and FX swaps by covered parity, value dates on joint calendars, implied foreign curve (0.19.0). |
+| `fx_forwards.py` | OTC FX forwards and FX swaps by covered parity, value dates on joint calendars, implied foreign curve (0.19.0); NDF fixings, points-held RUB risk (0.35.0). |
+| `fx_crosses.py` | FX forwards and swaps between two foreign currencies, as two RUB legs whose RUB amounts cancel (0.35.0). |
 | `callables.py`, `pass_through.py`, `assumed_portfolio.py` | Exercise assumptions for callables and perpetuals; constant-CPR pass-throughs; assumption-recording portfolio wrapper (0.20.0). |
 | `swaps.py` | Seasoned RUONIA OIS and key-rate swaps: schedules, known resets, two curves, risk, carry (0.21.0). |
 | `inflation.py`, `linkers.py` | Point-in-time CPI, OFZ-IN indexation, indexed legs, real-curve cashflows (0.23.0). |
@@ -86,6 +87,9 @@ graph LR
   domain --> portfolio
   curve_specs --> portfolio
   curve_specs --> proxy_curves
+  fx_forwards --> curve_specs
+  fx_forwards --> fx_crosses
+  fx_crosses --> portfolio
   discount --> proxy_curves
   factors --> portfolio
   local_risk --> portfolio

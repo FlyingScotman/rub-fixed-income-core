@@ -1,5 +1,76 @@
 # Changelog
 
+## 0.35.0 — FX forwards for any currency, crosses and NDF fixings
+
+What the desk monitor needs to value the FX book through `value_portfolio` (FX-forward
+gap analysis, core packages C1–C3; roadmap review package P7: BACKLOG #46, #49, #103,
+#123). The firm's book is mostly NDFs. Every new field of an existing type is omitted
+at its default, so earlier encodings, job IDs, pinned hashes and
+`portfolio_result_v2.json` / `portfolio_result_v3.json` are unchanged; a book that uses
+none of the additions values exactly as 0.34.0.
+
+### Added
+
+- **Any currency (C1).** `get_curve_spec` resolves `<ccy>_discount_factors_v1` (caller
+  discount factors) and `<ccy>_fx_implied_v1` (new `CurveKind.FX_IMPLIED`, model
+  `fx-implied-logdf-v1`) for every three-letter code other than RUB, so CHF, GBP, HKD,
+  JPY, KZT, AED or TRY forwards go through `value_portfolio` (tested equal to the
+  standalone engine); `foreign_discount_spec_id(ccy)`, `fx_implied_spec_id(ccy)`. The
+  generated specs are not listed in `CURVE_SPECS`.
+- **Implied curves from swap points in the snapshot.** `FxImpliedCurveRequest(currency,
+  curve_date, rub_curve_id, quotes, convention=None)` under a `<ccy>_fx_implied_v1`
+  entry: `value_portfolio` builds `implied_foreign_curve` once per job on the snapshot
+  `FxSpot` and the named RUB curve, so every quote reprices with zero basis; on such a
+  curve an absent `FxBasis` is zero and a nonzero one is rejected. A built implied curve
+  also discounts a bond of its currency.
+- **FX crosses without RUB (C2)**, module `fx_crosses`: `FxCrossForward`, `FxCrossSwap`,
+  `fx_cross_rub_legs` (the exact X/RUB + Y/RUB decomposition, any pivot),
+  `FxCrossRiskEngine` (risk on the RUB, base and quote curves, both bases, FX delta per
+  currency against RUB, exact scenarios `FxCrossScenario`, 37-factor Hessian, carry,
+  points-held risk), `fx_cross_factor_risk`; position type `FxCrossInstrument`
+  (`calendar_id` = the cross's settlement calendar), rows `PortfolioRiskResultV3.fx_crosses`
+  and `PortfolioHorizonResult.fx_crosses`; model flag `fx_cross`.
+- **NDF fixings (C3, BACKLOG #49 part).** `FxForwardLeg(..., fixing_date, fixing_source,
+  fixing_rate)` on a cash-settled leg; a fixed leg is frozen at `N/q · (fixing − K) ·
+  DF_rub(P)` (RUB risk only, no FX delta, outstanding to its payment date, no PV jump at
+  a fixing equal to the forward). `NdfConvention(fixing_source, fixing_lag_days,
+  value_lag_days)` with `from_payment` / `from_fixing` -> `NdfDates` and `.leg(...)`; no
+  source or lag is built in. Snapshot `fx_fixings` (`FxFixing(currency, source,
+  fixing_date, rub_per_unit, published_at=None)`, `MarketSnapshot.fx_fixing`):
+  `value_portfolio` freezes a leg at its published fixing (`known_fixings`), projects one
+  fixing today before publication (`fixing_pending`), and rejects one past its fixing
+  date without a fixing (`MISSING_MARKET_DATA`) or with a fixing in its terms that
+  differs from the snapshot's (`INVALID_TERMS`). Row legs report `fixing_date` and
+  `fixing_rate`.
+- **Points-held RUB risk (BACKLOG #46).** `FxForwardRiskEngine.points_held_rub_risk()`
+  (`FxForwardPointsHeldRisk`) and `FxCrossRiskEngine.points_held_rub_risk()`: every
+  outright held under the RUB shift, equal to rebuilding an implied curve at its quote
+  dates; `ValuationPolicy(fx_points_held_risk=True)` adds
+  `points_held_rub_buckets` to the rows (the factors keep the foreign curve held).
+- **Basis scenarios (BACKLOG #103).** `PortfolioScenario(basis_shifts_bp=((factor, bp),
+  ...))` moves `FXBASIS|<ccy>` (FX forwards, crosses, FX futures), `XCCYBASIS|<ccy>` and
+  `FUTBASIS|<contract>` (rate and OFZ futures); `.basis_shift_bp(factor)`.
+- **Fallback curves for FX products (BACKLOG #123).**
+  `ValuationPolicy(fx_curve_fallbacks=((curve_id, fallback_id), ...))`: tried in order
+  when an FX forward's, cross's, XCCY swap's or FX future's foreign curve is absent from
+  the snapshot; a par-yield proxy is accepted only as such a fallback and needs its own
+  calibrated `FxBasis`. Rows name the replaced curve (`curve_fallback_from` on FX forward,
+  XCCY and FX futures rows; `base_/quote_curve_fallback_from` on crosses); model flag
+  `curve_fallback`.
+
+### Changed
+
+- An FX product's foreign curve may be any `<ccy>_discount_factors_v1` or
+  `<ccy>_fx_implied_v1` curve; before, only CNY / USD / EUR had a spec.
+- `docs/fx-forwards.md`: the stale "horizon_portfolio does not" carry FX forwards line
+  is gone.
+
+### Unchanged
+
+- Without the new terms, fields and options every number, encoding and hash is as in
+  0.34.0. Not done here: SOFR / €STR bootstraps (#40, no quotes in the hub), derivatives
+  in the local worker (#102), key-rate / RUONIA basis swaps (#113).
+
 ## 0.34.0 — CNY / USD / EUR bonds on their own currency's curve
 
 Package 3, phase 2 (Trading Desk Monitor R8 phase 2, work package P5). Every new field of
