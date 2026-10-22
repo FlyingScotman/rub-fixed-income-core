@@ -604,10 +604,10 @@ per-currency foreign specs for every currency (`<ccy>_discount_factors_v1`,
 (`fx_crosses`, `FxCrossInstrument`), NDF fixings (#49, part), points-held RUB risk (#46),
 basis scenarios (#103), FX fallbacks to proxies (#123).
 
-126. *(owner, downstream)* **The firm's NDF terms.** Fixing source (CBR official rate,
+126. *(owner, downstream)* **The desk's NDF terms.** Fixing source (CBR official rate,
      MOEX fixing, other), fixing lag and the value date the fixing refers to, and the
-     settlement currency of the book's `FXNDF` trades; the TradeLevel report carries
-     `FXNDF Reset Date`, `Reset Price` and `Settlement Currency`. Core takes them as
+     settlement currency of the desk's NDF trades; the desk's own reports carry them per
+     trade (the private adapter maps them to `trade_terms`). Core takes them as
      `NdfConvention` / leg terms; the backend maps the source to `FxFixing.source`.
 127. **NDFs settled in a foreign currency and cross NDFs.** An offshore-style USD/RUB NDF
      settles `N · (1 − K / fixing)` USD (a quanto-like ratio, not linear in the forward);

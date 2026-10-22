@@ -736,8 +736,8 @@ accrual on default as in the Standard Model code (half-day bias); hazard time AC
 `(1 + r/365)^(days)`. `project_financed_bond`: `B_{k+1} = B_k · factor_k − cash_event_k`,
 starting from the initial dirty cash; cash events must terminate accumulation periods.
 This daily compounding is neither a repo contract (simple, or credited on settlement
-days: [repo legs](#repo-legs-package-6)) nor the desk's TRADING funding rule (simple
-interest on the previous day's clean MV, backend `desk_rules`; local audit F13). It is
+days: [repo legs](#repo-legs-package-6)) nor the desk's funding engine (simple
+interest on a configured base, backend `desk_rules`; local audit F13). It is
 kept unchanged for compatibility.
 
 ## KRS (MOEX IRS KEYRATE)

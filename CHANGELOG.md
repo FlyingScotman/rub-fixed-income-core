@@ -4,7 +4,7 @@
 
 What the desk monitor needs to value the FX book through `value_portfolio` (FX-forward
 gap analysis, core packages C1–C3; roadmap review package P7: BACKLOG #46, #49, #103,
-#123). The firm's book is mostly NDFs. Every new field of an existing type is omitted
+#123). Every new field of an existing type is omitted
 at its default, so earlier encodings, job IDs, pinned hashes and
 `portfolio_result_v2.json` / `portfolio_result_v3.json` are unchanged; a book that uses
 none of the additions values exactly as 0.34.0.
@@ -416,8 +416,8 @@ in `value_portfolio` (BACKLOG #94).
 ### Documented
 
 - `project_financed_bond` compounds daily (`(1 + r/365)^days`) and is neither a repo
-  contract nor the desk's TRADING funding rule (simple interest on the previous clean
-  MV, backend `desk_rules`; local audit F13). Unchanged; `docs/CONVENTIONS.md`,
+  contract nor the desk's funding engine (simple interest on a configured base, backend
+  `desk_rules`; local audit F13). Unchanged; `docs/CONVENTIONS.md`,
   `docs/repo.md`.
 - Booking rule: the cash borrower keeps the bond as an ordinary bond position, the cash
   lender has none; the collateral reference never enters PV or risk, so nothing is
