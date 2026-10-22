@@ -30,14 +30,14 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from typing import TYPE_CHECKING, Literal, Protocol
 
 from ._curve_views import FxHorizon
 from ._money import finite_money
-from ._risk_common import ShockedCurveCache
-from .canonical import canonical_sha256
+from ._risk_common import ShockedCurveCache, _base_curve
+from .canonical import OMIT_IF_DEFAULT, canonical_sha256
 from .cds import (
     CDS_RISK_MODEL_VERSION,
     CdsCurveCache,
@@ -49,13 +49,14 @@ from .cds import (
     CdsSide,
     cds_factor_risk,
 )
-from .curve_specs import CurveKind, get_curve_spec
+from .curve_specs import PAR_YIELD_PROXY_MODEL_VERSION, CurveKind, get_curve_spec
 from .dates import BusinessCalendar
 from .discount import CurveBootstrapRequest, DiscountCurve
 from .domain import (
     AccountingCategory,
     FuturesQuote,
     FxBasis,
+    FxFixing,
     FxRate,
     FxSpot,
     Instrument,
@@ -74,15 +75,35 @@ from .errors import (
     UndeclaredFixingGap,
     UnsupportedProduct,
 )
-from .factors import FactorRisk, HessianEntry, fx_futures_factor_risk, fx_translated_factor_risk
+from .factors import (
+    FactorRisk,
+    HessianEntry,
+    fx_basis_factor,
+    fx_futures_factor_risk,
+    fx_translated_factor_risk,
+)
 from .floating import FixingHistory, FixingIndex
+from .fx_crosses import (
+    FX_CROSS_RISK_MODEL_VERSION,
+    FxCrossHorizonValuation,
+    FxCrossLegValuation,
+    FxCrossRiskEngine,
+    FxCrossRiskRequest,
+    FxCrossScenario,
+    FxCrossSwap,
+    fx_cross_factor_risk,
+)
 from .fx_forwards import (
     FX_FORWARD_RISK_MODEL_VERSION,
     FX_IMPLIED_CURVE_MODEL_VERSION,
+    FxForward,
+    FxForwardBucketRisk,
     FxForwardHorizonValuation,
+    FxForwardLeg,
     FxForwardLegValuation,
     FxForwardRiskEngine,
     FxForwardRiskRequest,
+    FxImpliedCurveRequest,
     FxSwap,
     fx_forward_factor_risk,
 )
@@ -107,6 +128,7 @@ from .ofz_futures import (
 )
 from .portfolio_instruments import (
     CdsInstrument,
+    FxCrossInstrument,
     FxForwardInstrument,
     FxFuturesInstrument,
     OfzFuturesInstrument,
@@ -124,6 +146,7 @@ from .rate_futures import (
     RateFuturesScenario,
     RuoniaAverageFuturesContract,
     RuoniaIndexFuturesContract,
+    futures_basis_factor,
     rate_futures_factor_risk,
     rate_futures_variation_margin,
 )
@@ -158,6 +181,7 @@ from .xccy import (
     XccyRiskEngine,
     XccyRiskRequest,
     XccyScenario,
+    xccy_basis_factor,
     xccy_factor_risk,
     xccy_par_rate,
 )
@@ -264,7 +288,15 @@ class SwapPositionValuation:
 
 @dataclass(frozen=True)
 class FxForwardPositionValuation:
-    """An FX forward or FX swap (``fx_forwards``); legs are scaled by the quantity."""
+    """An FX forward or FX swap (``fx_forwards``); legs are scaled by the quantity.
+
+    0.36.0, each omitted at its default: ``foreign_curve_id`` is the curve used and
+    ``curve_fallback_from`` the instrument's curve it replaced (absent from the
+    snapshot, ``ValuationPolicy.fx_curve_fallbacks``); ``points_held_rub_buckets`` is
+    the RUB curve risk with the swap points held (``ValuationPolicy.fx_points_held_risk``,
+    BACKLOG #46), next to the factor risk, which holds the foreign curve. A fixed NDF leg
+    carries its fixing in ``legs``.
+    """
 
     position_id: str
     instrument_id: str
@@ -286,6 +318,51 @@ class FxForwardPositionValuation:
     foreign_curve_id: str
     fx_delta_foreign: float
     legs: tuple[FxForwardLegValuation, ...]
+    curve_fallback_from: str | None = field(default=None, metadata=OMIT_IF_DEFAULT)
+    points_held_rub_buckets: tuple[FxForwardBucketRisk, ...] = field(
+        default=(), metadata=OMIT_IF_DEFAULT
+    )
+
+
+@dataclass(frozen=True)
+class FxCrossPositionValuation:
+    """An FX forward or swap between two foreign currencies (``fx_crosses``, 0.36.0).
+
+    Amounts are scaled by the quantity. ``fx_delta_base`` and ``fx_delta_quote`` are the
+    spot-equivalent amounts of each currency against RUB; ``*_curve_fallback_from``
+    names an instrument curve replaced by a fallback.
+    """
+
+    position_id: str
+    instrument_id: str
+    book: str
+    accounting_category: AccountingCategory
+    calculation_id: str
+    quantity: float
+    pv_rub: float
+    factor_risk: FactorRisk
+    trade_id: str
+    kind: Literal["forward", "swap"]
+    base_currency: str
+    quote_currency: str
+    quote_units: float
+    cross_spot_rate: float
+    base_spot_rate: float
+    base_spot_value_date: date
+    quote_spot_rate: float
+    quote_spot_value_date: date
+    settlement_calendar_id: str
+    base_basis_bp: float
+    quote_basis_bp: float
+    rub_curve_id: str
+    base_curve_id: str
+    quote_curve_id: str
+    fx_delta_base: float
+    fx_delta_quote: float
+    legs: tuple[FxCrossLegValuation, ...]
+    base_curve_fallback_from: str | None = None
+    quote_curve_fallback_from: str | None = None
+    points_held_rub_buckets: tuple[FxForwardBucketRisk, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -318,6 +395,7 @@ class XccyPositionValuation:
     foreign_leg_pv: float
     foreign_leg_pv_rub: float
     foreign_leg_par_rate: float | None
+    curve_fallback_from: str | None = field(default=None, metadata=OMIT_IF_DEFAULT)
 
 
 @dataclass(frozen=True)
@@ -393,6 +471,7 @@ class FxFuturesPositionValuation:
     notional_rub: float
     variation_margin_rub: float
     fx_delta_foreign: float
+    curve_fallback_from: str | None = field(default=None, metadata=OMIT_IF_DEFAULT)
 
 
 @dataclass(frozen=True)
@@ -505,6 +584,7 @@ class RepoPositionValuation:
 ProductRow = (
     SwapPositionValuation
     | FxForwardPositionValuation
+    | FxCrossPositionValuation
     | XccyPositionValuation
     | CdsPositionValuation
     | FxFuturesPositionValuation
@@ -516,6 +596,7 @@ ProductRow = (
 ROW_FIELDS: dict[type, str] = {
     SwapPositionValuation: "swaps",
     FxForwardPositionValuation: "fx_forwards",
+    FxCrossPositionValuation: "fx_crosses",
     XccyPositionValuation: "xccy_swaps",
     CdsPositionValuation: "cds",
     FxFuturesPositionValuation: "fx_futures",
@@ -586,6 +667,8 @@ class ScenarioView(Protocol):
 
     def fx_move_pct(self, currency: str) -> float: ...
 
+    def basis_shift_bp(self, factor: str) -> float: ...
+
     @property
     def spread_shift_bp(self) -> float: ...
 
@@ -611,6 +694,9 @@ class ProductContext:
     used_credit: dict[tuple[str, str], CreditCurveUse] = field(default_factory=dict)
     credit_requests: dict[tuple[str, str], CdsCurveRequest] = field(default_factory=dict)
     engines: dict[str, object] = field(default_factory=dict)
+    fx_curve_fallbacks: tuple[tuple[str, str], ...] = ()
+    fx_points_held_risk: bool = False
+    implied_curves: dict[str, DiscountCurve | CoreRejection] = field(default_factory=dict)
 
     @property
     def business_date(self) -> date:
@@ -627,12 +713,17 @@ class ProductContext:
             raise InvalidTerms(f"curve {curve_id} is not dated the snapshot business date")
         return built.curve
 
-    def foreign_fx_curve(self, curve_id: str, currency: str) -> DiscountCurve:
+    def foreign_fx_curve(
+        self, curve_id: str, currency: str, *, allow_proxy: bool = False
+    ) -> DiscountCurve:
         """The foreign curve of an FX product: discount factors of ``currency``.
 
-        Caller-built factors (``<ccy>_discount_factors_v1``), a curve implied from FX
-        swaps (``fx_forwards.implied_foreign_curve``, same spec) or a built XCCY curve
-        (``cny_ruonia_xccy_v1``); dated the business date.
+        Caller-built factors (``<ccy>_discount_factors_v1``, any currency), a curve
+        implied from FX swaps (``<ccy>_fx_implied_v1``: the built curve, or an
+        :class:`FxImpliedCurveRequest` built here once per job on the snapshot FX spot
+        and the named RUB curve; also accepted under the discount-factor spec as
+        before) or a built XCCY curve (``cny_ruonia_xccy_v1``); dated the business date.
+        A par-yield proxy only with ``allow_proxy`` (reached as a fallback, #131).
         """
         entry = self.snapshot.curve(curve_id)
         spec = get_curve_spec(entry.spec_id)
@@ -642,13 +733,20 @@ class ProductContext:
         models = {
             CurveKind.DISCOUNT_FACTORS: (spec.model_version, FX_IMPLIED_CURVE_MODEL_VERSION),
             CurveKind.XCCY_BOOTSTRAP: (XCCY_CURVE_MODEL_VERSION,),
+            CurveKind.FX_IMPLIED: (FX_IMPLIED_CURVE_MODEL_VERSION,),
         }.get(spec.kind)
+        if spec.kind is CurveKind.PAR_YIELD_PROXY and allow_proxy:
+            models = (PAR_YIELD_PROXY_MODEL_VERSION,)
         if models is None:
             raise InvalidTerms(f"curve {curve_id} ({spec.spec_id}) is not a foreign discount curve")
         if isinstance(source, XccyCurveBootstrapRequest):
             raise InvalidTerms(
                 f"curve {curve_id} holds XCCY quotes; only cross-currency swaps rebuild it"
             )
+        if isinstance(source, FxImpliedCurveRequest):
+            if spec.kind is not CurveKind.FX_IMPLIED:
+                raise InvalidTerms(f"curve {curve_id}: FX swap quotes belong to an fx_implied spec")
+            source = self._implied_curve(curve_id, source, currency)
         if not (
             isinstance(source, DiscountCurve)
             and source.model_version in models
@@ -659,6 +757,77 @@ class ProductContext:
             raise InvalidTerms(f"curve {curve_id} is not dated the snapshot business date")
         self.used_curves[curve_id] = (spec.spec_id, source.model_version)
         return source
+
+    def _implied_curve(
+        self, curve_id: str, request: FxImpliedCurveRequest, currency: str
+    ) -> DiscountCurve:
+        """Build an implied curve from its FX swap quotes once per job (rejections too)."""
+        if curve_id not in self.implied_curves:
+            try:
+                if request.currency != currency:
+                    raise InvalidTerms(
+                        f"curve {curve_id} quotes a {request.currency} curve, not {currency}"
+                    )
+                if request.curve_date != self.business_date:
+                    raise InvalidTerms(
+                        f"FX swap quotes {curve_id} are not dated the snapshot business date"
+                    )
+                spot, _ = self.fx_spot(currency)
+                rub = self.discount_curve(request.rub_curve_id, "RUB")
+                built = request.build(
+                    _base_curve(rub, self.curve_cache), spot.rub_per_unit, spot.value_date
+                )
+                self.implied_curves[curve_id] = built
+            except CoreRejection as exc:
+                self.implied_curves[curve_id] = exc
+        outcome = self.implied_curves[curve_id]
+        if isinstance(outcome, CoreRejection):
+            raise outcome
+        return outcome
+
+    def fx_curve(self, curve_id: str, currency: str) -> tuple[str, DiscountCurve, str | None]:
+        """``(curve ID used, curve, curve it replaces)`` of an FX product's foreign curve.
+
+        ``fx_curve_fallbacks`` (``ValuationPolicy``, #131) are tried in order only when
+        ``curve_id`` is absent from the snapshot; a fallback may be a par-yield proxy.
+        """
+        tried = [curve_id]
+        for candidate in (curve_id, *(b for a, b in self.fx_curve_fallbacks if a == curve_id)):
+            if candidate != curve_id:
+                tried.append(candidate)
+            try:
+                self.snapshot.curve(candidate)
+            except MissingMarketData:
+                continue
+            if candidate == curve_id:
+                return curve_id, self.foreign_fx_curve(curve_id, currency), None
+            return candidate, self.foreign_fx_curve(candidate, currency, allow_proxy=True), curve_id
+        if len(tried) == 1:
+            self.snapshot.curve(curve_id)  # raises the plain MissingMarketData
+        raise MissingMarketData(
+            f"no {currency} curve for an FX product in snapshot {self.snapshot.snapshot_id}; "
+            f"tried {', '.join(repr(c) for c in tried)}"
+        )
+
+    def fx_basis(self, currency: str, curve_id: str) -> FxBasis:
+        """The FX basis of ``currency`` on ``curve_id``; zero on an implied curve.
+
+        A ``<ccy>_fx_implied_v1`` curve carries the whole basis by construction: without
+        a snapshot entry its basis is zero, and a nonzero entry is rejected.
+        """
+        kind = get_curve_spec(self.snapshot.curve(curve_id).spec_id).kind
+        if kind is not CurveKind.FX_IMPLIED:
+            return self.snapshot.fx_basis(currency, curve_id)
+        try:
+            basis = self.snapshot.fx_basis(currency, curve_id)
+        except MissingMarketData:
+            return FxBasis(currency, curve_id, 0.0)
+        if basis.basis_bp != 0.0:
+            raise InvalidTerms(f"curve {curve_id} is implied from FX swaps; its FX basis is zero")
+        return basis
+
+    def fx_fixing(self, currency: str, source: str, fixing_date: date) -> FxFixing | None:
+        return self.snapshot.fx_fixing(currency, source, fixing_date)
 
     def key_rate_curve(self, curve_id: str) -> KeyRateForwardCurve:
         """A key-rate swap projection curve (``rub_key_rate_swap_v1``) dated the business date.
@@ -894,28 +1063,101 @@ def value_swap(position: Position, instrument: object, ctx: ProductContext) -> P
 # --- FX forwards and swaps ------------------------------------------------------------
 
 
+def _fixed_leg(
+    leg: FxForwardLeg, currency: str, quote_units: float, ctx: ProductContext, trade_id: str
+) -> tuple[FxForwardLeg, str | None]:
+    """The leg with its published NDF fixing applied, and a model flag.
+
+    A leg whose fixing date has come looks its fixing up in the snapshot by
+    ``(currency, fixing_source, fixing_date)``: found, the leg is frozen at it
+    (``known_fixings``); missing on the fixing date itself, it is still projected
+    (``fixing_pending``); missing after it, ``MissingFixing``. A fixing in the terms is
+    used as given and must agree with the snapshot's.
+    """
+    if leg.fixing_date is None or leg.fixing_date > ctx.business_date:
+        return leg, None
+    published = (
+        None
+        if leg.fixing_source is None
+        else ctx.fx_fixing(currency, leg.fixing_source, leg.fixing_date)
+    )
+    rate = None if published is None else published.rub_per_unit * quote_units
+    if leg.fixing_rate is not None:
+        if rate is not None and not math.isclose(rate, leg.fixing_rate, rel_tol=1e-9):
+            raise InvalidTerms(
+                f"{trade_id}: fixing_rate {leg.fixing_rate} differs from the published "
+                f"{leg.fixing_source} fixing {rate} of {leg.fixing_date.isoformat()}"
+            )
+        return leg, "known_fixings"
+    if rate is not None:
+        return replace(leg, fixing_rate=rate), "known_fixings"
+    if leg.fixing_date == ctx.business_date:
+        return leg, "fixing_pending"
+    source = "no fixing_source" if leg.fixing_source is None else leg.fixing_source
+    raise MissingFixing(
+        f"{trade_id}: no {currency} fixing ({source}) of {leg.fixing_date.isoformat()} "
+        f"in snapshot {ctx.snapshot.snapshot_id}"
+    )
+
+
+def _fixed_trade(
+    trade: FxForward | FxSwap, ctx: ProductContext
+) -> tuple[FxForward | FxSwap, tuple[str, ...]]:
+    flags: set[str] = set()
+    legs = []
+    for leg in trade.legs:
+        if leg.settlement_date < ctx.business_date:
+            legs.append(leg)
+            continue
+        fixed, flag = _fixed_leg(leg, trade.currency, trade.quote_units, ctx, trade.trade_id)
+        legs.append(fixed)
+        if flag is not None:
+            flags.add(flag)
+    if all(a is b for a, b in zip(legs, trade.legs, strict=True)):
+        return trade, tuple(sorted(flags))
+    if isinstance(trade, FxSwap):
+        trade = replace(trade, near=legs[0], far=legs[1])
+    else:
+        trade = replace(trade, leg=legs[0])
+    return trade, tuple(sorted(flags))
+
+
+@dataclass(frozen=True)
+class _FxForwardSetup:
+    engine: FxForwardRiskEngine
+    spot: FxSpot
+    settlement: BusinessCalendar
+    basis: FxBasis
+    foreign_curve_id: str
+    fallback_from: str | None
+    flags: tuple[str, ...]
+
+
 def _fx_forward_engine(
     position: Position, instrument: FxForwardInstrument, ctx: ProductContext
-) -> tuple[FxForwardRiskEngine, FxSpot, BusinessCalendar, FxBasis]:
+) -> _FxForwardSetup:
     """The forward's engine on the job's curves and spot (shared by valuation and carry)."""
     trade = instrument.trade
     currency = trade.currency
     _check_position(position, currency)
     spot, settlement = ctx.fx_spot(currency)
+    trade, flags = _fixed_trade(trade, ctx)
     for leg in trade.legs:
-        if leg.value_date < ctx.business_date or leg.settlement_date < ctx.business_date:
+        if leg.settlement_date < ctx.business_date or (
+            not leg.is_fixed and leg.value_date < ctx.business_date
+        ):
             raise SettledLeg(
                 f"{trade.trade_id}: a leg settled on {leg.value_date.isoformat()}; value only "
                 "outstanding legs (FxSwap.far_leg_forward)"
             )
-        if not settlement.is_business_day(leg.value_date):
+        if not leg.is_fixed and not settlement.is_business_day(leg.value_date):
             raise InvalidTerms(
                 f"{trade.trade_id}: value date {leg.value_date.isoformat()} is not a business "
                 f"day of settlement calendar {spot.calendar_id}"
             )
     rub = ctx.discount_curve(instrument.rub_curve_id, "RUB")
-    foreign = ctx.foreign_fx_curve(instrument.foreign_curve_id, currency)
-    basis = ctx.snapshot.fx_basis(currency, instrument.foreign_curve_id)
+    foreign_id, foreign, fallback_from = ctx.fx_curve(instrument.foreign_curve_id, currency)
+    basis = ctx.fx_basis(currency, foreign_id)
     engine = FxForwardRiskEngine(
         FxForwardRiskRequest(
             trade,
@@ -928,20 +1170,29 @@ def _fx_forward_engine(
         ),
         ctx.curve_cache,
     )
-    return engine, spot, settlement, basis
+    if fallback_from is not None:
+        flags = tuple(sorted({*flags, "curve_fallback"}))
+    return _FxForwardSetup(engine, spot, settlement, basis, foreign_id, fallback_from, flags)
+
+
+def _scaled_buckets(
+    rows: tuple[FxForwardBucketRisk, ...], q: float
+) -> tuple[FxForwardBucketRisk, ...]:
+    return tuple(FxForwardBucketRisk(r.bucket, _money(r.dv01_rub * q, "DV01")) for r in rows)
 
 
 def value_fx_forward(position: Position, instrument: object, ctx: ProductContext) -> ProductOutcome:
     assert isinstance(instrument, FxForwardInstrument)
-    engine, spot, _, basis = _fx_forward_engine(position, instrument, ctx)
+    setup = _fx_forward_engine(position, instrument, ctx)
+    engine, spot, basis = setup.engine, setup.spot, setup.basis
+    foreign_id = setup.foreign_curve_id
     trade = instrument.trade
     currency = trade.currency
     risk = engine.risk(bump_bp=ctx.bump_bp, difference="central")
     second = engine.second_order(bump_bp=ctx.bump_bp) if ctx.include_second_order else None
     q = position.quantity
     factor_risk = scale_factor_risk(
-        fx_forward_factor_risk(risk, instrument.rub_curve_id, instrument.foreign_curve_id, second),
-        q,
+        fx_forward_factor_risk(risk, instrument.rub_curve_id, foreign_id, second), q
     )
     legs = tuple(
         FxForwardLegValuation(
@@ -953,8 +1204,17 @@ def value_fx_forward(position: Position, instrument: object, ctx: ProductContext
             leg.forward_points,
             leg.rub_discount_factor,
             _money(leg.pv_rub * q, "leg PV"),
+            leg.fixing_date,
+            leg.fixing_rate,
         )
         for leg in risk.legs
+    )
+    held = (
+        _scaled_buckets(
+            engine.points_held_rub_risk(bump_bp=ctx.bump_bp, difference="central").rub_buckets, q
+        )
+        if ctx.fx_points_held_risk
+        else ()
     )
     row = FxForwardPositionValuation(
         position.position_id,
@@ -974,16 +1234,18 @@ def value_fx_forward(position: Position, instrument: object, ctx: ProductContext
         spot.calendar_id,
         basis.basis_bp,
         instrument.rub_curve_id,
-        instrument.foreign_curve_id,
+        foreign_id,
         _money(risk.fx_delta_foreign * q, "FX delta"),
         legs,
+        setup.fallback_from,
+        held,
     )
 
     def reprice(scenario: ScenarioView) -> float:
         shock = FxFuturesScenario(
             scenario.curve_shift(instrument.rub_curve_id),
-            scenario.curve_shift(instrument.foreign_curve_id),
-            0.0,
+            scenario.curve_shift(foreign_id),
+            scenario.basis_shift_bp(fx_basis_factor(currency)),
             scenario.fx_move_pct(currency),
         )
         return _money(engine.reprice(shock).total_pnl_rub * q, "FX forward scenario P&L")
@@ -994,6 +1256,174 @@ def value_fx_forward(position: Position, instrument: object, ctx: ProductContext
         instrument.product.value,
         FX_FORWARD_RISK_MODEL_VERSION,
         "covered_parity",
+        *setup.flags,
+    )
+    return ProductOutcome(row, reprice, model)
+
+
+# --- FX crosses -------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _FxCrossSetup:
+    engine: FxCrossRiskEngine
+    spots: tuple[FxSpot, FxSpot]
+    calendars: tuple[BusinessCalendar, BusinessCalendar]
+    bases: tuple[FxBasis, FxBasis]
+    curve_ids: tuple[str, str]
+    fallbacks: tuple[str | None, str | None]
+
+
+def _fx_cross_engine(
+    position: Position, instrument: FxCrossInstrument, ctx: ProductContext
+) -> _FxCrossSetup:
+    """The cross's engine on the job's curves and both spots (valuation and carry)."""
+    trade = instrument.trade
+    _check_position(position, instrument.currency)
+    calendar = ctx.calendar(instrument.calendar_id)
+    for leg in trade.legs:
+        if leg.value_date < ctx.business_date or leg.settlement_date < ctx.business_date:
+            raise SettledLeg(
+                f"{trade.trade_id}: a leg settled on {leg.value_date.isoformat()}; value only "
+                "outstanding legs (FxCrossSwap.far_leg_forward)"
+            )
+        if not calendar.is_business_day(leg.value_date):
+            raise InvalidTerms(
+                f"{trade.trade_id}: value date {leg.value_date.isoformat()} is not a business "
+                f"day of settlement calendar {instrument.calendar_id}"
+            )
+    rub = ctx.discount_curve(instrument.rub_curve_id, "RUB")
+    spots = []
+    calendars = []
+    curves = []
+    ids = []
+    fallbacks = []
+    bases = []
+    for currency, curve_id in (
+        (trade.base_currency, instrument.base_curve_id),
+        (trade.quote_currency, instrument.quote_curve_id),
+    ):
+        spot, settlement = ctx.fx_spot(currency)
+        used, curve, fallback_from = ctx.fx_curve(curve_id, currency)
+        spots.append(spot)
+        calendars.append(settlement)
+        curves.append(curve)
+        ids.append(used)
+        fallbacks.append(fallback_from)
+        bases.append(ctx.fx_basis(currency, used))
+    if len({instrument.rub_curve_id, *ids}) != 3:
+        raise InvalidTerms("the RUB, base and quote curves need distinct curve IDs")
+    engine = FxCrossRiskEngine(
+        FxCrossRiskRequest(
+            trade,
+            spots[0].rub_per_unit,
+            spots[0].value_date,
+            spots[1].rub_per_unit,
+            spots[1].value_date,
+            rub,
+            curves[0],
+            curves[1],
+            bases[0].basis_bp,
+            bases[1].basis_bp,
+            bases[0].day_count,
+            bases[1].day_count,
+        ),
+        ctx.curve_cache,
+    )
+    return _FxCrossSetup(
+        engine,
+        (spots[0], spots[1]),
+        (calendars[0], calendars[1]),
+        (bases[0], bases[1]),
+        (ids[0], ids[1]),
+        (fallbacks[0], fallbacks[1]),
+    )
+
+
+def value_fx_cross(position: Position, instrument: object, ctx: ProductContext) -> ProductOutcome:
+    assert isinstance(instrument, FxCrossInstrument)
+    setup = _fx_cross_engine(position, instrument, ctx)
+    engine = setup.engine
+    trade = instrument.trade
+    base_id, quote_id = setup.curve_ids
+    x, y = trade.base_currency, trade.quote_currency
+    risk = engine.risk(bump_bp=ctx.bump_bp, difference="central")
+    second = engine.second_order(bump_bp=ctx.bump_bp) if ctx.include_second_order else None
+    q = position.quantity
+    factor_risk = scale_factor_risk(
+        fx_cross_factor_risk(risk, instrument.rub_curve_id, base_id, quote_id, second), q
+    )
+    legs = tuple(
+        replace(
+            leg,
+            base_notional=leg.base_notional * q,
+            quote_notional=leg.quote_notional * q,
+            pv_rub=_money(leg.pv_rub * q, "leg PV"),
+        )
+        for leg in risk.legs
+    )
+    held = (
+        _scaled_buckets(
+            engine.points_held_rub_risk(bump_bp=ctx.bump_bp, difference="central").rub_buckets, q
+        )
+        if ctx.fx_points_held_risk
+        else ()
+    )
+    base_spot, quote_spot = setup.spots
+    row = FxCrossPositionValuation(
+        position.position_id,
+        instrument.instrument_id,
+        position.book,
+        position.accounting_category,
+        ctx.calculation_id(position, FX_CROSS_RISK_MODEL_VERSION, engine.base_id),
+        q,
+        _money(engine.base_pv_rub * q, "FX cross PV"),
+        factor_risk,
+        trade.trade_id,
+        "swap" if isinstance(trade, FxCrossSwap) else "forward",
+        x,
+        y,
+        trade.quote_units,
+        risk.cross_spot_rate,
+        base_spot.rub_per_unit,
+        base_spot.value_date,
+        quote_spot.rub_per_unit,
+        quote_spot.value_date,
+        instrument.calendar_id,
+        setup.bases[0].basis_bp,
+        setup.bases[1].basis_bp,
+        instrument.rub_curve_id,
+        base_id,
+        quote_id,
+        _money(risk.fx_delta_base * q, "base FX delta"),
+        _money(risk.fx_delta_quote * q, "quote FX delta"),
+        legs,
+        setup.fallbacks[0],
+        setup.fallbacks[1],
+        held,
+    )
+
+    def reprice(scenario: ScenarioView) -> float:
+        shock = FxCrossScenario(
+            scenario.curve_shift(instrument.rub_curve_id),
+            scenario.curve_shift(base_id),
+            scenario.curve_shift(quote_id),
+            scenario.basis_shift_bp(fx_basis_factor(x)),
+            scenario.basis_shift_bp(fx_basis_factor(y)),
+            scenario.fx_move_pct(x),
+            scenario.fx_move_pct(y),
+        )
+        return _money(engine.reprice(shock).total_pnl_rub * q, "FX cross scenario P&L")
+
+    flags = ["covered_parity", "fx_cross"]
+    if any(f is not None for f in setup.fallbacks):
+        flags.append("curve_fallback")
+    model = _model(
+        position,
+        instrument.instrument_id,
+        instrument.product.value,
+        FX_CROSS_RISK_MODEL_VERSION,
+        *flags,
     )
     return ProductOutcome(row, reprice, model)
 
@@ -1003,11 +1433,15 @@ def value_fx_forward(position: Position, instrument: object, ctx: ProductContext
 
 def _xccy_foreign_discount(
     ctx: ProductContext, curve_id: str, currency: str, spot: FxSpot
-) -> DiscountCurve | XccyCurveBootstrapRequest:
-    entry = ctx.snapshot.curve(curve_id)
+) -> tuple[str, DiscountCurve | XccyCurveBootstrapRequest, str | None]:
+    """``(curve ID used, foreign discount curve or XCCY quotes, curve it replaces)``."""
+    try:
+        entry = ctx.snapshot.curve(curve_id)
+    except MissingMarketData:
+        return ctx.fx_curve(curve_id, currency)
     source = entry.curve
     if not isinstance(source, XccyCurveBootstrapRequest):
-        return ctx.foreign_fx_curve(curve_id, currency)
+        return ctx.fx_curve(curve_id, currency)
     spec = get_curve_spec(entry.spec_id)
     if spec.kind is not CurveKind.XCCY_BOOTSTRAP or spec.currency != currency:
         raise InvalidTerms(f"curve {curve_id} does not match spec {spec.spec_id}")
@@ -1020,12 +1454,12 @@ def _xccy_foreign_discount(
     if source.convention.spec_id not in (None, spec.spec_id):
         raise InvalidTerms(f"curve {curve_id} quotes are of spec {source.convention.spec_id}")
     ctx.used_curves[curve_id] = (spec.spec_id, spec.model_version)
-    return source
+    return curve_id, source, None
 
 
 def _xccy_engine(
     position: Position, instrument: XccyInstrument, ctx: ProductContext
-) -> tuple[XccyRiskEngine, FxSpot, BusinessCalendar]:
+) -> tuple[XccyRiskEngine, FxSpot, BusinessCalendar, str, str | None]:
     """The swap's engine on the job's curves and spot (shared by valuation and carry)."""
     swap = instrument.swap
     currency = swap.currency
@@ -1037,7 +1471,9 @@ def _xccy_engine(
         if instrument.rub_projection_curve_id is None
         else ctx.projection(instrument.rub_projection_curve_id, "ruonia").curve
     )
-    foreign_d = _xccy_foreign_discount(ctx, instrument.foreign_discount_curve_id, currency, spot)
+    foreign_id, foreign_d, fallback_from = _xccy_foreign_discount(
+        ctx, instrument.foreign_discount_curve_id, currency, spot
+    )
     foreign_p = (
         None
         if instrument.foreign_projection_curve_id is None
@@ -1053,7 +1489,7 @@ def _xccy_engine(
         if instrument.foreign_fixing_id is None
         else ctx.snapshot.index_fixing(instrument.foreign_fixing_id)
     )
-    basis = ctx.snapshot.fx_basis(currency, instrument.foreign_discount_curve_id)
+    basis = ctx.fx_basis(currency, foreign_id)
     request = XccyRiskRequest(
         swap,
         spot.rub_per_unit,
@@ -1067,12 +1503,13 @@ def _xccy_engine(
         foreign_fixings=foreign_fixings,
         basis_day_count=basis.day_count,
     )
-    return XccyRiskEngine(request, ctx.curve_cache, ctx.xccy_cache), spot, settlement
+    engine = XccyRiskEngine(request, ctx.curve_cache, ctx.xccy_cache)
+    return engine, spot, settlement, foreign_id, fallback_from
 
 
 def value_xccy(position: Position, instrument: object, ctx: ProductContext) -> ProductOutcome:
     assert isinstance(instrument, XccyInstrument)
-    engine, spot, _ = _xccy_engine(position, instrument, ctx)
+    engine, spot, _, foreign_id, fallback_from = _xccy_engine(position, instrument, ctx)
     request = engine.request
     swap = instrument.swap
     currency = swap.currency
@@ -1086,7 +1523,7 @@ def value_xccy(position: Position, instrument: object, ctx: ProductContext) -> P
     ids: dict[XccyCurveRole, str | None] = {
         "rub_discount": instrument.rub_discount_curve_id,
         "rub_projection": instrument.rub_projection_curve_id,
-        "foreign_discount": instrument.foreign_discount_curve_id,
+        "foreign_discount": foreign_id,
         "foreign_projection": instrument.foreign_projection_curve_id,
     }
     curve_ids: dict[str, str] = {role: cid for role, cid in ids.items() if cid is not None}
@@ -1120,6 +1557,7 @@ def value_xccy(position: Position, instrument: object, ctx: ProductContext) -> P
         _money(risk.foreign_leg_pv * q, "foreign leg PV"),
         _money(risk.foreign_leg_pv_rub * q, "foreign leg RUB PV"),
         par,
+        fallback_from,
     )
 
     def reprice(scenario: ScenarioView) -> float:
@@ -1127,8 +1565,8 @@ def value_xccy(position: Position, instrument: object, ctx: ProductContext) -> P
         for_proj = instrument.foreign_projection_curve_id
         shock = XccyScenario(
             scenario.curve_shift(instrument.rub_discount_curve_id),
-            scenario.curve_shift(instrument.foreign_discount_curve_id),
-            0.0,
+            scenario.curve_shift(foreign_id),
+            scenario.basis_shift_bp(xccy_basis_factor(currency)),
             scenario.fx_move_pct(currency),
             None if rub_proj is None else scenario.curve_shift(rub_proj, projection=True),
             None if for_proj is None else scenario.curve_shift(for_proj, projection=True),
@@ -1142,6 +1580,8 @@ def value_xccy(position: Position, instrument: object, ctx: ProductContext) -> P
         flags.append("two_curve")
     if rub_fixings is not None or foreign_fixings is not None:
         flags.append("known_fixings")
+    if fallback_from is not None:
+        flags.append("curve_fallback")
     model = _model(
         position, instrument.instrument_id, instrument.product.value, XCCY_MODEL_VERSION, *flags
     )
@@ -1253,7 +1693,7 @@ def value_cds_position(
 
 def _fx_futures_engine(
     position: Position, instrument: FxFuturesInstrument, ctx: ProductContext
-) -> tuple[FxFuturesRiskEngine, FxSpot, BusinessCalendar, FuturesQuote]:
+) -> tuple[FxFuturesRiskEngine, FxSpot, BusinessCalendar, FuturesQuote, str, str | None]:
     """The position's engine on the job's curves, spot and price (valuation and carry)."""
     contract = instrument.contract
     currency = contract.currency
@@ -1267,7 +1707,7 @@ def _fx_futures_engine(
         raise InvalidTerms("the futures delivery date must follow the spot value date")
     quote = ctx.snapshot.futures_quote(contract.contract_id)
     rub = ctx.discount_curve(instrument.rub_curve_id, "RUB")
-    foreign = ctx.foreign_fx_curve(instrument.foreign_curve_id, currency)
+    foreign_id, foreign, fallback_from = ctx.fx_curve(instrument.foreign_curve_id, currency)
     q = position.quantity
     engine = FxFuturesRiskEngine(
         FxFuturesRiskRequest(
@@ -1282,20 +1722,20 @@ def _fx_futures_engine(
         ),
         ctx.curve_cache,
     )
-    return engine, spot, settlement, quote
+    return engine, spot, settlement, quote, foreign_id, fallback_from
 
 
 def value_fx_future(position: Position, instrument: object, ctx: ProductContext) -> ProductOutcome:
     assert isinstance(instrument, FxFuturesInstrument)
-    engine, spot, _, quote = _fx_futures_engine(position, instrument, ctx)
+    engine, spot, _, quote, foreign_id, fallback_from = _fx_futures_engine(
+        position, instrument, ctx
+    )
     contract = instrument.contract
     currency = contract.currency
     q = position.quantity
     risk = engine.risk(bump_bp=ctx.bump_bp, difference="central")
     second = engine.second_order(bump_bp=ctx.bump_bp) if ctx.include_second_order else None
-    factor_risk = fx_futures_factor_risk(
-        risk, instrument.rub_curve_id, instrument.foreign_curve_id, second
-    )
+    factor_risk = fx_futures_factor_risk(risk, instrument.rub_curve_id, foreign_id, second)
     margin = _money(q * contract.multiplier * (quote.price - quote.margined_price), "margin")
     row = FxFuturesPositionValuation(
         position.position_id,
@@ -1317,29 +1757,31 @@ def value_fx_future(position: Position, instrument: object, ctx: ProductContext)
         risk.spot_rate,
         spot.value_date,
         instrument.rub_curve_id,
-        instrument.foreign_curve_id,
+        foreign_id,
         risk.notional_rub,
         margin,
         risk.fx_delta_foreign,
+        fallback_from,
     )
 
     def reprice(scenario: ScenarioView) -> float:
         shock = FxFuturesScenario(
             scenario.curve_shift(instrument.rub_curve_id),
-            scenario.curve_shift(instrument.foreign_curve_id),
-            0.0,
+            scenario.curve_shift(foreign_id),
+            scenario.basis_shift_bp(fx_basis_factor(currency)),
             scenario.fx_move_pct(currency),
         )
         return engine.reprice(shock).total_pnl_rub
 
+    flags = ["covered_parity", "daily_margined", "implied_basis"]
+    if fallback_from is not None:
+        flags.append("curve_fallback")
     model = _model(
         position,
         instrument.instrument_id,
         instrument.product.value,
         FX_FUTURES_RISK_MODEL_VERSION,
-        "covered_parity",
-        "daily_margined",
-        "implied_basis",
+        *flags,
     )
     return ProductOutcome(row, reprice, model)
 
@@ -1453,7 +1895,8 @@ def value_rate_future(
 
     def reprice(scenario: ScenarioView) -> float:
         shock = RateFuturesScenario(
-            scenario.curve_shift(instrument.projection_curve_id, projection=True)
+            scenario.curve_shift(instrument.projection_curve_id, projection=True),
+            scenario.basis_shift_bp(futures_basis_factor(contract.contract_id)),
         )
         return engine.reprice(shock).total_pnl_rub
 
@@ -1562,6 +2005,7 @@ def value_ofz_future(position: Position, instrument: object, ctx: ProductContext
             scenario.curve_shift(instrument.bond_curve_id),
             scenario.curve_shift(instrument.funding_curve_id),
             scenario.spread_shift_bp,
+            scenario.basis_shift_bp(futures_basis_factor(instrument.contract.contract_id)),
         )
         return engine.reprice(shock).total_pnl_rub
 
@@ -1878,6 +2322,28 @@ class FxForwardPositionHorizon:
 
 
 @dataclass(frozen=True)
+class FxCrossPositionHorizon:
+    """Carry, rolldown and theta of an FX cross position (``fx_crosses``, 0.36.0); each
+    currency's spot at the horizon follows ``fx_horizon``."""
+
+    position_id: str
+    instrument_id: str
+    book: str
+    accounting_category: AccountingCategory
+    quantity: float
+    carry_rub: float
+    rolldown_rub: float
+    received_rub: float
+    horizon_pnl_rub: float
+    base_currency: str
+    quote_currency: str
+    rub_curve_id: str
+    base_curve_id: str
+    quote_curve_id: str
+    per_trade: FxCrossHorizonValuation
+
+
+@dataclass(frozen=True)
 class XccyPositionHorizon:
     """Carry, rolldown and theta of a cross-currency swap position
     (``xccy.xccy_horizon``); the spot at the horizon follows ``fx_horizon``."""
@@ -1925,6 +2391,7 @@ class FxFuturesPositionHorizon:
 HorizonRow = (
     SwapPositionHorizon
     | FxForwardPositionHorizon
+    | FxCrossPositionHorizon
     | XccyPositionHorizon
     | CdsPositionHorizon
     | FxFuturesPositionHorizon
@@ -1936,6 +2403,7 @@ HorizonRow = (
 HORIZON_ROW_FIELDS: dict[type, str] = {
     SwapPositionHorizon: "swaps",
     FxForwardPositionHorizon: "fx_forwards",
+    FxCrossPositionHorizon: "fx_crosses",
     XccyPositionHorizon: "xccy_swaps",
     CdsPositionHorizon: "cds",
     FxFuturesPositionHorizon: "fx_futures",
@@ -2051,16 +2519,48 @@ def horizon_fx_forward(
     fx_horizon: FxHorizon,
 ) -> FxForwardPositionHorizon:
     assert isinstance(instrument, FxForwardInstrument)
-    engine, spot, settlement, _ = _fx_forward_engine(position, instrument, ctx)
-    spot_date = horizon_spot_date(ctx.business_date, spot, settlement, horizon_date)
-    carry = engine.horizon(horizon_date, horizon_spot_value_date=spot_date, fx_horizon=fx_horizon)
+    setup = _fx_forward_engine(position, instrument, ctx)
+    spot_date = horizon_spot_date(ctx.business_date, setup.spot, setup.settlement, horizon_date)
+    carry = setup.engine.horizon(
+        horizon_date, horizon_spot_value_date=spot_date, fx_horizon=fx_horizon
+    )
     return FxForwardPositionHorizon(
         *_horizon_header(position, instrument.instrument_id, carry, position.quantity, "FX"),
         instrument.currency,
         instrument.rub_curve_id,
-        instrument.foreign_curve_id,
+        setup.foreign_curve_id,
         carry.horizon_spot_rate,
         spot_date,
+        carry,
+    )
+
+
+def horizon_fx_cross(
+    position: Position,
+    instrument: object,
+    ctx: ProductContext,
+    horizon_date: date,
+    fx_horizon: FxHorizon,
+) -> FxCrossPositionHorizon:
+    assert isinstance(instrument, FxCrossInstrument)
+    setup = _fx_cross_engine(position, instrument, ctx)
+    dates = tuple(
+        horizon_spot_date(ctx.business_date, spot, calendar, horizon_date)
+        for spot, calendar in zip(setup.spots, setup.calendars, strict=True)
+    )
+    carry = setup.engine.horizon(
+        horizon_date,
+        base_horizon_spot_value_date=dates[0],
+        quote_horizon_spot_value_date=dates[1],
+        fx_horizon=fx_horizon,
+    )
+    return FxCrossPositionHorizon(
+        *_horizon_header(position, instrument.instrument_id, carry, position.quantity, "FX cross"),
+        instrument.trade.base_currency,
+        instrument.trade.quote_currency,
+        instrument.rub_curve_id,
+        setup.curve_ids[0],
+        setup.curve_ids[1],
         carry,
     )
 
@@ -2073,7 +2573,7 @@ def horizon_xccy(
     fx_horizon: FxHorizon,
 ) -> XccyPositionHorizon:
     assert isinstance(instrument, XccyInstrument)
-    engine, spot, settlement = _xccy_engine(position, instrument, ctx)
+    engine, spot, settlement, _, _ = _xccy_engine(position, instrument, ctx)
     spot_date = horizon_spot_date(ctx.business_date, spot, settlement, horizon_date)
     carry = engine.horizon(horizon_date, horizon_spot_value_date=spot_date, fx_horizon=fx_horizon)
     return XccyPositionHorizon(
@@ -2093,7 +2593,7 @@ def horizon_fx_future(
     fx_horizon: FxHorizon,
 ) -> FxFuturesPositionHorizon:
     assert isinstance(instrument, FxFuturesInstrument)
-    engine, spot, settlement, _ = _fx_futures_engine(position, instrument, ctx)
+    engine, spot, settlement, _, _, _ = _fx_futures_engine(position, instrument, ctx)
     spot_date = horizon_spot_date(ctx.business_date, spot, settlement, horizon_date)
     carry = engine.horizon(horizon_date, horizon_spot_value_date=spot_date, fx_horizon=fx_horizon)
     return FxFuturesPositionHorizon(
@@ -2204,6 +2704,7 @@ def horizon_ofz_future(
 HORIZON_ADAPTERS: Mapping[type, HorizonAdapter] = {
     SwapInstrument: horizon_swap,
     FxForwardInstrument: horizon_fx_forward,
+    FxCrossInstrument: horizon_fx_cross,
     XccyInstrument: horizon_xccy,
     CdsInstrument: horizon_cds,
     FxFuturesInstrument: horizon_fx_future,
@@ -2229,6 +2730,7 @@ def horizon_adapter_for(instrument: object) -> HorizonAdapter:
 PRODUCT_ADAPTERS: Mapping[type, Adapter] = {
     SwapInstrument: value_swap,
     FxForwardInstrument: value_fx_forward,
+    FxCrossInstrument: value_fx_cross,
     XccyInstrument: value_xccy,
     CdsInstrument: value_cds_position,
     FxFuturesInstrument: value_fx_future,

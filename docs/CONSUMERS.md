@@ -87,6 +87,15 @@ commit to use them.
 - the fallback duration proxy `-Mac·PV·1e-4` is a continuous-zero DV01: divide by `1 + y`
   to sum with par and annual risk.
 
+**From 0.36.0** (the monitor pinned the branch build "0.35.0", commit `f3cbabc`, for the
+FX book and non-RUB bonds; 0.36.0 is that work plus 0.34.0 and never-called perpetuals):
+
+- move the pin to the 0.36.0 commit; the FX book and non-RUB bond APIs are those of
+  `f3cbabc`, so a book that does not use the KBD or `never_called` values as before;
+- perpetuals and callables: `ExerciseAssumption.never_called()` in
+  `ValuationPolicy.exercise_assumptions` instead of an assumed call (BACKLOG #128);
+  `horizon_portfolio` rejects a never-called perpetual until #126.
+
 ## Deprecations in 0.12.0 and what consumers should move to
 
 Nothing is removed before 1.0. Each call below now emits a `DeprecationWarning` (hidden by

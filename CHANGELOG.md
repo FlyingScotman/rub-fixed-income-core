@@ -1,13 +1,26 @@
 # Changelog
 
-## Unreleased — never-called perpetuals (BACKLOG #125)
+## 0.36.0 — CNY / USD / EUR bonds, FX forwards for any currency, never-called perpetuals
+
+One release for the three pieces of work after 0.34.0: never-called perpetuals (merged
+to `main` after 0.34.0), bonds in CNY / USD / EUR on their own currency's curve and the
+FX book (forwards of any currency, crosses without RUB, NDF fixings). The bonds and the
+FX book were built on a branch beside `main` as "0.34.0" and "0.35.0"; `main` released
+0.34.0 for the KBD first, and the Trading Desk Monitor pinned the branch's "0.35.0"
+(commit `f3cbabc`, without the KBD or perpetuals). 0.35.0 is therefore not released from
+`main`, so a result stamped 0.35.0 names that branch build only. Every new field of an
+existing type is omitted at its default: earlier encodings, job IDs, pinned hashes and
+stored results are unchanged, and a book that uses none of the additions values exactly
+as 0.34.0.
+
+### Never-called perpetuals (BACKLOG #125)
 
 The owner's position: Russian perpetuals are practically never called, so their value
 and risk assume no call. Every new field is omitted at its default: earlier policies,
 job IDs, results and pinned hashes are unchanged, and a policy without `never_called`
 values exactly as before.
 
-### Added
+#### Added
 
 - `ExerciseAssumption.never_called(assumed_coupons=())`: no call is exercised. A dated
   callable runs to maturity (as `to_maturity`); a perpetual pays its listed coupons and
@@ -31,7 +44,7 @@ values exactly as before.
   `horizon_date` its last listed coupon, yield and Macaulay duration of the stream,
   model flag `perpetual_tail`; to the put when the policy's horizon picks one.
 
-### Changed
+#### Changed
 
 - `yield_to_worst`, `price_to_worst` and `to_worst` no longer reject a perpetual: they
   include its calls and never being called (a call whose coupons are unknown is still
@@ -40,6 +53,111 @@ values exactly as before.
   with `UNSUPPORTED_PRODUCT` (BACKLOG #126).
 - `docs/callables.md`: the portfolio section said `value_portfolio` rejects callables;
   it has valued them under `exercise_assumptions` since 0.29.0.
+
+### CNY / USD / EUR bonds on their own currency's curve
+
+Package 3, phase 2 (Trading Desk Monitor R8 phase 2, work package P5). Every new field of
+an existing type is omitted at its default, so earlier encodings, job IDs, pinned hashes
+and `portfolio_result_v2.json` / `portfolio_result_v3.json` are unchanged.
+
+#### Added
+
+- **CNY bonds on the XCCY curve**: a built `cny_ruonia_xccy_v1` curve (the
+  `DiscountCurve` of `bootstrap_xccy_curve`, CNY under RUB collateral) now discounts CNY
+  bonds in `value_portfolio`; rate risk is `IR|<that curve>|<bucket>`, CS01 is `CS`
+  against it. An entry holding XCCY quotes stays a rejection for bonds (`INVALID_TERMS`,
+  "a bond needs the built curve").
+- **USD / EUR par-yield proxies** (`proxy_curves`): specs `usd_ust_par_proxy_v1` (US
+  Treasury par yields: semiannual bond-equivalent, bill BEY up to 6M) and
+  `eur_ecb_aaa_par_proxy_v1` (ECB AAA par yields, continuously compounded),
+  `CurveKind.PAR_YIELD_PROXY`, `CurveSpec.proxy` and `.par_coupon_frequency`;
+  `ParYieldQuote`, `ParYieldCurveRequest`, `bootstrap_par_yield_curve` (every quote
+  reprices to about 1e-12) and `par_yield`; `PAR_YIELD_PROXY_MODEL_VERSION =
+  "par-proxy-logdf-v1"`. Conventions and sources in `CONVENTIONS.md`.
+- **Proxy flag in results**: `CurveUse.proxy` (omitted when False).
+- **Explicit fallbacks for a missing foreign curve**:
+  `ValuationPolicy.foreign_curve_fallbacks` (`(currency, curve_id)` pairs, tried in
+  order within a currency) and `.fallback_curves_for(ccy)`. A fallback is used only when
+  the `foreign_curves` curve is absent from the snapshot, never for a present but unusable
+  one, and never across currencies (a RUB curve is rejected as before); the row names the
+  missing curve in `PositionValuation.curve_fallback_from`. No usable curve:
+  `MISSING_MARKET_DATA` naming every curve tried.
+
+#### Unchanged
+
+- Without fallbacks a missing foreign curve is still `MISSING_MARKET_DATA`; RUB bonds,
+  derivatives and their numbers are untouched. Horizon and the local worker still reject
+  non-RUB bonds (BACKLOG #41).
+
+### FX forwards for any currency, crosses and NDF fixings
+
+What the desk monitor needs to value the FX book through `value_portfolio` (FX-forward
+gap analysis, core packages C1–C3; roadmap review package P7: BACKLOG #46, #49, #103,
+#131). Every new field of an existing type is omitted
+at its default, so earlier encodings, job IDs, pinned hashes and
+`portfolio_result_v2.json` / `portfolio_result_v3.json` are unchanged.
+
+#### Added
+
+- **Any currency (C1).** `get_curve_spec` resolves `<ccy>_discount_factors_v1` (caller
+  discount factors) and `<ccy>_fx_implied_v1` (new `CurveKind.FX_IMPLIED`, model
+  `fx-implied-logdf-v1`) for every three-letter code other than RUB, so CHF, GBP, HKD,
+  JPY, KZT, AED or TRY forwards go through `value_portfolio` (tested equal to the
+  standalone engine); `foreign_discount_spec_id(ccy)`, `fx_implied_spec_id(ccy)`. The
+  generated specs are not listed in `CURVE_SPECS`.
+- **Implied curves from swap points in the snapshot.** `FxImpliedCurveRequest(currency,
+  curve_date, rub_curve_id, quotes, convention=None)` under a `<ccy>_fx_implied_v1`
+  entry: `value_portfolio` builds `implied_foreign_curve` once per job on the snapshot
+  `FxSpot` and the named RUB curve, so every quote reprices with zero basis; on such a
+  curve an absent `FxBasis` is zero and a nonzero one is rejected. A built implied curve
+  also discounts a bond of its currency.
+- **FX crosses without RUB (C2)**, module `fx_crosses`: `FxCrossForward`, `FxCrossSwap`,
+  `fx_cross_rub_legs` (the exact X/RUB + Y/RUB decomposition, any pivot),
+  `FxCrossRiskEngine` (risk on the RUB, base and quote curves, both bases, FX delta per
+  currency against RUB, exact scenarios `FxCrossScenario`, 37-factor Hessian, carry,
+  points-held risk), `fx_cross_factor_risk`; position type `FxCrossInstrument`
+  (`calendar_id` = the cross's settlement calendar), rows `PortfolioRiskResultV3.fx_crosses`
+  and `PortfolioHorizonResult.fx_crosses`; model flag `fx_cross`.
+- **NDF fixings (C3, BACKLOG #49 part).** `FxForwardLeg(..., fixing_date, fixing_source,
+  fixing_rate)` on a cash-settled leg; a fixed leg is frozen at `N/q · (fixing − K) ·
+  DF_rub(P)` (RUB risk only, no FX delta, outstanding to its payment date, no PV jump at
+  a fixing equal to the forward). `NdfConvention(fixing_source, fixing_lag_days,
+  value_lag_days)` with `from_payment` / `from_fixing` -> `NdfDates` and `.leg(...)`; no
+  source or lag is built in. Snapshot `fx_fixings` (`FxFixing(currency, source,
+  fixing_date, rub_per_unit, published_at=None)`, `MarketSnapshot.fx_fixing`):
+  `value_portfolio` freezes a leg at its published fixing (`known_fixings`), projects one
+  fixing today before publication (`fixing_pending`), and rejects one past its fixing
+  date without a fixing (`MISSING_MARKET_DATA`) or with a fixing in its terms that
+  differs from the snapshot's (`INVALID_TERMS`). Row legs report `fixing_date` and
+  `fixing_rate`.
+- **Points-held RUB risk (BACKLOG #46).** `FxForwardRiskEngine.points_held_rub_risk()`
+  (`FxForwardPointsHeldRisk`) and `FxCrossRiskEngine.points_held_rub_risk()`: every
+  outright held under the RUB shift, equal to rebuilding an implied curve at its quote
+  dates; `ValuationPolicy(fx_points_held_risk=True)` adds
+  `points_held_rub_buckets` to the rows (the factors keep the foreign curve held).
+- **Basis scenarios (BACKLOG #103).** `PortfolioScenario(basis_shifts_bp=((factor, bp),
+  ...))` moves `FXBASIS|<ccy>` (FX forwards, crosses, FX futures), `XCCYBASIS|<ccy>` and
+  `FUTBASIS|<contract>` (rate and OFZ futures); `.basis_shift_bp(factor)`.
+- **Fallback curves for FX products (BACKLOG #131).**
+  `ValuationPolicy(fx_curve_fallbacks=((curve_id, fallback_id), ...))`: tried in order
+  when an FX forward's, cross's, XCCY swap's or FX future's foreign curve is absent from
+  the snapshot; a par-yield proxy is accepted only as such a fallback and needs its own
+  calibrated `FxBasis`. Rows name the replaced curve (`curve_fallback_from` on FX forward,
+  XCCY and FX futures rows; `base_/quote_curve_fallback_from` on crosses); model flag
+  `curve_fallback`.
+
+#### Changed
+
+- An FX product's foreign curve may be any `<ccy>_discount_factors_v1` or
+  `<ccy>_fx_implied_v1` curve; before, only CNY / USD / EUR had a spec.
+- `docs/fx-forwards.md`: the stale "horizon_portfolio does not" carry FX forwards line
+  is gone.
+
+#### Unchanged
+
+- Without the new terms, fields and options every number, encoding and hash is as
+  without this section. Not done here: SOFR / €STR bootstraps (#40, no quotes in the
+  hub), derivatives in the local worker (#102), key-rate / RUONIA basis swaps (#113).
 
 ## 0.34.0 — the KBD as a risk curve, KBD-linked floaters
 
@@ -388,8 +506,8 @@ in `value_portfolio` (BACKLOG #94).
 ### Documented
 
 - `project_financed_bond` compounds daily (`(1 + r/365)^days`) and is neither a repo
-  contract nor the desk's TRADING funding rule (simple interest on the previous clean
-  MV, backend `desk_rules`; local audit F13). Unchanged; `docs/CONVENTIONS.md`,
+  contract nor the desk's funding engine (simple interest on a configured base, backend
+  `desk_rules`; local audit F13). Unchanged; `docs/CONVENTIONS.md`,
   `docs/repo.md`.
 - Booking rule: the cash borrower keeps the bond as an ordinary bond position, the cash
   lender has none; the collateral reference never enters PV or risk, so nothing is

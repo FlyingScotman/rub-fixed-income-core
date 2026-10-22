@@ -27,6 +27,8 @@ def test_registered_specs() -> None:
         "rub_key_rate_projection_v1",
         "cny_ruonia_xccy_v1",
         "rub_real_discount_factors_v1",
+        "usd_ust_par_proxy_v1",
+        "eur_ecb_aaa_par_proxy_v1",
     }
     kbd = get_curve_spec("rub_ofz_kbd_v1")
     assert kbd.kind is CurveKind.KBD_PARAMETRIC and kbd.model_version == KBD_MODEL_VERSION
@@ -56,3 +58,17 @@ def test_foreign_discount_specs_are_caller_built_curves_per_currency() -> None:
         assert spec.kind is CurveKind.DISCOUNT_FACTORS and spec.currency == currency
         assert spec.model_version == "ois-logdf-v1"
         assert spec.fixed_leg_frequency_months is None  # no bootstrap conventions assumed
+
+
+def test_par_yield_proxies_are_flagged_and_nothing_else_is() -> None:
+    proxies = {k for k, spec in CURVE_SPECS.items() if spec.proxy}
+    assert proxies == {"usd_ust_par_proxy_v1", "eur_ecb_aaa_par_proxy_v1"}
+    usd = get_curve_spec("usd_ust_par_proxy_v1")
+    eur = get_curve_spec("eur_ecb_aaa_par_proxy_v1")
+    assert usd.kind is eur.kind is CurveKind.PAR_YIELD_PROXY
+    assert (usd.currency, usd.par_coupon_frequency) == ("USD", 2)
+    assert (eur.currency, eur.par_coupon_frequency) == ("EUR", 0)
+    assert "not OIS" in usd.description and "not OIS" in eur.description
+    assert usd.sources and eur.sources
+    for spec in CURVE_SPECS.values():
+        assert spec.par_coupon_frequency is None or spec.kind is CurveKind.PAR_YIELD_PROXY

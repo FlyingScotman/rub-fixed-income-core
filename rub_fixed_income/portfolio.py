@@ -6,7 +6,10 @@ factor vocabulary. Supported in 0.11.0: fixed-coupon RUB bonds (bullet, amortizi
 confirmed put) on a KBD curve, a prebuilt discount curve or RUONIA OIS quotes.
 Package 3 adds CNY, USD and EUR bonds: each is discounted on the curve that the policy
 names for its currency (``ValuationPolicy.foreign_curves``), valued in RUB at the
-snapshot FX rate, and carries ``FX|<ccy>`` with its cross terms. Everything else is a
+snapshot FX rate, and carries ``FX|<ccy>`` with its cross terms. Since 0.36.0 that
+curve can also be the built CNY XCCY curve (``cny_ruonia_xccy_v1``) or a USD / EUR
+government par-yield proxy (``proxy_curves``), with explicit same-currency fallbacks
+(``ValuationPolicy.foreign_curve_fallbacks``) flagged on the row. Everything else is a
 typed rejection recorded in coverage, never a zero.
 
 Each curve is built once per call and its shocked versions are shared across
@@ -67,6 +70,7 @@ from .factors import (
     linker_factor_risk,
 )
 from .floating import FixingIndex
+from .fx_forwards import FxImpliedCurveRequest
 from .horizon import HORIZON_MODEL_VERSION, FxHorizon, HorizonValuation, horizon_valuation
 from .horizon import fx_horizon as fx_horizon_rule
 from .inflation import IndexedPrincipalLeg
@@ -86,6 +90,8 @@ from .portfolio_products import (
     CdsPositionHorizon,
     CdsPositionValuation,
     CreditCurveUse,
+    FxCrossPositionHorizon,
+    FxCrossPositionValuation,
     FxForwardPositionHorizon,
     FxForwardPositionValuation,
     FxFuturesPositionHorizon,
@@ -114,6 +120,7 @@ from .portfolio_products import (
 )
 from .risk import BondRiskEngine, BondRiskRequest, BondScenario, ShockedCurveCache
 from .serialization import decode
+from .xccy import XccyCurveBootstrapRequest
 
 __all__ = [
     "PORTFOLIO_RESULT_SCHEMA",
@@ -176,7 +183,18 @@ class ValuationPolicy:
 
     RUB bonds are discounted on ``discount_curve_id``. A non-RUB bond is discounted on
     the curve that ``foreign_curves`` names for its currency, as ``(currency, curve_id)``
-    pairs; there is no fallback. ``curve_overrides`` win for the instruments they name.
+    pairs. ``curve_overrides`` win for the instruments they name.
+
+    A missing foreign curve is never replaced silently, and never by a curve of another
+    currency (a bond's curve must be of its currency, whatever names it).
+    ``foreign_curve_fallbacks`` (0.36.0, off by default) lists ``(currency, curve_id)``
+    alternatives tried in the given order when the ``foreign_curves`` curve of that
+    currency is **absent** from the snapshot (a curve present but unusable is still a
+    rejection); the row then names the missing curve in
+    ``PositionValuation.curve_fallback_from``. A typical use is a USD SOFR curve with the
+    UST par-yield proxy (``usd_ust_par_proxy_v1``) behind it; ``CurveUse.proxy`` marks a
+    proxy curve in the result. Without a usable curve the position is a
+    ``MISSING_MARKET_DATA`` rejection naming every curve tried.
 
     ``cap_floor_guard_bp`` is the model policy for floaters with a floor or cap: core
     prices them at intrinsic value on the projected rate only when that rate is at least
@@ -217,6 +235,19 @@ class ValuationPolicy:
       (``PositionValuation.spread_buckets_rub``, :meth:`BondRiskEngine.spread_bucket_risk`):
       CS01 by tenor for credit, the OFZ basis by tenor for an OFZ discounted on RUONIA
       OIS (OWNER_REQUESTS R18: the OFZ curve is RUONIA plus a basis).
+
+    FX product options (0.36.0), each omitted at its default:
+
+    - ``fx_curve_fallbacks`` (BACKLOG #131): ``(curve_id, fallback_curve_id)`` pairs, tried
+      in the given order when an FX forward, FX cross, XCCY swap or FX future names
+      ``curve_id`` as its foreign curve and it is **absent** from the snapshot. The
+      fallback must be of the same currency; it may be a par-yield proxy
+      (``usd_ust_par_proxy_v1``), which an FX product accepts only as a fallback, and it
+      needs its own ``FxBasis`` (calibrated, since a proxy's parity is off by its
+      credit). The row names the replaced curve in ``curve_fallback_from``.
+    - ``fx_points_held_risk=True`` (BACKLOG #46) adds each FX forward's and cross's RUB
+      curve risk with the swap points held (``points_held_rub_buckets``); the factor
+      risk keeps the foreign curve held.
     """
 
     discount_curve_id: str
@@ -238,6 +269,11 @@ class ValuationPolicy:
     discount_margin: bool = field(default=False, metadata=OMIT_IF_DEFAULT)
     require_known_coupons: bool = field(default=False, metadata=OMIT_IF_DEFAULT)
     spread_buckets: bool = field(default=False, metadata=OMIT_IF_DEFAULT)
+    foreign_curve_fallbacks: tuple[tuple[str, str], ...] = field(
+        default=(), metadata=OMIT_IF_DEFAULT
+    )
+    fx_curve_fallbacks: tuple[tuple[str, str], ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
+    fx_points_held_risk: bool = field(default=False, metadata=OMIT_IF_DEFAULT)
 
     def __post_init__(self) -> None:
         pairs = tuple(sorted(self.exercise_assumptions, key=lambda p: p[0]))
@@ -263,6 +299,37 @@ class ValuationPolicy:
                 raise InvalidTerms("foreign curve IDs must be non-empty strings")
         if len({c for c, _ in self.foreign_curves}) != len(self.foreign_curves):
             raise InvalidTerms("duplicate foreign curve currency")
+        # Sorted by currency only: the order within a currency is the order of trial.
+        fallbacks = tuple(
+            sorted((tuple(p) for p in self.foreign_curve_fallbacks), key=lambda p: p[0])
+        )
+        primary = dict(self.foreign_curves)
+        for currency, curve_id in fallbacks:
+            _foreign_currency(currency, "fallback curve currency")
+            if not isinstance(curve_id, str) or not curve_id:
+                raise InvalidTerms("fallback curve IDs must be non-empty strings")
+            if currency not in primary:
+                raise InvalidTerms(
+                    f"a fallback curve for {currency} needs a foreign_curves entry first"
+                )
+            if curve_id == primary[currency]:
+                raise InvalidTerms(f"the fallback curve of {currency} is its primary curve")
+        if len(set(fallbacks)) != len(fallbacks):
+            raise InvalidTerms("duplicate fallback curve")
+        object.__setattr__(self, "foreign_curve_fallbacks", fallbacks)
+        # Sorted by the replaced curve only: the order of trial within it is kept.
+        fx_fallbacks = tuple(
+            sorted((tuple(p) for p in self.fx_curve_fallbacks), key=lambda p: p[0])
+        )
+        for curve_id, fallback_id in fx_fallbacks:
+            for value in (curve_id, fallback_id):
+                if not isinstance(value, str) or not value or "|" in value:
+                    raise InvalidTerms("FX fallback curve IDs must be non-empty, without '|'")
+            if curve_id == fallback_id:
+                raise InvalidTerms(f"curve {curve_id} cannot be its own fallback")
+        if len(set(fx_fallbacks)) != len(fx_fallbacks):
+            raise InvalidTerms("duplicate FX fallback curve")
+        object.__setattr__(self, "fx_curve_fallbacks", fx_fallbacks)
         if not self.discount_curve_id:
             raise InvalidTerms("discount_curve_id is required")
         if self.spread_kind not in ("credit", "ofz"):
@@ -280,7 +347,12 @@ class ValuationPolicy:
             not isinstance(self.g_spread_curve_id, str) or not self.g_spread_curve_id
         ):
             raise InvalidTerms("g_spread_curve_id must be a non-empty string or None")
-        for flag in ("discount_margin", "require_known_coupons", "spread_buckets"):
+        for flag in (
+            "discount_margin",
+            "require_known_coupons",
+            "spread_buckets",
+            "fx_points_held_risk",
+        ):
             if not isinstance(getattr(self, flag), bool):
                 raise TypeError(f"{flag} must be boolean")
         if self.horizon not in ("maturity", "confirmed_put", "open_put"):
@@ -321,6 +393,10 @@ class ValuationPolicy:
             )
         return curve_id
 
+    def fallback_curves_for(self, currency: str) -> tuple[str, ...]:
+        """The ``foreign_curve_fallbacks`` of ``currency``, in the order of trial."""
+        return tuple(c for k, c in self.foreign_curve_fallbacks if k == currency)
+
 
 @dataclass(frozen=True)
 class PortfolioScenario:
@@ -345,6 +421,11 @@ class PortfolioScenario:
     "ofz", bp)`` pairs: a bond whose spread kind is listed takes that shift instead of
     ``shock.spread_shift_bp``. A "+20 bp OFZ basis" scenario is ``(("ofz", 20.0),)`` on a
     book whose OFZ are spread to RUONIA OIS; credit spreads then stay put.
+
+    ``basis_shifts_bp`` (0.36.0, BACKLOG #103) moves calibrated bases, as ``(factor,
+    bp)`` pairs keyed by the factor the positions report: ``FXBASIS|<ccy>`` (FX
+    forwards, crosses and FX futures of the currency), ``XCCYBASIS|<ccy>`` (XCCY swaps),
+    ``FUTBASIS|<contract>`` (rate and OFZ futures). Unlisted bases stay frozen, as before.
     """
 
     name: str
@@ -359,10 +440,22 @@ class PortfolioScenario:
     spread_kind_shifts_bp: tuple[tuple[str, float], ...] = field(
         default=(), metadata=OMIT_IF_DEFAULT
     )
+    basis_shifts_bp: tuple[tuple[str, float], ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
 
     def __post_init__(self) -> None:
         if not self.name:
             raise InvalidTerms("scenario name is required")
+        bases = tuple(sorted(tuple(p) for p in self.basis_shifts_bp))
+        for factor, shift in bases:
+            prefix, _, key = factor.partition("|") if isinstance(factor, str) else ("", "", "")
+            if prefix not in ("FXBASIS", "XCCYBASIS", "FUTBASIS") or not key or "|" in key:
+                raise InvalidTerms(
+                    "basis shifts are keyed FXBASIS|<ccy>, XCCYBASIS|<ccy> or FUTBASIS|<contract>"
+                )
+            finite_money(cast(float, shift), "basis shift bp")
+        if len({k for k, _ in bases}) != len(bases):
+            raise InvalidTerms("duplicate basis shift")
+        object.__setattr__(self, "basis_shifts_bp", bases)
         kinds = tuple(sorted(tuple(p) for p in self.spread_kind_shifts_bp))
         for kind, move in kinds:
             if kind not in ("credit", "ofz"):
@@ -396,6 +489,10 @@ class PortfolioScenario:
 
     def fx_move_pct(self, currency: str) -> float:
         return dict(self.fx_shocks_pct).get(currency, 0.0)
+
+    def basis_shift_bp(self, factor: str) -> float:
+        """The ``basis_shifts_bp`` shift of the basis factor ``factor`` (0 when unlisted)."""
+        return float(dict(self.basis_shifts_bp).get(factor, 0.0))
 
     def named_curve_shift(self, curve_id: str) -> tuple[float, ...] | None:
         """The shifts ``curve_shifts_bp`` gives ``curve_id``, or None when it is not listed."""
@@ -481,6 +578,9 @@ class PositionValuation:
     marks a put chosen by the open-window rule (``ValuationPolicy.horizon``).
     ``spread_buckets_rub`` (``ValuationPolicy.spread_buckets``) is the central ``CS``
     sensitivity split by :data:`RISK_BUCKETS` (see ``BondRiskEngine.spread_bucket_risk``).
+    ``curve_fallback_from`` (0.36.0) names the curve the policy wanted for a non-RUB bond
+    when it was absent from the snapshot and ``curve_id`` is a fallback of the same
+    currency (``ValuationPolicy.foreign_curve_fallbacks``); None otherwise.
     """
 
     position_id: str
@@ -515,6 +615,7 @@ class PositionValuation:
     exercise_assumption: str | None = field(default=None, metadata=OMIT_IF_DEFAULT)
     discount_margin_bp: float | None = field(default=None, metadata=OMIT_IF_DEFAULT)
     spread_buckets_rub: tuple[float, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
+    curve_fallback_from: str | None = field(default=None, metadata=OMIT_IF_DEFAULT)
 
 
 @dataclass(frozen=True)
@@ -536,9 +637,13 @@ class PortfolioScenarioResult:
 
 @dataclass(frozen=True)
 class CurveUse:
+    """A curve the job read. ``proxy`` (0.36.0) marks a stand-in curve of its currency
+    (``CurveSpec.proxy``: a government par-yield curve, not OIS); omitted when False."""
+
     curve_id: str
     spec_id: str
     model_version: str
+    proxy: bool = field(default=False, metadata=OMIT_IF_DEFAULT)
 
 
 @dataclass(frozen=True)
@@ -598,7 +703,7 @@ class PortfolioRiskResultV3(PortfolioRiskResult):
     ``value_portfolio`` emits it only when a position is on a derivative (a type of
     :mod:`rub_fixed_income.portfolio_instruments`); a bond-only book stays v2, byte for
     byte. ``positions`` keeps the bond rows; each derivative product has its own row
-    tuple (``swaps``, ``fx_forwards``, ``xccy_swaps``, ``cds``, ``fx_futures``,
+    tuple (``swaps``, ``fx_forwards``, ``fx_crosses``, ``xccy_swaps``, ``cds``, ``fx_futures``,
     ``rate_futures``, ``ofz_futures``, ``repos``), omitted when empty. ``coverage``, scenarios, ``covered_pv_rub`` / ``total_pv_rub`` and
     ``factor_totals`` cover every position. The v3-only blocks:
 
@@ -617,6 +722,7 @@ class PortfolioRiskResultV3(PortfolioRiskResult):
     fx_forwards: tuple[FxForwardPositionValuation, ...] = field(
         default=(), metadata=OMIT_IF_DEFAULT
     )
+    fx_crosses: tuple[FxCrossPositionValuation, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
     xccy_swaps: tuple[XccyPositionValuation, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
     cds: tuple[CdsPositionValuation, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
     fx_futures: tuple[FxFuturesPositionValuation, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
@@ -639,6 +745,7 @@ class PortfolioRiskResultV3(PortfolioRiskResult):
         return (
             *self.swaps,
             *self.fx_forwards,
+            *self.fx_crosses,
             *self.xccy_swaps,
             *self.cds,
             *self.fx_futures,
@@ -707,6 +814,31 @@ def _build_curve(entry: CurveEntry, business_date: date) -> _BuiltCurve:
                 spec.currency,
                 spec.kind is CurveKind.REAL_DISCOUNT_FACTORS,
             )
+        raise InvalidTerms(f"curve {entry.curve_id} does not match spec {spec.spec_id}")
+    if spec.kind in (CurveKind.XCCY_BOOTSTRAP, CurveKind.PAR_YIELD_PROXY, CurveKind.FX_IMPLIED):
+        # A built XCCY curve (CNY under RUB collateral), a par-yield proxy (0.36.0) or a
+        # built curve implied from FX swaps (0.36.0): read, interpolated and shifted on
+        # its continuous zero rates as caller factors.
+        if isinstance(source, XccyCurveBootstrapRequest):
+            raise InvalidTerms(
+                f"curve {entry.curve_id} holds XCCY quotes; a bond needs the built curve "
+                "(bootstrap_xccy_curve) under the spec"
+            )
+        if isinstance(source, FxImpliedCurveRequest):
+            raise InvalidTerms(
+                f"curve {entry.curve_id} holds FX swap quotes; a bond needs the built curve "
+                "(implied_foreign_curve) under the spec"
+            )
+        if (
+            isinstance(source, DiscountCurve)
+            and source.model_version == spec.model_version
+            and source.convention.time_day_count is spec.time_day_count
+        ):
+            if source.curve_date != business_date:
+                raise InvalidTerms(
+                    f"curve {entry.curve_id} is not dated the snapshot business date"
+                )
+            return _BuiltCurve(entry, source, None, spec.model_version, spec.currency)
         raise InvalidTerms(f"curve {entry.curve_id} does not match spec {spec.spec_id}")
     raise InvalidTerms(f"spec {spec.spec_id} is not a bond discount curve")
 
@@ -934,7 +1066,7 @@ def value_portfolio(
     for key, use in context.used_curves.items():
         used_curves.setdefault(key, use)
     curves_used = tuple(
-        CurveUse(curve_id, spec_id, model_version)
+        CurveUse(curve_id, spec_id, model_version, get_curve_spec(spec_id).proxy)
         for curve_id, (spec_id, model_version) in sorted(used_curves.items())
     )
     fields_v2 = (
@@ -1036,6 +1168,8 @@ def _product_context(
         calendar,
         used_fx,
         bonds,
+        fx_curve_fallbacks=policy.fx_curve_fallbacks,
+        fx_points_held_risk=policy.fx_points_held_risk,
     )
 
 
@@ -1281,7 +1415,7 @@ def _value_position(
         )
     calendar = _use_calendar(snapshot, instrument, used_calendars)
     settlement = calendar.add_business_days(snapshot.business_date, instrument.settlement_lag_days)
-    curve_id = policy.discount_curve_for(instrument)
+    curve_id, fallback_from = _bond_discount_curve(policy, instrument, snapshot)
     built = curve(curve_id)
     if built.real:
         raise InvalidTerms(
@@ -1458,8 +1592,37 @@ def _value_position(
         amounts,
         discount_margin_bp=margin,
         spread_buckets_rub=spread_buckets,
+        curve_fallback_from=fallback_from,
     )
     return valuation, engine
+
+
+def _bond_discount_curve(
+    policy: ValuationPolicy, instrument: Instrument, snapshot: MarketSnapshot
+) -> tuple[str, str | None]:
+    """The discount curve ID of a bond and, when it is a fallback, the curve it replaces.
+
+    Only a foreign curve that is absent from the snapshot falls back, and only to the
+    policy's ``foreign_curve_fallbacks`` of the bond's currency; the caller still checks
+    that the curve chosen is of that currency.
+    """
+    curve_id = policy.discount_curve_for(instrument)
+    currency = instrument.currency
+    if currency == "RUB" or instrument.instrument_id in dict(policy.curve_overrides):
+        return curve_id, None
+    present = {entry.curve_id for entry in snapshot.curves}
+    if curve_id in present:
+        return curve_id, None
+    fallbacks = policy.fallback_curves_for(currency)
+    for candidate in fallbacks:
+        if candidate in present:
+            return candidate, curve_id
+    if not fallbacks:
+        return curve_id, None  # the curve lookup raises MISSING_MARKET_DATA
+    tried = ", ".join(repr(c) for c in (curve_id, *fallbacks))
+    raise MissingMarketData(
+        f"no {currency} discount curve in snapshot {snapshot.snapshot_id} (tried {tried})"
+    )
 
 
 def _perpetual_put(
@@ -2006,6 +2169,7 @@ class PortfolioHorizonResult:
     repos: tuple[RepoPositionHorizon, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
     cds: tuple[CdsPositionHorizon, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
     fx_forwards: tuple[FxForwardPositionHorizon, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
+    fx_crosses: tuple[FxCrossPositionHorizon, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
     xccy_swaps: tuple[XccyPositionHorizon, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
     fx_futures: tuple[FxFuturesPositionHorizon, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
     rate_futures: tuple[RateFuturesPositionHorizon, ...] = field(

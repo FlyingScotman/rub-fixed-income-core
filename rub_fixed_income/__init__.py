@@ -159,8 +159,11 @@ from .conventions import (
 )
 from .curve_specs import (
     CURVE_SPECS,
+    PAR_YIELD_PROXY_MODEL_VERSION,
     CurveKind,
     CurveSpec,
+    foreign_discount_spec_id,
+    fx_implied_spec_id,
     get_curve_spec,
     ois_curve_convention,
 )
@@ -185,6 +188,7 @@ from .domain import (
     FloatingCouponLeg,
     FuturesQuote,
     FxBasis,
+    FxFixing,
     FxRate,
     FxSpot,
     IndexFixingEntry,
@@ -243,6 +247,24 @@ from .floating import (
     ObservationWindow,
     key_rate_projection_curve,
 )
+from .fx_crosses import (
+    FX_CROSS_HORIZON_MODEL_VERSION,
+    FX_CROSS_RISK_MODEL_VERSION,
+    FX_CROSS_SECOND_ORDER_MODEL_VERSION,
+    FxCrossForward,
+    FxCrossHorizonValuation,
+    FxCrossLegValuation,
+    FxCrossPointsHeldRisk,
+    FxCrossRiskEngine,
+    FxCrossRiskRequest,
+    FxCrossRiskResult,
+    FxCrossScenario,
+    FxCrossScenarioResult,
+    FxCrossSecondOrderRisk,
+    FxCrossSwap,
+    fx_cross_factor_risk,
+    fx_cross_rub_legs,
+)
 from .fx_forwards import (
     FX_FORWARD_HORIZON_MODEL_VERSION,
     FX_FORWARD_RISK_MODEL_VERSION,
@@ -254,14 +276,18 @@ from .fx_forwards import (
     FxForwardHorizonValuation,
     FxForwardLeg,
     FxForwardLegValuation,
+    FxForwardPointsHeldRisk,
     FxForwardRiskEngine,
     FxForwardRiskRequest,
     FxForwardRiskResult,
     FxForwardScenarioResult,
     FxForwardSecondOrderRisk,
+    FxImpliedCurveRequest,
     FxOutrightQuote,
     FxSwap,
     FxSwapPointsQuote,
+    NdfConvention,
+    NdfDates,
     cip_implied_foreign_rate,
     cip_implied_rub_rate,
     cip_outright,
@@ -423,6 +449,7 @@ from .portfolio import (
 from .portfolio_instruments import (
     CdsInstrument,
     DerivativeInstrument,
+    FxCrossInstrument,
     FxForwardInstrument,
     FxFuturesInstrument,
     OfzDeliverable,
@@ -438,6 +465,8 @@ from .portfolio_products import (
     PRODUCT_ADAPTERS,
     CdsPositionValuation,
     CreditCurveUse,
+    FxCrossPositionHorizon,
+    FxCrossPositionValuation,
     FxForwardPositionValuation,
     FxFuturesPositionValuation,
     HessianTotal,
@@ -450,6 +479,12 @@ from .portfolio_products import (
     SwapPositionHorizon,
     SwapPositionValuation,
     XccyPositionValuation,
+)
+from .proxy_curves import (
+    ParYieldCurveRequest,
+    ParYieldQuote,
+    bootstrap_par_yield_curve,
+    par_yield,
 )
 from .rate_futures import (
     RATE_FUTURES_HORIZON_MODEL_VERSION,
@@ -1174,4 +1209,43 @@ __all__ += [
     "BondMetricsInput",
     "bond_metrics_batch",
     "kbd_effective_yields",
+]
+
+# 0.36.0: CNY / USD / EUR bonds on their own currency's curve (XCCY CNY, par-yield proxies).
+__all__ += [
+    "PAR_YIELD_PROXY_MODEL_VERSION",
+    "ParYieldCurveRequest",
+    "ParYieldQuote",
+    "bootstrap_par_yield_curve",
+    "par_yield",
+]
+
+# 0.36.0: FX for any currency, crosses, NDF fixings, points-held risk, basis scenarios.
+__all__ += [
+    "FX_CROSS_HORIZON_MODEL_VERSION",
+    "FX_CROSS_RISK_MODEL_VERSION",
+    "FX_CROSS_SECOND_ORDER_MODEL_VERSION",
+    "FxCrossForward",
+    "FxCrossHorizonValuation",
+    "FxCrossInstrument",
+    "FxCrossLegValuation",
+    "FxCrossPointsHeldRisk",
+    "FxCrossPositionHorizon",
+    "FxCrossPositionValuation",
+    "FxCrossRiskEngine",
+    "FxCrossRiskRequest",
+    "FxCrossRiskResult",
+    "FxCrossScenario",
+    "FxCrossScenarioResult",
+    "FxCrossSecondOrderRisk",
+    "FxCrossSwap",
+    "FxFixing",
+    "FxForwardPointsHeldRisk",
+    "FxImpliedCurveRequest",
+    "NdfConvention",
+    "NdfDates",
+    "foreign_discount_spec_id",
+    "fx_cross_factor_risk",
+    "fx_cross_rub_legs",
+    "fx_implied_spec_id",
 ]

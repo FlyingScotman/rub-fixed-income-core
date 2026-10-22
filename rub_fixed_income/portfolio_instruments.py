@@ -11,8 +11,8 @@ identity.
 
 Every type has ``instrument_id``, ``product`` and ``currency``. ``currency`` is what a
 :class:`~rub_fixed_income.domain.Position` on it must state: RUB for a swap, the foreign
-currency of an FX forward, FX swap, XCCY swap or FX future, the contract currency of a
-CDS, RUB for rate and OFZ futures and repos. The position's ``quantity`` multiplies the contract as
+currency of an FX forward, FX swap, XCCY swap or FX future, the base currency of an FX
+cross, the contract currency of a CDS, RUB for rate and OFZ futures and repos. The position's ``quantity`` multiplies the contract as
 described (1 = the trade as booked, -1 its mirror); for a future it is the signed number
 of contracts.
 
@@ -31,6 +31,7 @@ from .cds import CdsContract
 from .conventions import DayCount
 from .domain import Instrument, ProductType
 from .errors import InvalidTerms
+from .fx_crosses import FxCrossForward, FxCrossSwap
 from .fx_forwards import FxForward, FxSwap
 from .fx_futures import FxFuturesContract
 from .ofz_futures import OfzFuturesContract
@@ -47,6 +48,7 @@ from .xccy import XccySwap
 __all__ = [
     "CdsInstrument",
     "DerivativeInstrument",
+    "FxCrossInstrument",
     "FxForwardInstrument",
     "FxFuturesInstrument",
     "OfzDeliverable",
@@ -121,7 +123,9 @@ class FxForwardInstrument:
     Valued by covered parity on ``rub_curve_id`` and ``foreign_curve_id`` from the
     snapshot :class:`~rub_fixed_income.domain.FxSpot` of the currency (its value date and
     settlement calendar) and the :class:`~rub_fixed_income.domain.FxBasis` of the pair on
-    the foreign curve.
+    the foreign curve. Any currency other than RUB (0.36.0: ``<ccy>_discount_factors_v1``
+    or ``<ccy>_fx_implied_v1``); an NDF leg whose fixing date has come is frozen at the
+    snapshot :class:`~rub_fixed_income.domain.FxFixing` of its ``fixing_source``.
     """
 
     instrument_id: str
@@ -145,6 +149,45 @@ class FxForwardInstrument:
     @property
     def currency(self) -> str:
         return self.trade.currency
+
+
+@dataclass(frozen=True)
+class FxCrossInstrument:
+    """An outstanding FX forward or swap between two foreign currencies (0.36.0).
+
+    Valued in RUB under RUB collateral (``fx_crosses``): each currency on its own curve
+    (``base_curve_id``, ``quote_curve_id``) from its snapshot
+    :class:`~rub_fixed_income.domain.FxSpot` and :class:`~rub_fixed_income.domain.FxBasis`,
+    both discounted to RUB on ``rub_curve_id``. ``calendar_id`` is the cross pair's
+    settlement calendar (for example a joint US + CN calendar for USD/CNY): every value
+    date must be a business day of it. A position on it states the base currency.
+    """
+
+    instrument_id: str
+    trade: FxCrossForward | FxCrossSwap
+    rub_curve_id: str
+    base_curve_id: str
+    quote_curve_id: str
+    calendar_id: str
+
+    def __post_init__(self) -> None:
+        _text(self.instrument_id, "instrument_id")
+        if not isinstance(self.trade, (FxCrossForward, FxCrossSwap)):
+            raise TypeError("trade must be an FxCrossForward or an FxCrossSwap")
+        for name in ("rub_curve_id", "base_curve_id", "quote_curve_id", "calendar_id"):
+            _text(getattr(self, name), name)
+        if len({self.rub_curve_id, self.base_curve_id, self.quote_curve_id}) != 3:
+            raise InvalidTerms("the RUB, base and quote curves need distinct curve IDs")
+
+    @property
+    def product(self) -> ProductType:
+        return (
+            ProductType.FX_SWAP if isinstance(self.trade, FxCrossSwap) else ProductType.FX_FORWARD
+        )
+
+    @property
+    def currency(self) -> str:
+        return self.trade.base_currency
 
 
 @dataclass(frozen=True)
@@ -429,6 +472,7 @@ class RepoInstrument:
 DerivativeInstrument = (
     SwapInstrument
     | FxForwardInstrument
+    | FxCrossInstrument
     | XccyInstrument
     | CdsInstrument
     | FxFuturesInstrument

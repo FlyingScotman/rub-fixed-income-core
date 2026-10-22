@@ -28,7 +28,7 @@ The value is the PV of the remaining cash legs on the RUB discount curve. The
 collateral is **not** part of it: :class:`RepoCollateralReference` reports the bond,
 the quantity and the coverage as a separate position reference, so a backend that
 books the bond in the cash borrower's book (where its risk stays) does not count it
-twice. Desk funding economics (previous-day clean MV base, calendar-day rates, OCP
+twice. Desk funding economics (funding base, calendar-day rates, OCP
 transfers) are the backend's ``desk_rules``, not this module's.
 """
 

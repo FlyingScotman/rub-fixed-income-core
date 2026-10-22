@@ -8,8 +8,8 @@ linked as a reference. It is **instrument valuation only**. The framework matche
 content identities. No I/O: the backend supplies the trade, the settlement calendar,
 the curves and a point-in-time fixing snapshot.
 
-**Boundary (roadmap, package 6).** The desk's funding economics (previous-day clean MV
-base, calendar-day rates, OCP transfers) stay in the backend's `desk_rules`. Core
+**Boundary (roadmap, package 6).** The desk's funding economics (funding base,
+calendar-day rates, OCP transfers) stay in the backend's `desk_rules`. Core
 values the repo contract the desk has signed; it does not compute the desk's internal
 funding charge of a bond position. See [F13](#relation-to-project_financed_bond-f13).
 
@@ -211,8 +211,8 @@ From ISS (`/iss/engines/stock/markets/gcc/boards`, `…/ccp/boards`) and the sou
 `project_financed_bond` (unchanged) compounds a dirty balance daily,
 `B * (1 + r / 365)^days`, between cash events. It is neither:
 
-- the **desk's TRADING funding rule** (simple interest at calendar-day rates on the
-  previous day's clean MV; `desk_rules` in the backend, local audit F13); nor
+- the **desk's funding engine** (simple interest at calendar-day rates on a configured
+  base; `desk_rules` in the backend, local audit F13); nor
 - a **repo contract**: simple interest on the start amount (term repo, MOEX 1.5.8.5)
   or interest credited on settlement days with simple accrual between them
   (compounding open repo).
