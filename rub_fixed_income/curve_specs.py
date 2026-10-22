@@ -28,6 +28,15 @@ sets, SOFR, ESTR) and passes a :class:`~rub_fixed_income.discount.DiscountCurve`
 only reads, interpolates and shifts it. Their quote conventions are the builder's, so
 core registers no foreign bootstrap.
 
+Package 3, phase 2 (0.34.0): a CNY bond is also discounted on the built
+``cny_ruonia_xccy_v1`` curve (the :class:`DiscountCurve` of
+:func:`~rub_fixed_income.xccy.bootstrap_xccy_curve`), and a USD or EUR bond on a
+government par-yield **proxy** (kind ``PAR_YIELD_PROXY``, ``proxy=True``) built by
+:func:`~rub_fixed_income.proxy_curves.bootstrap_par_yield_curve` from published par yields:
+``usd_ust_par_proxy_v1`` (US Treasury daily par yield curve, semiannual bond-equivalent)
+and ``eur_ecb_aaa_par_proxy_v1`` (ECB euro area AAA par yields, continuously compounded).
+A proxy is not an OIS curve: results name it (``CurveUse.proxy``) so a reader can say so.
+
 ``rub_key_rate_projection_v1`` is a projection-only curve for key-rate floaters: the
 discount factors of :func:`~rub_fixed_income.floating.key_rate_projection_curve`, whose
 overnight forwards are a key-rate path. It never discounts a bond.
@@ -46,7 +55,14 @@ from .floating import KEY_RATE_PROJECTION_MODEL_VERSION
 from .kbd import KBD_MODEL_VERSION
 from .key_rate import CONVENTION_ID as KEY_RATE_SWAP_CONVENTION_ID
 
-__all__ = ["CURVE_SPECS", "CurveKind", "CurveSpec", "get_curve_spec", "ois_curve_convention"]
+__all__ = [
+    "CURVE_SPECS",
+    "PAR_YIELD_PROXY_MODEL_VERSION",
+    "CurveKind",
+    "CurveSpec",
+    "get_curve_spec",
+    "ois_curve_convention",
+]
 
 
 class CurveKind(Enum):
@@ -57,10 +73,18 @@ class CurveKind(Enum):
     DISCOUNT_FACTORS = "discount_factors"
     KEY_RATE_PROJECTION = "key_rate_projection"
     REAL_DISCOUNT_FACTORS = "real_discount_factors"
+    PAR_YIELD_PROXY = "par_yield_proxy"
 
 
 @dataclass(frozen=True)
 class CurveSpec:
+    """A registered curve spec.
+
+    ``proxy`` marks a curve that stands in for the currency's discount curve (a
+    government par-yield curve, not OIS). ``par_coupon_frequency`` is the coupon
+    frequency of a par-yield spec's quotes (2: semiannual; 0: paid continuously).
+    """
+
     spec_id: str
     kind: CurveKind
     currency: str
@@ -78,6 +102,8 @@ class CurveSpec:
     stub: str | None = None
     calendars: tuple[str, ...] = ()
     sources: tuple[str, ...] = ()
+    proxy: bool = False
+    par_coupon_frequency: int | None = None
 
 
 _SPECS = (
@@ -207,7 +233,8 @@ _XCCY_SPECS = (
         "annual beyond with a short initial stub, Act/Act ISDA both legs, +1 business-day "
         "payment lag, notional at the trade date's NCC central rate, initial exchange on the "
         "start and final exchange on the end date; quote = CNY fixed par rate "
-        "(CNY-XCS-CNYRUO); CNY discount curve under RUB collateral",
+        "(CNY-XCS-CNYRUO); CNY discount curve under RUB collateral. Built "
+        "(DiscountCurve), it also discounts CNY bonds (0.34.0)",
         fixed_leg_frequency_months=12,
         fixed_leg_day_count=DayCount.ACT_ACT_ISDA,
         spot_lag_business_days=1,
@@ -234,6 +261,66 @@ _XCCY_SPECS = (
     ),
 )
 
+# Package 3, phase 2: USD / EUR government par-yield proxies (no SOFR / ESTR OIS data).
+PAR_YIELD_PROXY_MODEL_VERSION = "par-proxy-logdf-v1"
+_PROXY_SPECS = (
+    CurveSpec(
+        spec_id="usd_ust_par_proxy_v1",
+        kind=CurveKind.PAR_YIELD_PROXY,
+        currency="USD",
+        time_day_count=DayCount.ACT_365_FIXED,
+        interpolation="log-linear-df between the quote maturities, flat-forward extrapolation",
+        model_version=PAR_YIELD_PROXY_MODEL_VERSION,
+        description="PROXY, not OIS: USD discount curve bootstrapped from the US Treasury "
+        "daily par yield curve. Quotes are bond-equivalent par yields of securities paying "
+        "semiannual coupons: a tenor up to 6M is one period (DF = 1 / (1 + y * days / 365)), "
+        "a longer one a par bond with coupons y / 2 on a schedule rolled back from the "
+        "maturity in 6-month steps (a short first period pays its fraction); tenors from the "
+        "curve date, unadjusted, no settlement lag. Government credit and liquidity, not "
+        "SOFR",
+        fixed_leg_frequency_months=6,
+        spot_lag_business_days=0,
+        business_day_convention="UNADJUSTED",
+        stub="short_initial",
+        sources=(
+            (
+                "US Treasury, Interest Rates - Frequently Asked Questions: the par yield "
+                "curve is based on securities that pay interest on a semiannual basis; all "
+                "yield curve rates are bond-equivalent yields; https://home.treasury.gov/"
+                "policy-issues/financing-the-government/interest-rate-statistics/"
+                "interest-rates-frequently-asked-questions"
+            ),
+        ),
+        proxy=True,
+        par_coupon_frequency=2,
+    ),
+    CurveSpec(
+        spec_id="eur_ecb_aaa_par_proxy_v1",
+        kind=CurveKind.PAR_YIELD_PROXY,
+        currency="EUR",
+        time_day_count=DayCount.ACT_365_FIXED,
+        interpolation="log-linear-df between the quote maturities, flat-forward extrapolation",
+        model_version=PAR_YIELD_PROXY_MODEL_VERSION,
+        description="PROXY, not OIS: EUR discount curve bootstrapped from the ECB euro area "
+        "yield curve of AAA-rated central government bonds, par yields. The ECB's par yield "
+        "is continuously compounded, y(T) = (1 - DF(T)) / integral_0^T DF(t) dt; core solves "
+        "that relation exactly on log-linear discount factors; tenors from the curve date, "
+        "unadjusted, no settlement lag. Government credit, not ESTR",
+        spot_lag_business_days=0,
+        business_day_convention="UNADJUSTED",
+        sources=(
+            (
+                "ECB, Euro area yield curves, Technical notes (2025-12-09): par yield "
+                "y_par(TTM) = C (1 - disc(TTM)) / integral_0^TTM disc(t) dt, continuously "
+                "compounded; https://www.ecb.europa.eu/stats/financial_markets_and_"
+                "interest_rates/euro_area_yield_curves/shared/pdf/technical_notes.pdf"
+            ),
+        ),
+        proxy=True,
+        par_coupon_frequency=0,
+    ),
+)
+
 _REAL_SPECS = (
     CurveSpec(
         spec_id="rub_real_discount_factors_v1",
@@ -251,7 +338,10 @@ _REAL_SPECS = (
 )
 
 CURVE_SPECS = MappingProxyType(
-    {spec.spec_id: spec for spec in (*_SPECS, *_FOREIGN_SPECS, *_XCCY_SPECS, *_REAL_SPECS)}
+    {
+        spec.spec_id: spec
+        for spec in (*_SPECS, *_FOREIGN_SPECS, *_XCCY_SPECS, *_REAL_SPECS, *_PROXY_SPECS)
+    }
 )
 
 

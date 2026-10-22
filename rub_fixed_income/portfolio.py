@@ -6,7 +6,10 @@ factor vocabulary. Supported in 0.11.0: fixed-coupon RUB bonds (bullet, amortizi
 confirmed put) on a KBD curve, a prebuilt discount curve or RUONIA OIS quotes.
 Package 3 adds CNY, USD and EUR bonds: each is discounted on the curve that the policy
 names for its currency (``ValuationPolicy.foreign_curves``), valued in RUB at the
-snapshot FX rate, and carries ``FX|<ccy>`` with its cross terms. Everything else is a
+snapshot FX rate, and carries ``FX|<ccy>`` with its cross terms. Since 0.34.0 that
+curve can also be the built CNY XCCY curve (``cny_ruonia_xccy_v1``) or a USD / EUR
+government par-yield proxy (``proxy_curves``), with explicit same-currency fallbacks
+(``ValuationPolicy.foreign_curve_fallbacks``) flagged on the row. Everything else is a
 typed rejection recorded in coverage, never a zero.
 
 Each curve is built once per call and its shocked versions are shared across
@@ -112,6 +115,7 @@ from .portfolio_products import (
 )
 from .risk import BondRiskEngine, BondRiskRequest, BondScenario, ShockedCurveCache
 from .serialization import decode
+from .xccy import XccyCurveBootstrapRequest
 
 __all__ = [
     "PORTFOLIO_RESULT_SCHEMA",
@@ -174,7 +178,18 @@ class ValuationPolicy:
 
     RUB bonds are discounted on ``discount_curve_id``. A non-RUB bond is discounted on
     the curve that ``foreign_curves`` names for its currency, as ``(currency, curve_id)``
-    pairs; there is no fallback. ``curve_overrides`` win for the instruments they name.
+    pairs. ``curve_overrides`` win for the instruments they name.
+
+    A missing foreign curve is never replaced silently, and never by a curve of another
+    currency (a bond's curve must be of its currency, whatever names it).
+    ``foreign_curve_fallbacks`` (0.34.0, off by default) lists ``(currency, curve_id)``
+    alternatives tried in the given order when the ``foreign_curves`` curve of that
+    currency is **absent** from the snapshot (a curve present but unusable is still a
+    rejection); the row then names the missing curve in
+    ``PositionValuation.curve_fallback_from``. A typical use is a USD SOFR curve with the
+    UST par-yield proxy (``usd_ust_par_proxy_v1``) behind it; ``CurveUse.proxy`` marks a
+    proxy curve in the result. Without a usable curve the position is a
+    ``MISSING_MARKET_DATA`` rejection naming every curve tried.
 
     ``cap_floor_guard_bp`` is the model policy for floaters with a floor or cap: core
     prices them at intrinsic value on the projected rate only when that rate is at least
@@ -233,6 +248,9 @@ class ValuationPolicy:
     discount_margin: bool = field(default=False, metadata=OMIT_IF_DEFAULT)
     require_known_coupons: bool = field(default=False, metadata=OMIT_IF_DEFAULT)
     spread_buckets: bool = field(default=False, metadata=OMIT_IF_DEFAULT)
+    foreign_curve_fallbacks: tuple[tuple[str, str], ...] = field(
+        default=(), metadata=OMIT_IF_DEFAULT
+    )
 
     def __post_init__(self) -> None:
         pairs = tuple(sorted(self.exercise_assumptions, key=lambda p: p[0]))
@@ -258,6 +276,24 @@ class ValuationPolicy:
                 raise InvalidTerms("foreign curve IDs must be non-empty strings")
         if len({c for c, _ in self.foreign_curves}) != len(self.foreign_curves):
             raise InvalidTerms("duplicate foreign curve currency")
+        # Sorted by currency only: the order within a currency is the order of trial.
+        fallbacks = tuple(
+            sorted((tuple(p) for p in self.foreign_curve_fallbacks), key=lambda p: p[0])
+        )
+        primary = dict(self.foreign_curves)
+        for currency, curve_id in fallbacks:
+            _foreign_currency(currency, "fallback curve currency")
+            if not isinstance(curve_id, str) or not curve_id:
+                raise InvalidTerms("fallback curve IDs must be non-empty strings")
+            if currency not in primary:
+                raise InvalidTerms(
+                    f"a fallback curve for {currency} needs a foreign_curves entry first"
+                )
+            if curve_id == primary[currency]:
+                raise InvalidTerms(f"the fallback curve of {currency} is its primary curve")
+        if len(set(fallbacks)) != len(fallbacks):
+            raise InvalidTerms("duplicate fallback curve")
+        object.__setattr__(self, "foreign_curve_fallbacks", fallbacks)
         if not self.discount_curve_id:
             raise InvalidTerms("discount_curve_id is required")
         if self.spread_kind not in ("credit", "ofz"):
@@ -315,6 +351,10 @@ class ValuationPolicy:
                 f"the valuation policy names no discount curve for {instrument.currency}"
             )
         return curve_id
+
+    def fallback_curves_for(self, currency: str) -> tuple[str, ...]:
+        """The ``foreign_curve_fallbacks`` of ``currency``, in the order of trial."""
+        return tuple(c for k, c in self.foreign_curve_fallbacks if k == currency)
 
 
 @dataclass(frozen=True)
@@ -473,6 +513,9 @@ class PositionValuation:
     marks a put chosen by the open-window rule (``ValuationPolicy.horizon``).
     ``spread_buckets_rub`` (``ValuationPolicy.spread_buckets``) is the central ``CS``
     sensitivity split by :data:`RISK_BUCKETS` (see ``BondRiskEngine.spread_bucket_risk``).
+    ``curve_fallback_from`` (0.34.0) names the curve the policy wanted for a non-RUB bond
+    when it was absent from the snapshot and ``curve_id`` is a fallback of the same
+    currency (``ValuationPolicy.foreign_curve_fallbacks``); None otherwise.
     """
 
     position_id: str
@@ -507,6 +550,7 @@ class PositionValuation:
     exercise_assumption: str | None = field(default=None, metadata=OMIT_IF_DEFAULT)
     discount_margin_bp: float | None = field(default=None, metadata=OMIT_IF_DEFAULT)
     spread_buckets_rub: tuple[float, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
+    curve_fallback_from: str | None = field(default=None, metadata=OMIT_IF_DEFAULT)
 
 
 @dataclass(frozen=True)
@@ -528,9 +572,13 @@ class PortfolioScenarioResult:
 
 @dataclass(frozen=True)
 class CurveUse:
+    """A curve the job read. ``proxy`` (0.34.0) marks a stand-in curve of its currency
+    (``CurveSpec.proxy``: a government par-yield curve, not OIS); omitted when False."""
+
     curve_id: str
     spec_id: str
     model_version: str
+    proxy: bool = field(default=False, metadata=OMIT_IF_DEFAULT)
 
 
 @dataclass(frozen=True)
@@ -694,6 +742,25 @@ def _build_curve(entry: CurveEntry, business_date: date) -> _BuiltCurve:
                 spec.currency,
                 spec.kind is CurveKind.REAL_DISCOUNT_FACTORS,
             )
+        raise InvalidTerms(f"curve {entry.curve_id} does not match spec {spec.spec_id}")
+    if spec.kind in (CurveKind.XCCY_BOOTSTRAP, CurveKind.PAR_YIELD_PROXY):
+        # A built XCCY curve (CNY under RUB collateral) or a par-yield proxy (0.34.0):
+        # read, interpolated and shifted on its continuous zero rates as caller factors.
+        if isinstance(source, XccyCurveBootstrapRequest):
+            raise InvalidTerms(
+                f"curve {entry.curve_id} holds XCCY quotes; a bond needs the built curve "
+                "(bootstrap_xccy_curve) under the spec"
+            )
+        if (
+            isinstance(source, DiscountCurve)
+            and source.model_version == spec.model_version
+            and source.convention.time_day_count is spec.time_day_count
+        ):
+            if source.curve_date != business_date:
+                raise InvalidTerms(
+                    f"curve {entry.curve_id} is not dated the snapshot business date"
+                )
+            return _BuiltCurve(entry, source, None, spec.model_version, spec.currency)
         raise InvalidTerms(f"curve {entry.curve_id} does not match spec {spec.spec_id}")
     raise InvalidTerms(f"spec {spec.spec_id} is not a bond discount curve")
 
@@ -920,7 +987,7 @@ def value_portfolio(
     for key, use in context.used_curves.items():
         used_curves.setdefault(key, use)
     curves_used = tuple(
-        CurveUse(curve_id, spec_id, model_version)
+        CurveUse(curve_id, spec_id, model_version, get_curve_spec(spec_id).proxy)
         for curve_id, (spec_id, model_version) in sorted(used_curves.items())
     )
     fields_v2 = (
@@ -1253,7 +1320,7 @@ def _value_position(
         )
     calendar = _use_calendar(snapshot, instrument, used_calendars)
     settlement = calendar.add_business_days(snapshot.business_date, instrument.settlement_lag_days)
-    curve_id = policy.discount_curve_for(instrument)
+    curve_id, fallback_from = _bond_discount_curve(policy, instrument, snapshot)
     built = curve(curve_id)
     if built.real:
         raise InvalidTerms(
@@ -1415,8 +1482,37 @@ def _value_position(
         amounts,
         discount_margin_bp=margin,
         spread_buckets_rub=spread_buckets,
+        curve_fallback_from=fallback_from,
     )
     return valuation, engine
+
+
+def _bond_discount_curve(
+    policy: ValuationPolicy, instrument: Instrument, snapshot: MarketSnapshot
+) -> tuple[str, str | None]:
+    """The discount curve ID of a bond and, when it is a fallback, the curve it replaces.
+
+    Only a foreign curve that is absent from the snapshot falls back, and only to the
+    policy's ``foreign_curve_fallbacks`` of the bond's currency; the caller still checks
+    that the curve chosen is of that currency.
+    """
+    curve_id = policy.discount_curve_for(instrument)
+    currency = instrument.currency
+    if currency == "RUB" or instrument.instrument_id in dict(policy.curve_overrides):
+        return curve_id, None
+    present = {entry.curve_id for entry in snapshot.curves}
+    if curve_id in present:
+        return curve_id, None
+    fallbacks = policy.fallback_curves_for(currency)
+    for candidate in fallbacks:
+        if candidate in present:
+            return candidate, curve_id
+    if not fallbacks:
+        return curve_id, None  # the curve lookup raises MISSING_MARKET_DATA
+    tried = ", ".join(repr(c) for c in (curve_id, *fallbacks))
+    raise MissingMarketData(
+        f"no {currency} discount curve in snapshot {snapshot.snapshot_id} (tried {tried})"
+    )
 
 
 def _horizon_label(

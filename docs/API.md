@@ -354,7 +354,13 @@ See [second-order and local API](second-order-local-risk.md) for `BondRiskEngine
 
 | Name | Description |
 | --- | --- |
-| `ValuationPolicy(..., foreign_curves=(("USD", "USD_SOFR"), ...))` | Discount curve ID per non-RUB currency; no fallback. `discount_curve_for(instrument)` raises `MissingMarketData` for an unmapped currency. |
+| `ValuationPolicy(..., foreign_curves=(("USD", "USD_SOFR"), ...))` | Discount curve ID per non-RUB currency. `discount_curve_for(instrument)` raises `MissingMarketData` for an unmapped currency. |
+| `ValuationPolicy(..., foreign_curve_fallbacks=(("USD", "USD_UST"), ...))`, `.fallback_curves_for(ccy)` | 0.34.0. Same-currency alternatives tried in order when the `foreign_curves` curve is **absent** from the snapshot (a present but unusable curve is still a rejection); each needs a `foreign_curves` entry, cannot repeat it and cannot be RUB. Default `()`: no fallback. |
+| `PositionValuation.curve_fallback_from: str \| None` | 0.34.0. The missing curve a fallback replaced; `curve_id` is the fallback. Omitted when None. |
+| `CurveUse.proxy: bool`, `CurveSpec.proxy`, `CurveSpec.par_coupon_frequency` | 0.34.0. A stand-in curve (government par yields, not OIS); `proxy` omitted when False. |
+| `cny_ruonia_xccy_v1` (`CurveKind.XCCY_BOOTSTRAP`) for bonds | 0.34.0. The built `DiscountCurve` of `bootstrap_xccy_curve` (model `xccy-cny-logdf-v1`) discounts CNY bonds; an `XccyCurveBootstrapRequest` (quotes) under that ID is `INVALID_TERMS` for a bond. |
+| `usd_ust_par_proxy_v1`, `eur_ecb_aaa_par_proxy_v1` (`CurveKind.PAR_YIELD_PROXY`, `PAR_YIELD_PROXY_MODEL_VERSION`) | 0.34.0. USD / EUR proxy discount curves from US Treasury par yields (semiannual bond-equivalent) and ECB AAA par yields (continuously compounded). |
+| `ParYieldQuote(tenor, par_yield)`, `ParYieldCurveRequest(spec_id, curve_date, quotes)`, `bootstrap_par_yield_curve(request) -> DiscountCurve`, `par_yield(curve, spec_id, maturity)` | 0.34.0, `proxy_curves`. One log-linear DF node per quote so that each par bond prices at 100 (repricing ~1e-12); `par_yield` reads a curve back on the spec's convention. Decimal yields; `D/W/M/Y` tenors from the curve date, unadjusted. |
 | `SUPPORTED_CURRENCIES` | `RUB`, `CNY`, `USD`, `EUR`. Other bond currencies are `UNSUPPORTED_PRODUCT`. |
 | `cny_discount_factors_v1`, `usd_discount_factors_v1`, `eur_discount_factors_v1`, `CurveKind.DISCOUNT_FACTORS` | Caller-built foreign `DiscountCurve`s (log-linear DF nodes, ACT/365F, dated the business date). |
 | `PositionValuation.currency_amounts: CurrencyAmounts \| None` | `currency`, `rub_per_unit`, `current_nominal`, `accrued_interest`, `dirty_price` (per bond) and signed `pv`, in the bond currency. The `_rub` fields are these at the snapshot rate. `None` for RUB bonds. |
@@ -364,8 +370,8 @@ See [second-order and local API](second-order-local-risk.md) for `BondRiskEngine
 | `fx_translated_factor_risk(risk, currency, fx_delta_rub_per_pct)` | Adds `FX|<ccy>` and its cross terms (`first_order_i / 100`) to RUB factor risk. |
 | `Instrument(..., yield_convention=YieldConvention(day_count=DayCount.ACT_360))`, `YieldRequest(..., convention)`, `DEFAULT_YIELD_CONVENTION` | Yield time basis from the issue terms (BACKLOG #38); default effective annual ACT/365F. |
 
-Rejections: an unmapped currency, a curve or FX rate missing from the snapshot are
-`MISSING_MARKET_DATA`; a curve of another currency, a foreign curve not dated the
+Rejections: an unmapped currency, a curve (and every fallback) or FX rate missing from
+the snapshot are `MISSING_MARKET_DATA`; a curve of another currency, a foreign curve not dated the
 business date or not a node `DiscountCurve` are `INVALID_TERMS`; a non-annual yield
 quote and non-RUB bonds in `horizon_portfolio` are `UNSUPPORTED_PRODUCT`. All new fields
 are omitted from the canonical JSON while at their defaults (`canonical.OMIT_IF_DEFAULT`),

@@ -204,10 +204,11 @@ other repositories and must be changed there, not in this core.
 39. *(downstream)* **Yield basis in the backend's static data.** The adapter must set
     `Instrument.yield_convention` from the issue terms of every non-RUB bond. The seven
     ACT/360 bonds in the goldens are evidence, not a rule; ISS does not publish the basis.
-40. **Bootstrapped foreign curve specs.** SOFR / €STR OIS and the hub's CNY quote sets as
-    registered specs once their quote conventions (spot and payment lags, fixed frequency,
-    day counts) are confirmed from primary sources. Until then the backend builds the
-    discount factors (`*_discount_factors_v1`).
+40. *(partly done: CNY bonds on the built `cny_ruonia_xccy_v1` curve and USD / EUR
+    government par-yield proxies in 0.34.0)* **Bootstrapped foreign curve specs.** SOFR /
+    €STR OIS as registered specs once their quote conventions (spot and payment lags,
+    fixed frequency, day counts) are confirmed from primary sources. Until then the backend
+    builds the discount factors (`*_discount_factors_v1`) or uses a proxy.
 41. *(partly done in 0.29.0: every product in value_portfolio; horizon and local worker open)* **Non-RUB horizon and local worker.** FX forward carry in `horizon_portfolio`, and
     non-RUB bonds in `local_worker.run_local_risk`; both still reject them.
 42. *(downstream)* **FX rate semantics.** Core values at the snapshot's `FxRate` as given,
@@ -560,3 +561,28 @@ metrics.
      #85): the observation of the first period is not identified without the issue
      terms. P2.
 
+## Non-RUB bonds, phase 2 — 0.34.0
+
+122. **Bund par proxy.** The monitor's EUR fallback `eur_bund_par` (Bundesbank) has no
+     registered spec: the Bundesbank's published series and their coupon / compounding
+     convention need a primary source before a `eur_bund_par_proxy_v1`. Until then only
+     ECB AAA par yields are a EUR proxy. P2.
+123. **Proxies for FX products.** `ProductContext.foreign_fx_curve` (FX forwards, XCCY)
+     accepts `*_discount_factors_v1` and XCCY curves only; a desk that wants FX forwards on
+     a UST proxy needs a decision (proxy credit in covered parity) and the spec kind in
+     that check. Belongs with the FX package (P7). P2.
+124. *(downstream)* **Monitor migration (R8 phase 2 / P5).** Lift `not_rub` in
+     `valuation/bonds.py` for CNY / USD / EUR bonds; build `cny_ruonia_xccy_v1` with
+     `bootstrap_xccy_curve` from the hub's `cny_ruonia_xccy` quotes and, when the setting
+     `proxy_curves_for_risk` is on, the UST / ECB AAA proxies with
+     `bootstrap_par_yield_curve` (hub par yields are percent: divide by 100); name them in
+     `ValuationPolicy.foreign_curves` (or as `foreign_curve_fallbacks` behind a future
+     SOFR / €STR curve); map `IR|<curve>|<bucket>` to the published currency curves; show
+     `CurveUse.proxy` and `curve_fallback_from`; set `Instrument.yield_convention` and the
+     accrual basis from issue terms (#39). The FX rate is the backend's (#42; R26: MOEX
+     19:00). CS01 of a foreign bond is now `CS` on its own curve (owner question R8 open:
+     keep or zero).
+125. **Proxy refinements.** Treasury's monotone convex spline and T+1 settlement are not
+     reproduced (log-linear DF nodes from the curve date); the bill BEY uses a 365-day
+     year. Numbers move only inside the proxy's own basis; tighten if a desk compares
+     with Treasury's published spot rates. P2.

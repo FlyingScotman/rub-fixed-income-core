@@ -158,6 +158,7 @@ from .conventions import (
 )
 from .curve_specs import (
     CURVE_SPECS,
+    PAR_YIELD_PROXY_MODEL_VERSION,
     CurveKind,
     CurveSpec,
     get_curve_spec,
@@ -440,6 +441,12 @@ from .portfolio_products import (
     SwapPositionHorizon,
     SwapPositionValuation,
     XccyPositionValuation,
+)
+from .proxy_curves import (
+    ParYieldCurveRequest,
+    ParYieldQuote,
+    bootstrap_par_yield_curve,
+    par_yield,
 )
 from .rate_futures import (
     RATE_FUTURES_HORIZON_MODEL_VERSION,
@@ -1156,4 +1163,13 @@ __all__ += [
     "BondMetricsInput",
     "bond_metrics_batch",
     "kbd_effective_yields",
+]
+
+# 0.34.0: CNY / USD / EUR bonds on their own currency's curve (XCCY CNY, par-yield proxies).
+__all__ += [
+    "PAR_YIELD_PROXY_MODEL_VERSION",
+    "ParYieldCurveRequest",
+    "ParYieldQuote",
+    "bootstrap_par_yield_curve",
+    "par_yield",
 ]

@@ -45,6 +45,7 @@ or floats.
 | `inflation.py`, `linkers.py` | Point-in-time CPI, OFZ-IN indexation, indexed legs, real-curve cashflows (0.23.0). |
 | `cds.py` | ISDA Standard Model single-name CDS: hazard bootstrap, quote conversions, risk, JTD (0.24.0). |
 | `xccy.py` | CNY/RUB cross-currency swaps vs RUONIA and the CNY curve bootstrap (0.25.0). |
+| `proxy_curves.py` | USD / EUR government par-yield proxy curves for non-RUB bonds (0.34.0). |
 | `rate_futures.py`, `ofz_futures.py` | MOEX RUON, RUONIA index, KEYRATE and OFZ basket futures (0.27.0). |
 | `repo.py` | Repo and reverse-repo legs; collateral as a reference outside PV (0.28.0). |
 | `portfolio_instruments.py`, `portfolio_products.py` | Derivative position types and the per-product adapters behind `value_portfolio`'s result contract v3 (0.29.0). |
@@ -84,6 +85,8 @@ graph LR
   fx_futures --> factors
   domain --> portfolio
   curve_specs --> portfolio
+  curve_specs --> proxy_curves
+  discount --> proxy_curves
   factors --> portfolio
   local_risk --> portfolio
 ```

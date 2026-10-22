@@ -247,7 +247,24 @@ filled.
   `ValuationPolicy.foreign_curves` names for its currency (`curve_overrides` win for an
   instrument). The curve's spec must be of that currency: `cny_/usd_/eur_discount_factors_v1`,
   a caller-built `DiscountCurve` (log-linear DF nodes, model `ois-logdf-v1`, ACT/365F,
-  dated the snapshot business date). Core registers no foreign bootstrap.
+  dated the snapshot business date). Since 0.34.0 also the built CNY XCCY curve
+  (`cny_ruonia_xccy_v1`, CNY under RUB collateral, model `xccy-cny-logdf-v1`) and the
+  government par-yield proxies below. Never a curve of another currency: a missing curve
+  is `MISSING_MARKET_DATA`, unless the policy names same-currency
+  `foreign_curve_fallbacks`; a fallback is used only when the named curve is absent from
+  the snapshot and the row records it (`curve_fallback_from`).
+- **Par-yield proxies (0.34.0, `proxy_curves`).** Not OIS: government credit and
+  liquidity, absorbed by the bond's Z-spread; `CurveUse.proxy` marks them. Tenors run
+  from the curve date (calendar months / weeks / days, unadjusted, no settlement lag).
+  One node per quote, log-linear DF between nodes, flat-forward beyond, ACT/365F curve
+  time. `usd_ust_par_proxy_v1`: US Treasury par yields are bond-equivalent yields of
+  semiannual-coupon securities; a tenor up to 6M is one period,
+  `DF = 1 / (1 + y · days / 365)` (bill bond-equivalent yield, 365-day year); a longer
+  tenor is a par bond paying `y / 2` on dates rolled back from the maturity in 6-month
+  steps, a short first period paying its day fraction. `eur_ecb_aaa_par_proxy_v1`: the
+  ECB's continuously compounded par yield `y(T) = (1 − DF(T)) / ∫₀ᵀ DF(t) dt` (Technical
+  notes), solved exactly on the log-linear curve. Approximations, stated: Treasury's own
+  spline and settlement (T+1) are not reproduced; the BEY 366-day year is not used.
 - **Valuation.** The bond is priced in its currency, with the spread calibrated to its
   quote on its own curve. Every `_rub` amount is the currency amount times `FX`:
   `PV_rub = FX · PV_ccy`; DV01, CS01, the Hessian and JTD likewise.
@@ -261,8 +278,12 @@ filled.
 - **Scenarios.** `PortfolioScenario.fx_shocks_pct` moves listed currencies by a percent;
   a position in one is revalued as `FX · (1 + s / 100) · PV_ccy(shocked curve)`. The
   bucket shifts apply to every position's own discount curve, foreign ones included.
+- **Scenario curve IDs.** `PortfolioScenario.curve_shifts_bp` names curves by ID: a
+  scenario for a currency whose curve may fall back names the fallback ID too.
 - **Not covered.** FX carry and horizon valuation of non-RUB bonds (`horizon_portfolio`
-  rejects them), quanto or FX-linked payments, a cross-currency basis, other currencies.
+  rejects them), quanto or FX-linked payments, a cross-currency basis, other currencies,
+  SOFR / €STR bootstraps (BACKLOG #40), a Bund par proxy (the Bundesbank's quote
+  convention is not registered).
 
 ## Tenor codes (0.16.0)
 

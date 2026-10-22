@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.34.0 — CNY / USD / EUR bonds on their own currency's curve
+
+Package 3, phase 2 (Trading Desk Monitor R8 phase 2, work package P5). Every new field of
+an existing type is omitted at its default, so earlier encodings, job IDs, pinned hashes
+and `portfolio_result_v2.json` / `portfolio_result_v3.json` are unchanged; a policy that
+uses none of the additions values exactly as 0.33.0.
+
+### Added
+
+- **CNY bonds on the XCCY curve**: a built `cny_ruonia_xccy_v1` curve (the
+  `DiscountCurve` of `bootstrap_xccy_curve`, CNY under RUB collateral) now discounts CNY
+  bonds in `value_portfolio`; rate risk is `IR|<that curve>|<bucket>`, CS01 is `CS`
+  against it. An entry holding XCCY quotes stays a rejection for bonds (`INVALID_TERMS`,
+  "a bond needs the built curve").
+- **USD / EUR par-yield proxies** (`proxy_curves`): specs `usd_ust_par_proxy_v1` (US
+  Treasury par yields: semiannual bond-equivalent, bill BEY up to 6M) and
+  `eur_ecb_aaa_par_proxy_v1` (ECB AAA par yields, continuously compounded),
+  `CurveKind.PAR_YIELD_PROXY`, `CurveSpec.proxy` and `.par_coupon_frequency`;
+  `ParYieldQuote`, `ParYieldCurveRequest`, `bootstrap_par_yield_curve` (every quote
+  reprices to about 1e-12) and `par_yield`; `PAR_YIELD_PROXY_MODEL_VERSION =
+  "par-proxy-logdf-v1"`. Conventions and sources in `CONVENTIONS.md`.
+- **Proxy flag in results**: `CurveUse.proxy` (omitted when False).
+- **Explicit fallbacks for a missing foreign curve**:
+  `ValuationPolicy.foreign_curve_fallbacks` (`(currency, curve_id)` pairs, tried in
+  order within a currency) and `.fallback_curves_for(ccy)`. A fallback is used only when
+  the `foreign_curves` curve is absent from the snapshot, never for a present but unusable
+  one, and never across currencies (a RUB curve is rejected as before); the row names the
+  missing curve in `PositionValuation.curve_fallback_from`. No usable curve:
+  `MISSING_MARKET_DATA` naming every curve tried.
+
+### Unchanged
+
+- Without fallbacks a missing foreign curve is still `MISSING_MARKET_DATA`; RUB bonds,
+  derivatives and their numbers are untouched. Horizon and the local worker still reject
+  non-RUB bonds (BACKLOG #41).
+
 ## 0.33.0 — what the Trading Desk Monitor needs: review, floater accrued and explain, history at scale
 
 Review of the core against the desk monitor's target interface
