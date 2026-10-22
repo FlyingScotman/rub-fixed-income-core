@@ -418,6 +418,13 @@ class CurveConvention:
     spot-starting swaps with payment lags and stubs (:class:`OisSwapConvention`); the
     fixed-leg fields above must then keep their defaults. It is left out of canonical
     bytes while ``None``, so existing curve identities are unchanged.
+
+    ``zero_shock`` (0.34.0) is the unit of a bucket shock of a ``DiscountCurve`` in risk:
+    ``"continuous"`` (default) moves continuously compounded zero rates,
+    ``DF'(t) = DF(t) exp(-s t)``; ``"annual"`` moves effective annual zero yields,
+    ``DF'(t) = (DF(t)^(-1/t) + s)^(-t)``, the unit MOEX publishes the KBD in, which sums
+    with par OIS risk (``docs/risk.md``). Left out of canonical bytes and the identifier at
+    its default. OIS bootstrap requests ignore it: their quotes are shocked.
     """
 
     time_day_count: DayCount = DayCount.ACT_365_FIXED
@@ -426,8 +433,13 @@ class CurveConvention:
     fixed_leg_schedule: ScheduleConvention | None = None
     fixed_leg_day_count: DayCount = DayCount.ACT_365_FIXED
     ois_swap: OisSwapConvention | None = field(default=None, metadata=OMIT_IF_DEFAULT)
+    zero_shock: Literal["continuous", "annual"] = field(
+        default="continuous", metadata=OMIT_IF_DEFAULT
+    )
 
     def __post_init__(self) -> None:
+        if self.zero_shock not in ("continuous", "annual"):
+            raise ValueError("zero_shock must be continuous or annual")
         if self.interpolation != "log-linear-df":
             raise ValueError("only log-linear-df interpolation is supported")
         if self.extrapolation != "flat-forward":
@@ -455,6 +467,7 @@ class CurveConvention:
             f"curve:time={self.time_day_count.value}:interp={self.interpolation}:"
             f"extrap={self.extrapolation}:"
         )
+        suffix = "" if self.zero_shock == "continuous" else f":shock={self.zero_shock}"
         if self.ois_swap is not None:
-            return prefix + self.ois_swap.identifier
-        return f"{prefix}fixed={fixed}:{self.fixed_leg_day_count.value}"
+            return prefix + self.ois_swap.identifier + suffix
+        return f"{prefix}fixed={fixed}:{self.fixed_leg_day_count.value}{suffix}"

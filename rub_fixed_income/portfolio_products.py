@@ -290,7 +290,7 @@ class SwapPositionValuation:
 class FxForwardPositionValuation:
     """An FX forward or FX swap (``fx_forwards``); legs are scaled by the quantity.
 
-    0.35.0, each omitted at its default: ``foreign_curve_id`` is the curve used and
+    0.36.0, each omitted at its default: ``foreign_curve_id`` is the curve used and
     ``curve_fallback_from`` the instrument's curve it replaced (absent from the
     snapshot, ``ValuationPolicy.fx_curve_fallbacks``); ``points_held_rub_buckets`` is
     the RUB curve risk with the swap points held (``ValuationPolicy.fx_points_held_risk``,
@@ -326,7 +326,7 @@ class FxForwardPositionValuation:
 
 @dataclass(frozen=True)
 class FxCrossPositionValuation:
-    """An FX forward or swap between two foreign currencies (``fx_crosses``, 0.35.0).
+    """An FX forward or swap between two foreign currencies (``fx_crosses``, 0.36.0).
 
     Amounts are scaled by the quantity. ``fx_delta_base`` and ``fx_delta_quote`` are the
     spot-equivalent amounts of each currency against RUB; ``*_curve_fallback_from``
@@ -723,7 +723,7 @@ class ProductContext:
         :class:`FxImpliedCurveRequest` built here once per job on the snapshot FX spot
         and the named RUB curve; also accepted under the discount-factor spec as
         before) or a built XCCY curve (``cny_ruonia_xccy_v1``); dated the business date.
-        A par-yield proxy only with ``allow_proxy`` (reached as a fallback, #123).
+        A par-yield proxy only with ``allow_proxy`` (reached as a fallback, #131).
         """
         entry = self.snapshot.curve(curve_id)
         spec = get_curve_spec(entry.spec_id)
@@ -788,7 +788,7 @@ class ProductContext:
     def fx_curve(self, curve_id: str, currency: str) -> tuple[str, DiscountCurve, str | None]:
         """``(curve ID used, curve, curve it replaces)`` of an FX product's foreign curve.
 
-        ``fx_curve_fallbacks`` (``ValuationPolicy``, #123) are tried in order only when
+        ``fx_curve_fallbacks`` (``ValuationPolicy``, #131) are tried in order only when
         ``curve_id`` is absent from the snapshot; a fallback may be a par-yield proxy.
         """
         tried = [curve_id]
@@ -2323,7 +2323,7 @@ class FxForwardPositionHorizon:
 
 @dataclass(frozen=True)
 class FxCrossPositionHorizon:
-    """Carry, rolldown and theta of an FX cross position (``fx_crosses``, 0.35.0); each
+    """Carry, rolldown and theta of an FX cross position (``fx_crosses``, 0.36.0); each
     currency's spot at the horizon follows ``fx_horizon``."""
 
     position_id: str

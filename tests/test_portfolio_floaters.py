@@ -9,6 +9,7 @@ from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
+import test_portfolio
 from test_portfolio import AS_OF, BUSINESS_DATE, PARAMS
 
 from rub_fixed_income import (
@@ -22,6 +23,7 @@ from rub_fixed_income import (
     CurveBootstrapRequest,
     CurveEntry,
     DayCount,
+    FixingDateRule,
     FixingEntry,
     FixingHistory,
     FloatingCouponLeg,
@@ -41,6 +43,7 @@ from rub_fixed_income import (
     ValuationPolicy,
     explain_horizon_pnl,
     horizon_portfolio,
+    kbd_effective_yield,
     key_rate_projection_curve,
     portfolio_result_from_json,
     portfolio_result_to_json,
@@ -405,3 +408,91 @@ def test_floater_rolldown_is_zero_on_flat_curves_and_carry_reconciles() -> None:
         assert result.horizon_pnl_rub == pytest.approx(result.carry_rub, abs=1e-9)
     with pytest.raises(UnsupportedProduct, match="fixing history"):
         horizon_valuation(bond, flat, CALENDAR, horizon_date=horizon, spread_bp=40.0)
+
+
+def kbd_floater() -> Instrument:
+    """A KBD-linked floater (0.34.0): KBD 7Y + 0.50 %, fixed 5 days before the start."""
+    rule = FloatingCouponRule(
+        "kbd",
+        "single_fixing",
+        0.005,
+        ACT365,
+        ACT365,
+        rate_rounding_decimals=2,
+        amount_rounding_decimals=2,
+        fixing_date=FixingDateRule("accrual_start", 5, "business_days"),
+        index_tenor_years=7.0,
+    )
+    first = date(2026, 10, 23)
+    periods = tuple(
+        FloatingCouponPeriod(
+            first + timedelta(days=182 * k),
+            first + timedelta(days=182 * (k + 1)),
+            first + timedelta(days=182 * (k + 1)),
+            1000.0,
+        )
+        for k in range(14)
+    )
+    return Instrument(
+        "FRN-KBD",
+        ProductType.FLOATING_BOND,
+        "RUB",
+        1000.0,
+        FloatingCouponLeg(rule, periods, "KBD_7Y", "RUB_KBD"),
+        PrincipalLeg((Redemption(periods[-1].payment_date, 1000.0),)),
+        "MOEX_STOCK",
+    )
+
+
+def test_kbd_floater_projects_off_the_kbd_and_discounts_on_ruonia() -> None:
+    """Option C of docs/proposals/kbd-risk-curve.md: projection on the KBD (annual-yield
+    buckets of ``rub_ofz_kbd_v2``), discounting on RUONIA OIS plus the credit spread."""
+    fixings = FixingHistory(
+        "kbd",
+        BUSINESS_DATE,
+        ((date(2026, 10, 14), kbd_effective_yield(PARAMS, 7.0)),),
+        CALENDAR,
+        "hub-zcyc",
+        known_at_utc=KNOWN,
+        tenor_years=7.0,
+    )
+    market = snapshot(
+        curves=(
+            CurveEntry("RUB_KBD", "rub_ofz_kbd_v2", PARAMS),
+            CurveEntry("RUB_OIS", "rub_ruonia_ois_legacy_v1", OIS),
+        ),
+        fixings=(FixingEntry("KBD_7Y", fixings),),
+        quotes=(
+            BondPriceObservation("FRN-KBD", 100.3, "waprice", accrued_per_bond=0.0),
+            BondPriceObservation("OFZ-BULLET", 92.15, "waprice"),
+        ),
+    )
+    ofz = next(i for i in test_portfolio.instruments() if i.instrument_id == "OFZ-BULLET")
+    books = (
+        Position("p-kbd", "FRN-KBD", 1000.0, "CREDIT", AccountingCategory.TRADING, "RUB"),
+        Position("p-ofz", "OFZ-BULLET", 1000.0, "RATES", AccountingCategory.TRADING, "RUB"),
+    )
+    result = value_portfolio(
+        run_id="kbd-floater",
+        as_of=AS_OF,
+        snapshot=market,
+        instruments=(kbd_floater(), ofz),
+        positions=books,
+        policy=ValuationPolicy(
+            "RUB_OIS",
+            include_second_order=False,
+            curve_overrides=(("OFZ-BULLET", "RUB_KBD"),),
+            spread_kinds=(("OFZ-BULLET", "ofz"),),
+        ),
+    )
+    assert result.status == "complete", result.coverage.rejections
+    row, bond = result.positions
+    # The OFZ on the same KBD after the floater: risk on RUB_KBD, its G-spread kept.
+    assert bond.curve_id == "RUB_KBD" and bond.curve_basis == "annual_zero"
+    assert bond.g_spread_bp is not None
+    first = row.factor_risk.first_order_by_factor()
+    projection = {b: first[f"IR|RUB_KBD|{b}"] for b in RISK_BUCKETS}
+    discount = sum(first[f"IR|RUB_OIS|{b}"] for b in RISK_BUCKETS)
+    # The steepener: short KBD buckets negative, long ones positive, net positive.
+    assert projection["3Y"] < 0.0 < projection["10Y"]
+    assert sum(projection.values()) > 0.0 > discount

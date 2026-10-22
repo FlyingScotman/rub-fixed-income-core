@@ -6,7 +6,7 @@ factor vocabulary. Supported in 0.11.0: fixed-coupon RUB bonds (bullet, amortizi
 confirmed put) on a KBD curve, a prebuilt discount curve or RUONIA OIS quotes.
 Package 3 adds CNY, USD and EUR bonds: each is discounted on the curve that the policy
 names for its currency (``ValuationPolicy.foreign_curves``), valued in RUB at the
-snapshot FX rate, and carries ``FX|<ccy>`` with its cross terms. Since 0.34.0 that
+snapshot FX rate, and carries ``FX|<ccy>`` with its cross terms. Since 0.36.0 that
 curve can also be the built CNY XCCY curve (``cny_ruonia_xccy_v1``) or a USD / EUR
 government par-yield proxy (``proxy_curves``), with explicit same-currency fallbacks
 (``ValuationPolicy.foreign_curve_fallbacks``) flagged on the row. Everything else is a
@@ -29,7 +29,7 @@ from itertools import pairwise
 from typing import Literal, cast
 
 from ._money import finite_money, positive_money
-from ._risk_common import _shifts
+from ._risk_common import _curve_basis, _shifts
 from ._version import __version__
 from .bond import YieldRequest, solve_effective_annual_yield
 from .callables import ExerciseAssumption, ExercisedBond, exercised_instrument, resolve_exercise
@@ -57,6 +57,7 @@ from .domain import (
     Instrument,
     MarketSnapshot,
     Offer,
+    OfferKind,
     Position,
     ProductType,
     RateAccrualCouponLeg,
@@ -81,6 +82,7 @@ from .local_risk import (
     RiskRunContext,
     prepare_local_bond_risk,
 )
+from .perpetual import PerpetualTail, perpetual_yield
 from .portfolio_instruments import PortfolioInstrument
 from .portfolio_products import (
     HORIZON_ROW_FIELDS,
@@ -185,7 +187,7 @@ class ValuationPolicy:
 
     A missing foreign curve is never replaced silently, and never by a curve of another
     currency (a bond's curve must be of its currency, whatever names it).
-    ``foreign_curve_fallbacks`` (0.34.0, off by default) lists ``(currency, curve_id)``
+    ``foreign_curve_fallbacks`` (0.36.0, off by default) lists ``(currency, curve_id)``
     alternatives tried in the given order when the ``foreign_curves`` curve of that
     currency is **absent** from the snapshot (a curve present but unusable is still a
     rejection); the row then names the missing curve in
@@ -205,6 +207,9 @@ class ValuationPolicy:
     held under every bump and scenario. The row records the resolved assumption in
     ``PositionValuation.exercise_assumption`` and a call as ``horizon="call"``. There is
     no default: a callable without an assumption is still rejected.
+    ``ExerciseAssumption.never_called()`` (BACKLOG #125) values a dated callable to
+    maturity and a perpetual as its endless coupon stream (``horizon="perpetual"``),
+    unless the policy's ``horizon`` picks a put first.
 
     Desk-monitor additions (0.33.0), each omitted at its default so earlier policies,
     job IDs and results keep their bytes:
@@ -231,9 +236,9 @@ class ValuationPolicy:
       CS01 by tenor for credit, the OFZ basis by tenor for an OFZ discounted on RUONIA
       OIS (OWNER_REQUESTS R18: the OFZ curve is RUONIA plus a basis).
 
-    FX product options (0.35.0), each omitted at its default:
+    FX product options (0.36.0), each omitted at its default:
 
-    - ``fx_curve_fallbacks`` (BACKLOG #123): ``(curve_id, fallback_curve_id)`` pairs, tried
+    - ``fx_curve_fallbacks`` (BACKLOG #131): ``(curve_id, fallback_curve_id)`` pairs, tried
       in the given order when an FX forward, FX cross, XCCY swap or FX future names
       ``curve_id`` as its foreign curve and it is **absent** from the snapshot. The
       fallback must be of the same currency; it may be a par-yield proxy
@@ -417,7 +422,7 @@ class PortfolioScenario:
     ``shock.spread_shift_bp``. A "+20 bp OFZ basis" scenario is ``(("ofz", 20.0),)`` on a
     book whose OFZ are spread to RUONIA OIS; credit spreads then stay put.
 
-    ``basis_shifts_bp`` (0.35.0, BACKLOG #103) moves calibrated bases, as ``(factor,
+    ``basis_shifts_bp`` (0.36.0, BACKLOG #103) moves calibrated bases, as ``(factor,
     bp)`` pairs keyed by the factor the positions report: ``FXBASIS|<ccy>`` (FX
     forwards, crosses and FX futures of the currency), ``XCCYBASIS|<ccy>`` (XCCY swaps),
     ``FUTBASIS|<contract>`` (rate and OFZ futures). Unlisted bases stay frozen, as before.
@@ -562,7 +567,10 @@ class PositionValuation:
     A bond valued under a ``ValuationPolicy.exercise_assumptions`` entry records the
     resolved assumption (``ResolvedExercise.identifier``, e.g.
     ``exercise:to_call:2027-03-25@call:2027-03-25``) in ``exercise_assumption``; an
-    exercised call reads ``horizon="call"`` with the call date as ``horizon_date``.
+    exercised call reads ``horizon="call"`` with the call date as ``horizon_date``. A
+    never-called perpetual reads ``horizon="perpetual"``: ``horizon_date`` is its last
+    listed coupon, after which the same coupon is assumed forever and priced exactly
+    (``perpetual.PerpetualTail``); its yield and duration are the endless stream's.
 
     ``discount_margin_bp`` (``ValuationPolicy.discount_margin``, floaters only) is the
     spread over the projection curve that reprices the projected flows; it equals
@@ -570,7 +578,7 @@ class PositionValuation:
     marks a put chosen by the open-window rule (``ValuationPolicy.horizon``).
     ``spread_buckets_rub`` (``ValuationPolicy.spread_buckets``) is the central ``CS``
     sensitivity split by :data:`RISK_BUCKETS` (see ``BondRiskEngine.spread_bucket_risk``).
-    ``curve_fallback_from`` (0.34.0) names the curve the policy wanted for a non-RUB bond
+    ``curve_fallback_from`` (0.36.0) names the curve the policy wanted for a non-RUB bond
     when it was absent from the snapshot and ``curve_id`` is a fallback of the same
     currency (``ValuationPolicy.foreign_curve_fallbacks``); None otherwise.
     """
@@ -584,7 +592,7 @@ class PositionValuation:
     spec_id: str
     curve_basis: str
     settlement_date: date
-    horizon: Literal["maturity", "confirmed_put", "open_put", "call"]
+    horizon: Literal["maturity", "confirmed_put", "open_put", "call", "perpetual"]
     horizon_date: date
     quantity: float
     current_nominal_rub: float
@@ -629,7 +637,7 @@ class PortfolioScenarioResult:
 
 @dataclass(frozen=True)
 class CurveUse:
-    """A curve the job read. ``proxy`` (0.34.0) marks a stand-in curve of its currency
+    """A curve the job read. ``proxy`` (0.36.0) marks a stand-in curve of its currency
     (``CurveSpec.proxy``: a government par-yield curve, not OIS); omitted when False."""
 
     curve_id: str
@@ -765,10 +773,15 @@ def _build_curve(entry: CurveEntry, business_date: date) -> _BuiltCurve:
         if isinstance(source, ZcycParameters):
             if source.trade_date != business_date:
                 raise InvalidTerms("KBD parameters are not for the snapshot business date")
-            return _BuiltCurve(
-                entry, kbd_discount_curve(source), source, KBD_MODEL_VERSION, spec.currency
+            built = kbd_discount_curve(
+                source, zero_shock=cast(Literal["continuous", "annual"], spec.zero_shock)
             )
-        if isinstance(source, DiscountCurve) and source.model_version == KBD_MODEL_VERSION:
+            return _BuiltCurve(entry, built, source, KBD_MODEL_VERSION, spec.currency)
+        if (
+            isinstance(source, DiscountCurve)
+            and source.model_version == KBD_MODEL_VERSION
+            and source.convention.zero_shock == spec.zero_shock
+        ):
             return _BuiltCurve(entry, source, None, KBD_MODEL_VERSION, spec.currency)
         raise InvalidTerms(f"curve {entry.curve_id} does not match spec {spec.spec_id}")
     if spec.kind is CurveKind.OIS_BOOTSTRAP:
@@ -803,8 +816,8 @@ def _build_curve(entry: CurveEntry, business_date: date) -> _BuiltCurve:
             )
         raise InvalidTerms(f"curve {entry.curve_id} does not match spec {spec.spec_id}")
     if spec.kind in (CurveKind.XCCY_BOOTSTRAP, CurveKind.PAR_YIELD_PROXY, CurveKind.FX_IMPLIED):
-        # A built XCCY curve (CNY under RUB collateral), a par-yield proxy (0.34.0) or a
-        # built curve implied from FX swaps (0.35.0): read, interpolated and shifted on
+        # A built XCCY curve (CNY under RUB collateral), a par-yield proxy (0.36.0) or a
+        # built curve implied from FX swaps (0.36.0): read, interpolated and shifted on
         # its continuous zero rates as caller factors.
         if isinstance(source, XccyCurveBootstrapRequest):
             raise InvalidTerms(
@@ -969,6 +982,7 @@ def value_portfolio(
                 used_fx,
                 projection,
                 used_cpi,
+                None if exercised is None else exercised.perpetual_tail,
             )
         except CoreRejection as exc:
             rejections.append(
@@ -1219,7 +1233,11 @@ def _supported_instrument(
     position: Position,
     instruments: Mapping[str, Instrument],
     currencies: frozenset[str] = frozenset({"RUB"}),
+    *,
+    perpetual: bool = False,
 ) -> Instrument:
+    """The position's instrument if this release values it; ``perpetual`` admits a
+    never-called perpetual (its tail is priced by the risk engine)."""
     instrument = instruments.get(position.instrument_id)
     if instrument is None:
         raise InvalidTerms("instrument terms were not supplied for this position")
@@ -1232,8 +1250,10 @@ def _supported_instrument(
         )
     if position.currency != instrument.currency:
         raise InvalidTerms("position currency differs from the instrument currency")
-    if instrument.is_perpetual:
-        raise UnsupportedProduct("perpetual bonds need a call assumption (package 9)")
+    if instrument.is_perpetual and not perpetual:
+        raise UnsupportedProduct(
+            "perpetual bonds need an exercise assumption (to_call or never_called)"
+        )
     if any(o.kind.value == "call" for o in instrument.offers):
         raise UnsupportedProduct("callable bonds are not supported (package 9)")
     leg = instrument.coupon_leg
@@ -1328,6 +1348,8 @@ def _bond_model(
         flags.append("real_curve")
     if valuation.horizon == "confirmed_put":
         flags.append("to_confirmed_put")
+    if engine.request.perpetual_tail is not None:
+        flags.append("perpetual_tail")
     return PositionModel(
         valuation.position_id,
         valuation.instrument_id,
@@ -1350,6 +1372,7 @@ def _value_position(
     used_fx: dict[str, FxRate],
     projection: Callable[[str, FixingIndex], _BuiltCurve],
     used_cpi: dict[str, CpiUse] | None = None,
+    perpetual_tail: PerpetualTail | None = None,
 ) -> tuple[PositionValuation, BondRiskEngine]:
     """Value one bond position.
 
@@ -1363,6 +1386,9 @@ def _value_position(
     adds its own ``IR|<projection curve>|<bucket>`` factors.
 
     An inflation-linked bond (package 9a) goes to :func:`_value_linker_position`.
+
+    A never-called perpetual (``perpetual_tail``) is valued to the put the policy's
+    horizon picks, if any, and otherwise as its listed coupons plus the tail.
     """
     linker = instruments.get(position.instrument_id)
     if linker is not None and linker.product is ProductType.INFLATION_LINKED_BOND:
@@ -1379,7 +1405,9 @@ def _value_position(
             {} if used_cpi is None else used_cpi,
         )
         return valuation, prepared.engine
-    instrument = _supported_instrument(position, instruments, SUPPORTED_CURRENCIES)
+    instrument = _supported_instrument(
+        position, instruments, SUPPORTED_CURRENCIES, perpetual=perpetual_tail is not None
+    )
     convention = instrument.yield_convention
     if convention.compounding != ANNUAL:
         raise UnsupportedProduct(
@@ -1402,7 +1430,15 @@ def _value_position(
     fx = snapshot.fx_rate(currency) if foreign else 1.0
     if foreign:
         used_fx[currency] = FxRate(currency, fx)
-    horizon_date, offer = instrument.horizon(policy.horizon, settlement)
+    tail: PerpetualTail | None = None
+    if perpetual_tail is None:
+        horizon_date, offer = instrument.horizon(policy.horizon, settlement)
+    else:
+        offer = _perpetual_put(instrument, policy, settlement)
+        if offer is None:
+            tail, horizon_date = perpetual_tail, perpetual_tail.anchor_date
+        else:
+            horizon_date = offer.offer_date
     if policy.require_known_coupons:
         _check_known_coupons(instrument, settlement, horizon_date)
     flows = instrument.cashflows(after=settlement, horizon=horizon_date, offer=offer)
@@ -1418,9 +1454,7 @@ def _value_position(
     )
     nominal_rub = nominal * fx if foreign else nominal
     accrued_rub = accrued * fx if foreign else accrued
-    basis: Literal["continuous_zero", "ois_quote"] = (
-        "ois_quote" if isinstance(built.curve, CurveBootstrapRequest) else "continuous_zero"
-    )
+    basis = cast(Literal["continuous_zero", "annual_zero", "ois_quote"], _curve_basis(built.curve))
     projection_id: str | None = None
     yield_flows: Sequence[BondCashflow] = flows
     if isinstance(instrument.coupon_leg, FloatingCouponLeg):
@@ -1462,7 +1496,11 @@ def _value_position(
                 cashflows=rub_flows,
                 settlement_date=settlement,
                 horizon_date=horizon_date,
-                horizon="maturity" if offer is None else "confirmed_investor_put",
+                horizon="perpetual"
+                if tail is not None
+                else "maturity"
+                if offer is None
+                else "confirmed_investor_put",
                 cashflow_currency="RUB",
                 coupon_model="fixed",
                 current_nominal_rub=nominal_rub,
@@ -1472,6 +1510,7 @@ def _value_position(
                 curve=built.curve,
                 spread_convention=policy.spread_convention,
                 spread_kind=spread_kind,
+                perpetual_tail=None if tail is None else tail.scaled(fx) if foreign else tail,
             ),
             curve_cache=cache,
         )
@@ -1483,7 +1522,9 @@ def _value_position(
     dirty_ccy = (
         clean_price_pct_to_dirty_rub(quote.clean_price_pct, nominal, accrued) if foreign else dirty
     )
-    effective_yield, duration = _yield_and_duration(settlement, dirty_ccy, yield_flows, convention)
+    effective_yield, duration = _yield_and_duration(
+        settlement, dirty_ccy, yield_flows, convention, tail
+    )
     g_spread = None
     floating = isinstance(instrument.coupon_leg, FloatingCouponLeg)
     # A G-spread compares a fixed-rate yield with the KBD; a floater has none.
@@ -1493,7 +1534,9 @@ def _value_position(
         kbd_yield, kbd_tenor = (
             (effective_yield, duration)
             if convention == DEFAULT_YIELD_CONVENTION
-            else _yield_and_duration(settlement, dirty_ccy, yield_flows, DEFAULT_YIELD_CONVENTION)
+            else _yield_and_duration(
+                settlement, dirty_ccy, yield_flows, DEFAULT_YIELD_CONVENTION, tail
+            )
         )
         g_spread = g_spread_bp(kbd, kbd_yield, kbd_tenor)
     margin = engine.discount_margin_bp() if floating and policy.discount_margin else None
@@ -1529,7 +1572,7 @@ def _value_position(
         built.entry.spec_id,
         basis,
         settlement,
-        _horizon_label(policy, offer),
+        "perpetual" if tail is not None else _horizon_label(policy, offer),
         horizon_date,
         position.quantity,
         nominal_rub,
@@ -1580,6 +1623,20 @@ def _bond_discount_curve(
     raise MissingMarketData(
         f"no {currency} discount curve in snapshot {snapshot.snapshot_id} (tried {tried})"
     )
+
+
+def _perpetual_put(
+    instrument: Instrument, policy: ValuationPolicy, settlement: date
+) -> Offer | None:
+    """The put a never-called perpetual is valued to under the policy's horizon, or None."""
+    if policy.horizon == "maturity" or not any(
+        o.kind is OfferKind.PUT for o in instrument.offers
+    ):
+        return None
+    try:
+        return instrument.horizon(policy.horizon, settlement)[1]
+    except InvalidTerms:  # no put chosen: a perpetual has no maturity horizon
+        return None
 
 
 def _horizon_label(
@@ -1849,8 +1906,17 @@ def _yield_and_duration(
     dirty: float,
     flows: Sequence[BondCashflow],
     convention: YieldConvention,
+    tail: PerpetualTail | None = None,
 ) -> tuple[float, float]:
-    """Effective annual yield and Macaulay duration, both on ``convention``'s time basis."""
+    """Effective annual yield and Macaulay duration, both on ``convention``'s time basis.
+
+    With a perpetual ``tail``, those of the listed flows and the endless coupons.
+    """
+    if tail is not None:
+        solved = perpetual_yield(
+            settlement, dirty, tuple((f.payment_date, f.amount) for f in flows), tail, convention
+        )
+        return solved.effective_yield, solved.macaulay_duration_years
     effective = solve_effective_annual_yield(
         YieldRequest(settlement, dirty, tuple(flows), convention)
     ).effective_annual_yield
@@ -2230,6 +2296,11 @@ def _horizon_position(
             terms, policy, snapshot, {} if exercised_memo is None else exercised_memo
         )
         if exercised is not None:
+            if exercised.perpetual_tail is not None:
+                raise UnsupportedProduct(
+                    "the horizon P&L of a never-called perpetual is not modelled yet "
+                    "(BACKLOG #126); value it with value_portfolio"
+                )
             instruments = _Replaced(instruments, exercised.instrument)
     instrument = _supported_instrument(position, instruments)
     calendar = _use_calendar(snapshot, instrument, used_calendars)

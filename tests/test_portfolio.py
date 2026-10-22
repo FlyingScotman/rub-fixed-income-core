@@ -41,6 +41,7 @@ from rub_fixed_income import (
     ValuationPolicy,
     canonical_sha256,
     g_spread_bp,
+    kbd_discount_curve,
     kbd_effective_yield,
     portfolio_result_from_json,
     portfolio_result_to_json,
@@ -313,3 +314,24 @@ def test_result_is_deterministic_hash_verified_and_round_trips() -> None:
 def test_frozen_v2_fixture_still_parses_and_reserialises_byte_for_byte() -> None:
     data = FIXTURE.read_bytes()
     assert portfolio_result_to_json(portfolio_result_from_json(data)) == data
+
+
+def test_kbd_v2_spec_shocks_the_published_annual_yield() -> None:
+    """``rub_ofz_kbd_v2`` (0.34.0): the same KBD and prices, risk in annual-yield units."""
+    v2 = snapshot(curves=(CurveEntry("RUB_OFZ_KBD", "rub_ofz_kbd_v2", PARAMS),))
+    old = next(p for p in run().positions if p.position_id == "p-bullet")
+    new = next(p for p in run(snapshot=v2).positions if p.position_id == "p-bullet")
+    assert (old.curve_basis, new.curve_basis) == ("continuous_zero", "annual_zero")
+    assert new.spec_id == "rub_ofz_kbd_v2"
+    assert new.pv_rub == old.pv_rub and new.spread_bp == old.spread_bp
+    rates_old = sum(old.factor_risk.first_order[:-1])
+    rates_new = sum(new.factor_risk.first_order[:-1])
+    # Continuous over annual is about 1 + the curve's yield along the bond's flows.
+    curve_yield = kbd_effective_yield(PARAMS, new.macaulay_duration_years)
+    assert rates_old / rates_new == pytest.approx(1.0 + curve_yield, abs=0.01)
+    # A prebuilt continuous-shock KBD curve does not satisfy the v2 spec.
+    prebuilt = snapshot(
+        curves=(CurveEntry("RUB_OFZ_KBD", "rub_ofz_kbd_v2", kbd_discount_curve(PARAMS)),)
+    )
+    codes = {r.position_id: r.code for r in run(snapshot=prebuilt).coverage.rejections}
+    assert codes["p-bullet"] == "INVALID_TERMS"

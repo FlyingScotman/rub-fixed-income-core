@@ -205,7 +205,7 @@ other repositories and must be changed there, not in this core.
     `Instrument.yield_convention` from the issue terms of every non-RUB bond. The seven
     ACT/360 bonds in the goldens are evidence, not a rule; ISS does not publish the basis.
 40. *(partly done: CNY bonds on the built `cny_ruonia_xccy_v1` curve and USD / EUR
-    government par-yield proxies in 0.34.0)* **Bootstrapped foreign curve specs.** SOFR /
+    government par-yield proxies in 0.36.0)* **Bootstrapped foreign curve specs.** SOFR /
     €STR OIS as registered specs once their quote conventions (spot and payment lags,
     fixed frequency, day counts) are confirmed from primary sources. Until then the backend
     builds the discount factors (`*_discount_factors_v1`) or uses a proxy.
@@ -231,7 +231,7 @@ other repositories and must be changed there, not in this core.
     pair; coverage codes for settled legs and missing implied curves; factor totals shared
     with bonds and futures (`IR|curve|bucket`, `FX|ccy`, `FXBASIS|ccy`); one shocked-curve
     cache and implied curve per pair per job; a new result-contract version.
-46. *(done in 0.35.0 beside the factors; as the factor basis: #128)* **Points-fixed RUB
+46. *(done in 0.36.0 beside the factors; as the factor basis: #136)* **Points-fixed RUB
     risk.** On an implied foreign curve a RUB shock holds the implied
     foreign zero rates, so the points move. A "points held" basis would rebuild the
     implied curve under RUB shocks and needs a factor for the points.
@@ -243,12 +243,12 @@ other repositories and must be changed there, not in this core.
     tighten the golden from a statistical to a per-day check.
 48. **CETS term swaps.** A 1W–6M points golden needs days with trades, or MOEX's
     indicative term rates if ISS publishes them; `PREVPRICE` is usually days old.
-49. *(partly done in 0.35.0: NDF fixing date and source on the leg, `NdfConvention`
+49. *(partly done in 0.36.0: NDF fixing date and source on the leg, `NdfConvention`
     date rule, a published fixing freezes the leg, `FxFixing` in the snapshot)*
     **USD/RUB, EUR/RUB, NDFs, end-of-month rule.** Spot lag and USD calendar from
     confirmations (OTC only since 2024); NDF fixing source and lag, and freezing a
     published fixing; the end-of-month rule for FX tenors. Open: the spot lag and
-    calendars, the end-of-month rule, and the firm's NDF source and lags (#126).
+    calendars, the end-of-month rule, and the firm's NDF source and lags (#134).
 
 ## Callables, perpetuals, pass-throughs — 0.20.0
 
@@ -481,7 +481,7 @@ other repositories and must be changed there, not in this core.
      explicit `fx_horizon` (`"spot_held"` or `"forwards_realised"`). Limits in #108.
 102. **Derivatives in the local worker** (`run_local_risk`; its contract v1 is fixed RUB
      bonds), including FX futures (#33) and rate futures (#87).
-103. *(done in 0.35.0: `PortfolioScenario.basis_shifts_bp` by factor key)* **Basis
+103. *(done in 0.36.0: `PortfolioScenario.basis_shifts_bp` by factor key)* **Basis
      scenarios.** `PortfolioScenario` cannot shift `FXBASIS`, `XCCYBASIS` or
      `FUTBASIS`; desk scenarios that move a basis need shift entries per basis key.
 104. **Shared FX futures engines.** Rate and OFZ futures share one engine per contract;
@@ -523,7 +523,8 @@ estimates). Done in 0.33.0: core brief C1 (open-window puts), C7 (known coupons)
 margin, CS01 / OFZ basis by bucket, spread-kind scenario shifts, vectorised history
 metrics.
 
-111. **OFZ–RUONIA basis as a curve factor (R18, full).** 0.33.0 gives the basis risk by
+111. *(done in 0.34.0 by option C of docs/proposals/kbd-risk-curve.md: OFZ on the KBD
+     risk curve `rub_ofz_kbd_v2`, the basis as a view, `basis_view`)* **OFZ–RUONIA basis as a curve factor (R18, full).** 0.33.0 gives the basis risk by
      bucket (`spread_buckets_rub`, first order) and a parallel basis scenario
      (`spread_kind_shifts_bp`). A named basis curve `IR|<basis>|<bucket>` with its
      Hessian block and bucket scenarios needs the discount-only factor split in the
@@ -569,18 +570,95 @@ metrics.
      #85): the observation of the first period is not identified without the issue
      terms. P2.
 
-## Non-RUB bonds, phase 2 — 0.34.0
+## KBD as a risk curve — 0.34.0
 
-122. **Bund par proxy.** The monitor's EUR fallback `eur_bund_par` (Bundesbank) has no
+Source: `docs/proposals/kbd-risk-curve.md` (in Russian) and the owner's decisions of
+2026-10-22 (option C; KBD bumped in annual yields; OFZ-PK on RUONIA; convexity optional
+until a volatility source exists; instrument terms from the market-data hub). Done in
+0.34.0: `rub_ofz_kbd_v2` (`annual_zero` risk), the KBD constant-maturity index with
+period margins and an optional convexity adjustment, goldens of ten KBD floaters,
+`basis_view`.
+
+122. **Volatility for the constant-maturity convexity.** `ConstantMaturityConvexity`
+     takes a normal volatility of the KBD yield; there is no market source (no RUB
+     swaption or OFZ option quotes). Candidates: realised volatility of KBD yields by
+     tenor from the hub's ZCYC history (a hub dataset), with a stated window and an
+     expiry term structure; then the payment-timing adjustment. Until decided the desk
+     values without it. P2, investigation then 1–2 days.
+123. *(downstream: market-data hub)* **Terms of KBD floaters.** The hub's
+     `floater_formulas` give `ZR_YLD_CRV` and today's margin only. The hub is to publish
+     the tenor, the fixing offset (in ZCYC publication days), the rate rounding and the
+     margin by period, curated from issue documents with evidence (a hub session was
+     started on 2026-10-22). Open rules: Avtodor BO-002R-01, FPK 001R-05, VTB T2-3,
+     Gazprom Capital 001B-02/03, RZD 001B-01/02, GTLK 001P-01, and the KAMAZ coupons
+     rounded to 0.0001 % in 2022–2024.
+124. *(downstream: TDM)* **Migration to option C.** OFZ discounted on the KBD
+     (`curve_overrides`, spec `rub_ofz_kbd_v2`), `ofz_spr01` as the spread to the KBD,
+     KBD floaters out of the fallback, `RUB OFZ` a real scenario curve, the cockpit with
+     a «КБД / RUONIA + базис» view (`basis_view`), the fallback duration proxy divided by
+     `1 + y`; see `docs/CONSUMERS.md`.
+
+## Never-called perpetuals — 0.36.0
+
+125. *(done)* **Perpetuals never called** (owner's position: Russian perpetuals are
+     practically never called). `ExerciseAssumption.never_called()`: a dated callable
+     runs to maturity, a perpetual pays its listed coupons and then the last one at the
+     same step forever (`perpetual.PerpetualTail`), valued exactly: curve read to 30
+     years, its flat-forward rate beyond, the sum to 600 years plus the geometric
+     remainder. Z-spread, bucket DV01 (the tail past 20 years in `20Y+`), CS01, the
+     Hessian and scenarios reprice the tail; yield and duration are the stream's;
+     `yield_never_called`, and never called is a candidate of `to_worst` /
+     `price_to_worst` for perpetuals. `value_portfolio` rows read `horizon="perpetual"`.
+     A truncated stream needs 50–60 years for 1 bp of Z-spread (30 years: 12–36 bp,
+     `tests/test_perpetual.py`). About 75 ms per perpetual with the Hessian against
+     about 10 ms for a dated bond.
+126. **Horizon P&L of a never-called perpetual.** `horizon_portfolio` rejects it
+     (`UNSUPPORTED_PRODUCT`): carry and roll-down need the tail priced at the horizon
+     date in `horizon.py` (the tail's anchor and the curve read move with the date).
+     `value_assumed_portfolio` rejects it too (the native path prices the tail). P1,
+     1 day.
+127. **Perpetuals with a coupon formula.** A floater perpetual (RUONIA or key rate plus a
+     margin) needs its floating leg continued to the tail with the projection (with #112,
+     callable floaters); a perpetual whose coupon resets every N years to the KBD / OFZ
+     yield of N years plus a margin is the KBD constant-maturity index of 0.34.0
+     (`FixingIndex` `"kbd"`, `index_tenor_years=N`) fixed once per reset period: its
+     floating leg continued past the listed periods, the reset coupon the forward KBD
+     yield at the reset date, its rate risk on the KBD as a projection curve. Until then
+     `never_called` rejects a floating leg, and an unknown listed coupon is not
+     continued. P1.
+128. *(downstream)* **TDM: no call by default.** In `backend/src/desk/valuation/bonds.py`:
+     replace `perpetual_call` / `PERPETUAL_CALL_YEARS` (a call assumed in five years) by
+     passing the perpetual to core as listed, with its calls, and
+     `ValuationPolicy.exercise_assumptions=((id, ExerciseAssumption.never_called()), ...)`
+     for every perpetual and callable; drop `redeem_at_horizon` for them; a dated
+     callable runs to maturity (`next_offer` stops choosing calls); puts stay the horizon
+     (`open_put`); a perpetual with an unknown coupon and no put is rejected, not
+     continued at the last rate. Note `perpetual: no call assumed` in `assumptions`.
+     Expect higher DV01 / CS01 (about twice) and lower yields and Z-spreads on discount
+     perpetuals than under the five-year call.
+129. **Long-end risk on a quoted OIS curve.** A curve bootstrapped from RUB OIS quotes
+     ends at 10 years and extrapolates flat-forward from its last two nodes, so every
+     flow past 10 years moves with the 7Y–10Y forward: under quote risk
+     (`ois_quote`) a never-called perpetual's DV01 is a large 7Y / 10Y pair of opposite
+     signs (in `tests/test_perpetual.py`'s book: +54 and −90 RUB/bp for −37 net), and
+     the same holds, smaller, for any bond past 10 years. Options for the owner: keep
+     it (it is the curve's model), extrapolate a flat zero rate past the last node (the
+     long-end risk then sits on the 10Y quote alone; a curve-model change for every
+     bond past 10 years), or report the long end in zero-rate buckets. P1, owner
+     decision.
+
+## Non-RUB bonds, phase 2 — 0.36.0
+
+130. **Bund par proxy.** The monitor's EUR fallback `eur_bund_par` (Bundesbank) has no
      registered spec: the Bundesbank's published series and their coupon / compounding
      convention need a primary source before a `eur_bund_par_proxy_v1`. Until then only
      ECB AAA par yields are a EUR proxy. P2.
-123. *(done in 0.35.0: `ValuationPolicy.fx_curve_fallbacks`; a proxy only as a fallback,
+131. *(done in 0.36.0: `ValuationPolicy.fx_curve_fallbacks`; a proxy only as a fallback,
      with a calibrated `FxBasis`)* **Proxies for FX products.** `ProductContext.foreign_fx_curve` (FX forwards, XCCY)
      accepts `*_discount_factors_v1` and XCCY curves only; a desk that wants FX forwards on
      a UST proxy needs a decision (proxy credit in covered parity) and the spec kind in
      that check. Belongs with the FX package (P7). P2.
-124. *(downstream)* **Monitor migration (R8 phase 2 / P5).** Lift `not_rub` in
+132. *(downstream)* **Monitor migration (R8 phase 2 / P5).** Lift `not_rub` in
      `valuation/bonds.py` for CNY / USD / EUR bonds; build `cny_ruonia_xccy_v1` with
      `bootstrap_xccy_curve` from the hub's `cny_ruonia_xccy` quotes and, when the setting
      `proxy_curves_for_risk` is on, the UST / ECB AAA proxies with
@@ -591,32 +669,32 @@ metrics.
      accrual basis from issue terms (#39). The FX rate is the backend's (#42; R26: MOEX
      19:00). CS01 of a foreign bond is now `CS` on its own curve (owner question R8 open:
      keep or zero).
-125. **Proxy refinements.** Treasury's monotone convex spline and T+1 settlement are not
+133. **Proxy refinements.** Treasury's monotone convex spline and T+1 settlement are not
      reproduced (log-linear DF nodes from the curve date); the bill BEY uses a 365-day
      year. Numbers move only inside the proxy's own basis; tighten if a desk compares
      with Treasury's published spot rates. P2.
 
-## FX for any currency, crosses, NDF fixings — 0.35.0
+## FX for any currency, crosses, NDF fixings — 0.36.0
 
-Done in 0.35.0 (FX-forward gap analysis, core packages C1–C3; roadmap review P7):
+Done in 0.36.0 (FX-forward gap analysis, core packages C1–C3; roadmap review P7):
 per-currency foreign specs for every currency (`<ccy>_discount_factors_v1`,
 `<ccy>_fx_implied_v1` with `FxImpliedCurveRequest`), crosses without RUB
 (`fx_crosses`, `FxCrossInstrument`), NDF fixings (#49, part), points-held RUB risk (#46),
-basis scenarios (#103), FX fallbacks to proxies (#123).
+basis scenarios (#103), FX fallbacks to proxies (#131).
 
-126. *(owner, downstream)* **The desk's NDF terms.** Fixing source (CBR official rate,
+134. *(owner, downstream)* **The desk's NDF terms.** Fixing source (CBR official rate,
      MOEX fixing, other), fixing lag and the value date the fixing refers to, and the
      settlement currency of the desk's NDF trades; the desk's own reports carry them per
      trade (the private adapter maps them to `trade_terms`). Core takes them as
      `NdfConvention` / leg terms; the backend maps the source to `FxFixing.source`.
-127. **NDFs settled in a foreign currency and cross NDFs.** An offshore-style USD/RUB NDF
+135. **NDFs settled in a foreign currency and cross NDFs.** An offshore-style USD/RUB NDF
      settles `N · (1 − K / fixing)` USD (a quanto-like ratio, not linear in the forward);
      a cross NDF needs both fixings. Both are rejected today. P2, when the book has them.
-128. **Points-held risk as the factor basis.** Today the points-held RUB risk is a row
+136. **Points-held risk as the factor basis.** Today the points-held RUB risk is a row
      field beside the factors; a points-held factor set (`IR|<rub>|*` with points held,
      the foreign curve as the points factor) would need its Hessian and an owner decision
      on what the desk's RUB DV01 means on an implied curve. P2.
-129. *(downstream)* **Hub and monitor inputs for FX.** FX swap points in the snapshot
+137. *(downstream)* **Hub and monitor inputs for FX.** FX swap points in the snapshot
      (hub WP-H1) mapped to `FxSwapPointsQuote` in RUB per one unit; FX spots with value
      dates and settlement calendars (WP-H2, H5); CBR / MOEX fixings by date as `FxFixing`
      with `published_at`; FORTS FX futures prices as `FxOutrightQuote` for USD / EUR.

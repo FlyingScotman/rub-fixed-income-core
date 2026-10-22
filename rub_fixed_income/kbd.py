@@ -13,7 +13,10 @@ within 0.01 bp (``tests/test_kbd.py``).
 
 Time is ACT/365F years from the curve date. :func:`kbd_discount_curve` materialises the
 curve as a :class:`DiscountCurve` on a dense node grid, so every pricing and risk path
-(Z-spread, ``continuous_zero`` bucket risk, Hessian, scenarios) works on it unchanged.
+(Z-spread, bucket risk, Hessian, scenarios) works on it unchanged. With
+``zero_shock="annual"`` (0.34.0; the ``rub_ofz_kbd_v2`` spec) bucket risk moves the
+effective annual yields MOEX publishes (``curve_basis = "annual_zero"``), so KBD DV01
+sums with par RUONIA OIS DV01; the default keeps continuous zero rates.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import date, timedelta
+from typing import Literal
 
 import numpy as np
 
@@ -142,12 +146,18 @@ def _node_offsets(horizon_days: int) -> tuple[int, ...]:
 
 
 def kbd_discount_curve(
-    params: ZcycParameters, curve_date: date | None = None, *, horizon_years: int = 30
+    params: ZcycParameters,
+    curve_date: date | None = None,
+    *,
+    horizon_years: int = 30,
+    zero_shock: Literal["continuous", "annual"] = "continuous",
 ) -> DiscountCurve:
     """Materialise the KBD curve as a log-linear-DF :class:`DiscountCurve`.
 
     ``DF(t) = exp(-G(t)/10^4 * t)`` at ACT/365F times on the node grid; beyond the last
     node the curve extrapolates flat-forward. ``curve_date`` defaults to the trade date.
+    ``zero_shock`` is the unit of its bucket risk (``CurveConvention.zero_shock``):
+    continuous zero rates by default, ``"annual"`` the effective annual KBD yield.
     """
     start = params.trade_date if curve_date is None else curve_date
     if horizon_years < 1:
@@ -161,5 +171,5 @@ def kbd_discount_curve(
         start,
         tuple(nodes),
         KBD_MODEL_VERSION,
-        convention=CurveConvention(time_day_count=DayCount.ACT_365_FIXED),
+        convention=CurveConvention(time_day_count=DayCount.ACT_365_FIXED, zero_shock=zero_shock),
     )

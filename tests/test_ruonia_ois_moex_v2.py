@@ -179,6 +179,7 @@ def test_legacy_convention_numbers_and_identity_are_unchanged() -> None:
     )
     raw = asdict(legacy)
     assert raw["convention"].pop("ois_swap") is None
+    assert raw["convention"].pop("zero_shock") == "continuous"
     assert canonical_json_bytes(legacy) == canonical_json_bytes(raw)
     assert b"ois_swap" not in canonical_json_bytes(legacy)
     assert "ois_swap" not in to_dict(legacy)["convention"]

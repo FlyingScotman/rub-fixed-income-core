@@ -5,6 +5,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import date
 from math import exp, isfinite
+from typing import TYPE_CHECKING
 
 from ._deprecation import deprecated
 from ._money import finite_money
@@ -12,6 +13,9 @@ from ._solver import bisect
 from .cashflows import BondCashflow, clean_price_pct_to_dirty_rub
 from .conventions import CONTINUOUS, Compounding, YieldConvention, ZSpreadConvention
 from .discount import DiscountFactorCurve
+
+if TYPE_CHECKING:
+    from .perpetual import PerpetualTail
 
 # A nominal-yield root below -0.99 * m (per-period discount base below 0.01) is treated as
 # outside the supported domain and reported as "not bracketed" instead of returned.
@@ -203,13 +207,33 @@ def _spread_price(
     convention: ZSpreadConvention,
     *,
     include_settlement_flows: bool,
+    tail: PerpetualTail | None = None,
 ) -> float:
     """PV at ``settlement`` with the settlement-forward zero rate plus ``spread``.
 
     Forward DF is ``DF(t) / DF(settlement)``; time runs from settlement with
     ``convention.day_count``. When ``settlement == curve_date`` the forward DF is the curve
-    DF exactly, so the legacy curve-date path is reproduced bit for bit.
+    DF exactly, so the legacy curve-date path is reproduced bit for bit. A perpetual
+    ``tail`` adds its coupons the same way (``inf`` when the stream does not converge).
     """
+    listed = _listed_price(
+        flows, curve, settlement, spread, convention, include_settlement_flows
+    )
+    if tail is None:
+        return listed
+    from .perpetual import tail_pv_at_spread
+
+    return listed + tail_pv_at_spread(tail, curve, settlement, spread, convention)
+
+
+def _listed_price(
+    flows: tuple[tuple[date, float], ...],
+    curve: DiscountFactorCurve,
+    settlement: date,
+    spread: float,
+    convention: ZSpreadConvention,
+    include_settlement_flows: bool,
+) -> float:
     settlement_df = curve.discount_factor(settlement)
     if convention.compounding.is_continuous:
         return float(
@@ -249,12 +273,15 @@ def price_cashflows(
     compounding_frequency: int = 1,
     settlement_date: date | None = None,
     convention: ZSpreadConvention | None = None,
+    perpetual_tail: PerpetualTail | None = None,
 ) -> float:
     """Price cash flows on ``curve`` plus a decimal Z-spread.
 
     Default (no ``settlement_date``): legacy curve-date valuation; a flow on the curve date
     counts at face and earlier flows are ignored. With ``settlement_date``: flows on or
     before settlement are dropped and the value is expressed at settlement.
+    ``perpetual_tail`` (with ``settlement_date``) adds a never-called perpetual's coupons
+    after its last listed one (``perpetual.tail_pv_at_spread``).
     """
     if settlement_date is None:
         deprecated(
@@ -277,10 +304,17 @@ def price_cashflows(
             spread,
             resolved,
             include_settlement_flows=settlement_date is None,
+            tail=_tail_for(perpetual_tail, settlement_date),
         )
     except OverflowError as exc:
         raise ValueError("cashflow price result must be finite") from exc
     return finite_money(price, "cashflow price result")
+
+
+def _tail_for(tail: PerpetualTail | None, settlement_date: date | None) -> PerpetualTail | None:
+    if tail is not None and settlement_date is None:
+        raise ValueError("a perpetual tail is valued at an explicit settlement_date")
+    return tail
 
 
 def _solve_spread(
@@ -289,6 +323,7 @@ def _solve_spread(
     curve: DiscountFactorCurve,
     settlement_date: date | None,
     convention: ZSpreadConvention,
+    tail: PerpetualTail | None = None,
 ) -> float:
     if not isfinite(dirty_price) or dirty_price <= 0.0:
         raise ValueError("dirty price must be positive and finite")
@@ -297,7 +332,7 @@ def _solve_spread(
         raise ValueError("cashflow amounts must be finite")
     settlement = _settlement(curve, settlement_date)
     include = settlement_date is None
-    if not any(
+    if tail is None and not any(
         payment_date > settlement or (include and payment_date == settlement)
         for payment_date, _ in flows
     ):
@@ -306,7 +341,13 @@ def _solve_spread(
     def error(spread: float) -> float:
         return (
             _spread_price(
-                flows, curve, settlement, spread, convention, include_settlement_flows=include
+                flows,
+                curve,
+                settlement,
+                spread,
+                convention,
+                include_settlement_flows=include,
+                tail=tail,
             )
             - dirty_price
         )
@@ -315,7 +356,46 @@ def _solve_spread(
         lower, upper, label = -5.0, 5.0, "continuous Z-spread"
     else:
         lower, upper, label = -0.95, 5.0, "Z-spread"
-    return bisect(error, lower, upper, tolerance=1e-13, x_tolerance=1e-13, label=label).root
+    lower_value = None
+    if tail is not None:
+        # A perpetual is worth infinity below the spread at which its stream converges:
+        # raise the lower end until the price is finite, the sign there is known.
+        lower, lower_value = _finite_lower(error, lower, upper)
+    return bisect(
+        error,
+        lower,
+        upper,
+        tolerance=1e-13,
+        x_tolerance=1e-13,
+        lower_value=lower_value,
+        label=label,
+    ).root
+
+
+def _finite_lower(
+    error: Callable[[float], float], lower: float, upper: float
+) -> tuple[float, float]:
+    """A lower bracket end where ``error`` is finite, and positive when it can be.
+
+    A perpetual's price is infinite below the rate at which its stream converges and
+    falls from infinity above it: bisect that boundary from the finite side until the
+    price exceeds the target (or the boundary is resolved).
+    """
+    value = error(lower)
+    if isfinite(value):
+        return lower, value
+    infinite, finite = lower, upper
+    finite_value = error(upper)
+    for _ in range(200):
+        if finite_value > 0.0 or finite - infinite <= 1e-15:
+            break
+        middle = (infinite + finite) / 2.0
+        value = error(middle)
+        if isfinite(value):
+            finite, finite_value = middle, value
+        else:
+            infinite = middle
+    return finite, finite_value
 
 
 def solve_continuous_z_spread(
@@ -354,6 +434,7 @@ def solve_z_spread(
     compounding_frequency: int = 1,
     settlement_date: date | None = None,
     convention: ZSpreadConvention | None = None,
+    perpetual_tail: PerpetualTail | None = None,
 ) -> float:
     """Solve the decimal Z-spread over the curve's m-compounded zero rates.
 
@@ -363,6 +444,7 @@ def solve_z_spread(
     combined with a non-default ``compounding_frequency``. ``settlement_date`` values the
     bond at settlement (DF(t)/DF(settlement), time from settlement, flows on or before
     settlement dropped); it is equivalent to rebasing the curve to settlement manually.
+    ``perpetual_tail`` adds a never-called perpetual's coupons (see ``price_cashflows``).
     """
     if settlement_date is None:
         deprecated(
@@ -373,6 +455,13 @@ def solve_z_spread(
         (payment_date, finite_money(amount, "cashflow amounts"))
         for payment_date, amount in cashflows
     )
-    if not flows:
+    if not flows and perpetual_tail is None:
         raise ValueError("at least one cashflow is required")
-    return _solve_spread(flows, dirty_price, curve, settlement_date, resolved)
+    return _solve_spread(
+        flows,
+        dirty_price,
+        curve,
+        settlement_date,
+        resolved,
+        _tail_for(perpetual_tail, settlement_date),
+    )

@@ -70,6 +70,32 @@ nothing the backend calls today changes. What it can move into core:
 The backend pins core `==0.32.0` and the commit `c0af388`: move the pin to the 0.33.0
 commit to use them.
 
+**From 0.34.0** (decision of 2026-10-22, [proposals/kbd-risk-curve.md](proposals/kbd-risk-curve.md), option C):
+
+- register the KBD under `rub_ofz_kbd_v2` (annual-yield risk) and discount OFZ on it:
+  `ValuationPolicy(curve_overrides=((ofz_id, kbd_curve_id), ...))`; `ofz_spr01` /
+  `spread_buckets_rub` of an OFZ are then its spread to the KBD; corporates and OFZ-PK
+  stay on RUONIA OIS;
+- KBD floaters (`benchmark == "ZCYC"`): `FloatingCouponLeg(FloatingCouponRule("kbd", ...,
+  index_tenor_years=T, fixing_date=FixingDateRule("accrual_start", N, "business_days"),
+  rate_rounding_decimals=2), periods, fixing_id, kbd_curve_id)` with a `FixingHistory("kbd",
+  ..., tenor_years=T)` of KBD yields on the ZCYC publication calendar; T, N and margins by
+  period from the hub (BACKLOG #123);
+- `PortfolioScenario(curve_shifts_bp=((kbd_curve_id, shifts),))` moves OFZ and the KBD
+  floaters' projection; a basis scenario is a KBD shift alone;
+- `basis_view` for the «RUONIA + базис» view of the same factors;
+- the fallback duration proxy `-Mac·PV·1e-4` is a continuous-zero DV01: divide by `1 + y`
+  to sum with par and annual risk.
+
+**From 0.36.0** (the monitor pinned the branch build "0.35.0", commit `f3cbabc`, for the
+FX book and non-RUB bonds; 0.36.0 is that work plus 0.34.0 and never-called perpetuals):
+
+- move the pin to the 0.36.0 commit; the FX book and non-RUB bond APIs are those of
+  `f3cbabc`, so a book that does not use the KBD or `never_called` values as before;
+- perpetuals and callables: `ExerciseAssumption.never_called()` in
+  `ValuationPolicy.exercise_assumptions` instead of an assumed call (BACKLOG #128);
+  `horizon_portfolio` rejects a never-called perpetual until #126.
+
 ## Deprecations in 0.12.0 and what consumers should move to
 
 Nothing is removed before 1.0. Each call below now emits a `DeprecationWarning` (hidden by

@@ -195,6 +195,18 @@ the node grid, log-linear between nodes, flat-forward beyond 30Y. G-spread is th
 effective annual yield minus the KBD yield at an explicit tenor (the portfolio uses the
 Macaulay duration at that yield).
 
+**The KBD as a risk curve (0.34.0).** Spec `rub_ofz_kbd_v2` is the same curve with bucket
+shocks of the effective annual yield MOEX publishes (`CurveConvention.zero_shock="annual"`,
+`curve_basis = "annual_zero"`): `Y'(t) = Y(t) + Σ w_i(t)·s_i` on the 11 pillars and hat
+weights of RUONIA. Its DV01 sums with par RUONIA OIS DV01 (they agree to 0.5–2 % on OFZ)
+and equals annual Z-spread risk on the curve date. `rub_ofz_kbd_v1` keeps continuous
+zero shocks, 1 + y times larger, and every stored result on it. Desk decision of
+2026-10-22 (docs/proposals/kbd-risk-curve.md, option C): OFZ discounted on the KBD with
+their own spread to it (`ofz_spr01` is OFZ rich/cheap to the KBD); corporates on RUONIA
+OIS plus credit spread; OFZ-PK on RUONIA; KBD-linked floaters project off the KBD.
+`basis_view(risk, base, curve, basis)` shows the same risk on RUONIA and the
+KBD − RUONIA basis.
+
 ## Desk risk factors (0.11.0)
 
 `IR|<curve_id>|<bucket>` (1 bp at one of the 11 bucket pillars), `CS` (1 bp of own credit or
@@ -225,6 +237,8 @@ Every convention is a term of `FloatingCouponRule`; core infers none (see
 | Averaging | `compounded`, `arithmetic`, `single_fixing` | arithmetic "Ставка RUONIA" and key rate, compounded "Индекс RUONIA" and term RUONIA 3M |
 | Rounding | `rate_rounding_decimals`, `amount_rounding_decimals` (fully fixed coupons only) | in arrears: amount to the kopeck from the unrounded rate; in advance: rate to 0.01 % first |
 | Floor / cap | `CouponRateBounds(applies_to, floor, cap)` | not seen in the golden set |
+| KBD index (`ZR_YLD_CRV`, 0.34.0) | `index="kbd"`, `index_tenor_years`, `single_fixing` with `FixingDateRule("accrual_start", N, "business_days")` on the ZCYC publication calendar, `rate_rounding_decimals=2`; `FloatingCouponPeriod.margin` for a margin reset at an offer | the effective annual KBD yield at 7Y (N = 5) or 5Y (N = 4) plus the margin, in advance, ACT/365F; KAMAZ listed five coupons of 2022–2024 to 0.0001 % |
+| Constant-maturity convexity | `ConstantMaturityConvexity(normal_vol_bp)` (default none: the deterministic forward) | no volatility source decided yet |
 
 **Optionality policy.** Floors and caps are priced at intrinsic value on the projected
 rate, accepted only when that rate is at least the explicit `strike_guard_bp`
@@ -247,14 +261,14 @@ filled.
   `ValuationPolicy.foreign_curves` names for its currency (`curve_overrides` win for an
   instrument). The curve's spec must be of that currency: `cny_/usd_/eur_discount_factors_v1`,
   a caller-built `DiscountCurve` (log-linear DF nodes, model `ois-logdf-v1`, ACT/365F,
-  dated the snapshot business date). Since 0.34.0 also the built CNY XCCY curve
+  dated the snapshot business date). Since 0.36.0 also the built CNY XCCY curve
   (`cny_ruonia_xccy_v1`, CNY under RUB collateral, model `xccy-cny-logdf-v1`) and the
-  government par-yield proxies below; since 0.35.0 a built curve implied from FX swaps
+  government par-yield proxies below; since 0.36.0 a built curve implied from FX swaps
   (`<ccy>_fx_implied_v1`, model `fx-implied-logdf-v1`; its quotes are for FX products only). Never a curve of another currency: a missing curve
   is `MISSING_MARKET_DATA`, unless the policy names same-currency
   `foreign_curve_fallbacks`; a fallback is used only when the named curve is absent from
   the snapshot and the row records it (`curve_fallback_from`).
-- **Par-yield proxies (0.34.0, `proxy_curves`).** Not OIS: government credit and
+- **Par-yield proxies (0.36.0, `proxy_curves`).** Not OIS: government credit and
   liquidity, absorbed by the bond's Z-spread; `CurveUse.proxy` marks them. Tenors run
   from the curve date (calendar months / weeks / days, unadjusted, no settlement lag).
   One node per quote, log-linear DF between nodes, flat-forward beyond, ACT/365F curve
@@ -389,15 +403,15 @@ synthetic quotes.
 - **Risk.** Buckets, shocks and signs as for bonds; the spot factor `FX|<ccy>` is a 1 %
   relative move and is exact (PV is linear in spot), and the Hessian carries FX × rates
   cross terms. An implied foreign curve has zero basis by construction. Default RUB
-  risk holds the foreign curve (the points move); `points_held_rub_risk` (0.35.0,
+  risk holds the foreign curve (the points move); `points_held_rub_risk` (0.36.0,
   BACKLOG #46) holds every outright instead, `DF_for' = DF_for · DF_rub' / DF_rub`.
-- **Any currency (0.35.0).** `<ccy>_discount_factors_v1` and `<ccy>_fx_implied_v1`
+- **Any currency (0.36.0).** `<ccy>_discount_factors_v1` and `<ccy>_fx_implied_v1`
   resolve for every three-letter code other than RUB (`CurveKind.DISCOUNT_FACTORS`,
   `CurveKind.FX_IMPLIED`; ACT/365F, log-linear DF, model `ois-logdf-v1` /
   `fx-implied-logdf-v1`). Quote units come from the confirmation (100 for JPY, KZT and
   other currencies quoted per 100 units); `FxSpot.rub_per_unit` is per one unit and is
   multiplied by the trade's `quote_units`.
-- **NDF (0.35.0, BACKLOG #49).** A cash-settled leg's `value_date` is the date its
+- **NDF (0.36.0, BACKLOG #49).** A cash-settled leg's `value_date` is the date its
   fixing rate is the spot for; `fixing_date` ≤ value and payment dates. From the fixing
   date the published rate (`FxFixing`, RUB per one unit, by currency, source and date;
   point-in-time with `published_at`) freezes the leg: `PV = N/q · (fixing − K) ·
@@ -407,7 +421,7 @@ synthetic quotes.
   in RUB only. Public market practice for reference: EMTA NDF templates fix on a
   "valuation date" a stated number of business days before settlement in the fixing
   centre; the owner confirms the firm's source and lag.
-- **Crosses (0.35.0).** An X/Y leg is the X/RUB and Y/RUB forwards whose RUB amounts
+- **Crosses (0.36.0).** An X/Y leg is the X/RUB and Y/RUB forwards whose RUB amounts
   cancel (`fx_cross_rub_legs`): each currency on its own curve, spot and basis, both
   discounted to RUB on the RUB curve; FX delta per currency against RUB (`FX|X`,
   `FX|Y`), no cross delta. A cash-settled cross leg pays in RUB.
@@ -554,9 +568,9 @@ Full reference: [portfolio-v3.md](portfolio-v3.md).
 - **Futures PV.** The pending variation margin from `margined_price` to the snapshot
   price, undiscounted; RUON margins follow the specification's rounding.
 - **FX basis.** Always explicit per (currency, foreign curve) (`FxBasis`); 0 on an
-  implied or XCCY-bootstrapped curve. On a `<ccy>_fx_implied_v1` curve (0.35.0) it is
+  implied or XCCY-bootstrapped curve. On a `<ccy>_fx_implied_v1` curve (0.36.0) it is
   zero without an entry, and an entry must be zero.
-- **FX fallbacks (0.35.0, BACKLOG #123).** `ValuationPolicy.fx_curve_fallbacks` replaces
+- **FX fallbacks (0.36.0, BACKLOG #131).** `ValuationPolicy.fx_curve_fallbacks` replaces
   an FX product's foreign curve only when it is absent from the snapshot, by a curve of
   the same currency; a par-yield proxy is accepted only so, with its own calibrated
   `FxBasis` (the proxy's credit is in the basis, not in parity).
@@ -564,7 +578,7 @@ Full reference: [portfolio-v3.md](portfolio-v3.md).
   position's recovery when stated, else the credit curve's.
 - **Scenarios.** Per-curve shifts win over the shock for the named curves in every
   role; `spread_shift_bp` moves `CS` of bonds, CDS quotes and OFZ futures baskets;
-  `fx_shocks_pct` moves FX spots and conversions; `basis_shifts_bp` (0.35.0, #103) moves
+  `fx_shocks_pct` moves FX spots and conversions; `basis_shifts_bp` (0.36.0, #103) moves
   the bases it names by factor key (`FXBASIS|<ccy>`, `XCCYBASIS|<ccy>`,
   `FUTBASIS|<contract>`); other bases are held.
 - **Model flags.** Fixed vocabulary listed in [portfolio-v3.md](portfolio-v3.md); sorted.
@@ -667,13 +681,17 @@ From the Minfin terms (order No. 80n of 22.05.2015) as restated by the Bank of R
 - **Exercise assumption** (explicit, recorded): `to_maturity` (default; MOEX's
   treatment without a set call date), `to_call(date)` (MOEX's `CALLOPTIONYIELD` when the
   call date is set), `to_worst` (lowest yield at the quoted price; ties to the earliest
-  date; resolved once, then held under risk).
+  date; resolved once, then held under risk), `never_called` (no call: a dated bond's
+  maturity, a perpetual's endless coupons; the desk default).
 - **Yields** are effective annual on the instrument's `yield_convention` (default
   ACT/365F); durations Macaulay and modified at that yield.
 - **Coupons** must be known to the redemption date, which must be a coupon date; reset
   coupons are explicit `assumed_coupons`, never extrapolated.
-- **Perpetuals** are priced to a named call; MOEX publishes their current yield
-  (coupon rate / clean price).
+- **Perpetuals** are priced to a named call or never called: the listed coupons, then the
+  last one at the same step forever, valued exactly (curve read to 30 years, its own
+  flat-forward rate beyond; the sum to 600 years plus its geometric remainder). Yield
+  and duration are the endless stream's. MOEX publishes their current yield (coupon
+  rate / clean price), the same rate uncompounded.
 - **Pass-throughs:** constant annual CPR, `SMM = 1 - (1 - CPR)^(1/payments_per_year)`;
   scheduled principal scaled by actual over scheduled balance; prepayment on the balance
   after scheduled principal; coupon `B * rate * days / year` (unrounded) on the period-start

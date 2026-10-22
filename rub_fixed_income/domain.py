@@ -16,7 +16,7 @@ from datetime import date, datetime
 from decimal import ROUND_HALF_UP, Decimal
 from enum import Enum
 from itertools import pairwise
-from typing import Literal
+from typing import Literal, cast
 
 from ._money import finite_money, positive_money
 from .canonical import OMIT_IF_DEFAULT
@@ -37,7 +37,7 @@ from .floating import (
 )
 from .fx_forwards import FxImpliedCurveRequest
 from .inflation import CpiSeries, IndexedCouponLeg, IndexedPrincipalLeg
-from .kbd import ZcycParameters
+from .kbd import ZcycParameters, kbd_discount_curve
 from .key_rate import KeyRateForwardCurve
 from .rate_futures import RuoniaFixings, RuoniaIndexValue
 from .xccy import IndexFixings, XccyCurveBootstrapRequest
@@ -707,7 +707,7 @@ class CurveEntry:
     v3) also read a :class:`~rub_fixed_income.key_rate.KeyRateForwardCurve` under
     ``rub_key_rate_swap_v1`` (key-rate swap projection, dated the business date) and an
     :class:`~rub_fixed_income.xccy.XccyCurveBootstrapRequest` under
-    ``cny_ruonia_xccy_v1`` (the CNY curve from XCCY par quotes), and (0.35.0) an
+    ``cny_ruonia_xccy_v1`` (the CNY curve from XCCY par quotes), and (0.36.0) an
     :class:`~rub_fixed_income.fx_forwards.FxImpliedCurveRequest` under a
     ``<ccy>_fx_implied_v1`` spec (FX swap points, built on the snapshot FX spot). Bonds
     reject all three.
@@ -818,7 +818,7 @@ class FxBasis:
 
 @dataclass(frozen=True)
 class FxFixing:
-    """A published FX fixing (0.35.0): the settlement rate of NDF legs of ``currency``.
+    """A published FX fixing (0.36.0): the settlement rate of NDF legs of ``currency``.
 
     ``rub_per_unit`` RUB per one unit, fixed on ``fixing_date`` by ``source`` (the text
     an NDF leg names in ``FxForwardLeg.fixing_source``, for example the backend's code
@@ -1106,14 +1106,32 @@ class MarketSnapshot:
         """The curve under ``curve_id`` checked as a projection curve for ``index``.
 
         RUONIA projects off a RUONIA OIS spec (quotes or the built curve), the key rate
-        off a ``rub_key_rate_projection_v1`` curve; both must be dated the business date.
+        off a ``rub_key_rate_projection_v1`` curve, the KBD index off a KBD spec (its ZCYC
+        parameters, built with the spec's shock unit, or the built curve); all must be
+        dated the business date.
         """
         entry = self.curve(curve_id)
         spec = get_curve_spec(entry.spec_id)
         source = entry.curve
-        expected = {"ruonia": CurveKind.OIS_BOOTSTRAP, "key_rate": CurveKind.KEY_RATE_PROJECTION}
+        expected = {
+            "ruonia": CurveKind.OIS_BOOTSTRAP,
+            "key_rate": CurveKind.KEY_RATE_PROJECTION,
+            "kbd": CurveKind.KBD_PARAMETRIC,
+        }
         if spec.kind is not expected[index]:
             raise InvalidTerms(f"curve {curve_id} ({spec.spec_id}) cannot project the {index}")
+        if spec.kind is CurveKind.KBD_PARAMETRIC:
+            shock = cast(Literal["continuous", "annual"], spec.zero_shock)
+            if isinstance(source, ZcycParameters):
+                if source.trade_date != self.business_date:
+                    raise InvalidTerms(f"curve {curve_id} is not dated the snapshot business date")
+                return kbd_discount_curve(source, zero_shock=shock)
+            if not (
+                isinstance(source, DiscountCurve)
+                and source.model_version == spec.model_version
+                and source.convention.zero_shock == shock
+            ):
+                raise InvalidTerms(f"curve {curve_id} does not match spec {spec.spec_id}")
         if spec.kind is CurveKind.OIS_BOOTSTRAP and isinstance(
             source, (CurveBootstrapRequest, DiscountCurve)
         ):

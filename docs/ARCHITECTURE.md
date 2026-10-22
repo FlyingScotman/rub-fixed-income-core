@@ -39,14 +39,14 @@ or floats.
 | `_curve_views.py` | Curve views at a horizon (`forward_curve`, `roll_curve`, `roll_key_rate_curve`) and the FX spot rule `FxHorizon`, shared by every carry engine without an import cycle (0.31.0). |
 | `_deprecation.py` | `DeprecationWarning` helper for APIs kept until 1.0 (0.12.0). |
 | `tenors.py` | Tenor codes: `parse_tenor`, `add_tenor`, `resolve_tenor` with spot lag and business-day convention (0.16.0). |
-| `fx_forwards.py` | OTC FX forwards and FX swaps by covered parity, value dates on joint calendars, implied foreign curve (0.19.0); NDF fixings, points-held RUB risk (0.35.0). |
-| `fx_crosses.py` | FX forwards and swaps between two foreign currencies, as two RUB legs whose RUB amounts cancel (0.35.0). |
+| `fx_forwards.py` | OTC FX forwards and FX swaps by covered parity, value dates on joint calendars, implied foreign curve (0.19.0); NDF fixings, points-held RUB risk (0.36.0). |
+| `fx_crosses.py` | FX forwards and swaps between two foreign currencies, as two RUB legs whose RUB amounts cancel (0.36.0). |
 | `callables.py`, `pass_through.py`, `assumed_portfolio.py` | Exercise assumptions for callables and perpetuals; constant-CPR pass-throughs; assumption-recording portfolio wrapper (0.20.0). |
 | `swaps.py` | Seasoned RUONIA OIS and key-rate swaps: schedules, known resets, two curves, risk, carry (0.21.0). |
 | `inflation.py`, `linkers.py` | Point-in-time CPI, OFZ-IN indexation, indexed legs, real-curve cashflows (0.23.0). |
 | `cds.py` | ISDA Standard Model single-name CDS: hazard bootstrap, quote conversions, risk, JTD (0.24.0). |
 | `xccy.py` | CNY/RUB cross-currency swaps vs RUONIA and the CNY curve bootstrap (0.25.0). |
-| `proxy_curves.py` | USD / EUR government par-yield proxy curves for non-RUB bonds (0.34.0). |
+| `proxy_curves.py` | USD / EUR government par-yield proxy curves for non-RUB bonds (0.36.0). |
 | `rate_futures.py`, `ofz_futures.py` | MOEX RUON, RUONIA index, KEYRATE and OFZ basket futures (0.27.0). |
 | `repo.py` | Repo and reverse-repo legs; collateral as a reference outside PV (0.28.0). |
 | `portfolio_instruments.py`, `portfolio_products.py` | Derivative position types and the per-product adapters behind `value_portfolio`'s result contract v3 (0.29.0). |

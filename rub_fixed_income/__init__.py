@@ -68,6 +68,7 @@ from .callables import (
     price_to_worst,
     redemption_scenarios,
     resolve_exercise,
+    yield_never_called,
     yield_to_call,
     yield_to_maturity,
     yield_to_worst,
@@ -221,6 +222,7 @@ from .factors import (
     CS_FACTOR,
     FactorRisk,
     HessianEntry,
+    basis_view,
     bond_factor_risk,
     fx_basis_factor,
     fx_factor,
@@ -233,6 +235,7 @@ from .factors import (
 from .floating import (
     FLOATING_MODEL_VERSION,
     KEY_RATE_PROJECTION_MODEL_VERSION,
+    ConstantMaturityConvexity,
     CouponRateBounds,
     FixingDateRule,
     FixingHistory,
@@ -407,6 +410,13 @@ from .pass_through import (
     pass_through_instrument,
     project_pass_through,
     weighted_average_life,
+)
+from .perpetual import (
+    PERPETUAL_TAIL_MODEL_VERSION,
+    PerpetualTail,
+    PerpetualYield,
+    perpetual_tail,
+    perpetual_yield,
 )
 from .portfolio import (
     PORTFOLIO_RESULT_SCHEMA,
@@ -713,6 +723,7 @@ __all__ = [
     "CdsUpfrontQuote",
     "CdsValuation",
     "Compounding",
+    "ConstantMaturityConvexity",
     "CoreRejection",
     "CouponPeriod",
     "CouponRateBounds",
@@ -878,6 +889,7 @@ __all__ = [
     "adjust_date",
     "analyze_bond",
     "analyze_bond_v2",
+    "basis_view",
     "bond_duration",
     "bond_factor_risk",
     "bootstrap_discount_curve",
@@ -984,6 +996,7 @@ __all__ = [
 __all__ += [
     "ASSUMED_BOOK_MODEL_VERSION",
     "CALL_MODEL_VERSION",
+    "PERPETUAL_TAIL_MODEL_VERSION",
     "PREPAYMENT_MODEL_VERSION",
     "AssumedBook",
     "AssumedHorizonResult",
@@ -1002,6 +1015,8 @@ __all__ += [
     "PassThroughProjection",
     "PassThroughRow",
     "PassThroughTerms",
+    "PerpetualTail",
+    "PerpetualYield",
     "PrepaymentAssumption",
     "PriceToWorst",
     "RedemptionScenario",
@@ -1017,6 +1032,8 @@ __all__ += [
     "pass_through_analytics",
     "pass_through_instrument",
     "perpetual_current_yield",
+    "perpetual_tail",
+    "perpetual_yield",
     "prepare_assumed_book",
     "price_to_worst",
     "project_pass_through",
@@ -1025,6 +1042,7 @@ __all__ += [
     "value_assumed_portfolio",
     "verify_assumed_result",
     "weighted_average_life",
+    "yield_never_called",
     "yield_to_call",
     "yield_to_maturity",
     "yield_to_worst",
@@ -1193,7 +1211,7 @@ __all__ += [
     "kbd_effective_yields",
 ]
 
-# 0.34.0: CNY / USD / EUR bonds on their own currency's curve (XCCY CNY, par-yield proxies).
+# 0.36.0: CNY / USD / EUR bonds on their own currency's curve (XCCY CNY, par-yield proxies).
 __all__ += [
     "PAR_YIELD_PROXY_MODEL_VERSION",
     "ParYieldCurveRequest",
@@ -1202,7 +1220,7 @@ __all__ += [
     "par_yield",
 ]
 
-# 0.35.0: FX for any currency, crosses, NDF fixings, points-held risk, basis scenarios.
+# 0.36.0: FX for any currency, crosses, NDF fixings, points-held risk, basis scenarios.
 __all__ += [
     "FX_CROSS_HORIZON_MODEL_VERSION",
     "FX_CROSS_RISK_MODEL_VERSION",

@@ -34,7 +34,7 @@ checks that the two modules agree.
 ## Inputs
 
 - `FxForwardLeg(value_date, notional_foreign, contract_rate, payment_date=None, fixing_date=None, fixing_source=None, fixing_rate=None)`.
-  The three NDF fields (0.35.0, omitted at None) belong to a cash-settled leg only; see
+  The three NDF fields (0.36.0, omitted at None) belong to a cash-settled leg only; see
   [NDF fixings](#ndf-fixings-backlog-49).
 - `FxForward(trade_id, currency, quote_units, leg)`. An unsettled spot trade is a
   forward whose value date is its spot date.
@@ -139,7 +139,7 @@ the implied foreign curve held fixed means the swap points move. The points-held
 alternative is `points_held_rub_risk` (below).
 
 `FxImpliedCurveRequest(currency, curve_date, rub_curve_id, quotes, convention=None)`
-(0.35.0) holds the quotes in a snapshot `CurveEntry` under `<ccy>_fx_implied_v1`
+(0.36.0) holds the quotes in a snapshot `CurveEntry` under `<ccy>_fx_implied_v1`
 (`curve_specs.fx_implied_spec_id`); `value_portfolio` builds the curve once per job with
 `.build(rub_curve, spot_rate, spot_value_date)` on the snapshot `FxSpot` (RUB per one
 unit) and the RUB curve it names, so the spot and RUB curve behind the curve are those of
@@ -189,7 +189,7 @@ payment date). `.leg(dates, notional, contract_rate, fixing_rate=None)` builds t
 **No source or lag is built in**: they are trade terms (the firm's NDF confirmations).
 Only RUB settlement is modelled.
 
-## Crosses without RUB (`fx_crosses`, 0.35.0)
+## Crosses without RUB (`fx_crosses`, 0.36.0)
 
 `FxCrossForward(trade_id, base_currency, quote_currency, quote_units, leg)` and
 `FxCrossSwap(..., near, far)` exchange `N` base units (signed `leg.notional_foreign`)

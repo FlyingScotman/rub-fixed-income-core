@@ -22,8 +22,8 @@ frozen position type. `value_portfolio(instruments=...)` takes any mix
 | Type | Wraps | Market data it names |
 |---|---|---|
 | `SwapInstrument(instrument_id, swap, calendar_id, discount_curve_id, projection_curve_id=None, fixing_id=None)` | `swaps.InterestRateSwap` | schedule calendar; RUB discount curve; RUONIA projection curve (None: single curve) or, for a key-rate swap (required), a `rub_key_rate_swap_v1` curve; the fixing history |
-| `FxForwardInstrument(instrument_id, trade, rub_curve_id, foreign_curve_id)` | `FxForward` or `FxSwap` (any currency against RUB; NDF legs with fixings, 0.35.0) | RUB curve, foreign curve; the snapshot `FxSpot` and `FxBasis` of the currency; `FxFixing`s of NDF legs whose fixing date has come |
-| `FxCrossInstrument(instrument_id, trade, rub_curve_id, base_curve_id, quote_curve_id, calendar_id)` | `fx_crosses.FxCrossForward` or `FxCrossSwap` (0.35.0: two foreign currencies, e.g. USD/CNY) | RUB curve, a curve per currency; the `FxSpot` and `FxBasis` of each currency; the cross's settlement calendar |
+| `FxForwardInstrument(instrument_id, trade, rub_curve_id, foreign_curve_id)` | `FxForward` or `FxSwap` (any currency against RUB; NDF legs with fixings, 0.36.0) | RUB curve, foreign curve; the snapshot `FxSpot` and `FxBasis` of the currency; `FxFixing`s of NDF legs whose fixing date has come |
+| `FxCrossInstrument(instrument_id, trade, rub_curve_id, base_curve_id, quote_curve_id, calendar_id)` | `fx_crosses.FxCrossForward` or `FxCrossSwap` (0.36.0: two foreign currencies, e.g. USD/CNY) | RUB curve, a curve per currency; the `FxSpot` and `FxBasis` of each currency; the cross's settlement calendar |
 | `XccyInstrument(instrument_id, swap, rub_discount_curve_id, foreign_discount_curve_id, rub_projection_curve_id=None, foreign_projection_curve_id=None, rub_fixing_id=None, foreign_fixing_id=None)` | `xccy.XccySwap` | a curve per role; RUONIA fixings, foreign index fixings; `FxSpot`, `FxBasis` |
 | `CdsInstrument(instrument_id, contract, discount_curve_id)` | `cds.CdsContract` | the discount curve of the contract currency; the snapshot `CreditCurveEntry` of (reference entity, currency); `FxRate` for a non-RUB contract |
 | `FxFuturesInstrument(instrument_id, contract, rub_curve_id, foreign_curve_id, basis_day_count=ACT_365_FIXED)` | `fx_futures.FxFuturesContract` | both curves, `FxSpot`, the snapshot `FuturesQuote` |
@@ -48,14 +48,14 @@ its JTD; otherwise the credit curve's stated recovery is used (never a default).
 | Field | Entry | Use |
 |---|---|---|
 | `fx_spots` | `FxSpot(currency, rub_per_unit, value_date, calendar_id, evidence_id=None)` | the spot with its value date and the pair's settlement calendar (a snapshot calendar); FX forwards, XCCY, FX futures. Bonds still convert at `FxRate`, which has no value date |
-| `fx_bases` | `FxBasis(currency, foreign_curve_id, basis_bp, day_count=ACT_365F)` | the covered-parity basis of a pair on one foreign curve: 0 on an implied or XCCY-bootstrapped curve, calibrated on, say, a foreign OIS curve or a proxy; required, never defaulted, except on a `<ccy>_fx_implied_v1` curve (0.35.0), where it is zero by construction (an entry must be 0) |
-| `fx_fixings` | `FxFixing(currency, source, fixing_date, rub_per_unit, published_at=None, evidence_id=None)` (0.35.0) | published NDF settlement rates by `(currency, source, fixing_date)`, RUB per one unit; with `published_at` a fixing published after `known_at` is not seen |
+| `fx_bases` | `FxBasis(currency, foreign_curve_id, basis_bp, day_count=ACT_365F)` | the covered-parity basis of a pair on one foreign curve: 0 on an implied or XCCY-bootstrapped curve, calibrated on, say, a foreign OIS curve or a proxy; required, never defaulted, except on a `<ccy>_fx_implied_v1` curve (0.36.0), where it is zero by construction (an entry must be 0) |
+| `fx_fixings` | `FxFixing(currency, source, fixing_date, rub_per_unit, published_at=None, evidence_id=None)` (0.36.0) | published NDF settlement rates by `(currency, source, fixing_date)`, RUB per one unit; with `published_at` a fixing published after `known_at` is not seen |
 | `credit_curves` | `CreditCurveEntry(reference_entity, currency, quotes, recovery_rate, convention, evidence_id=None)` | par-spread / upfront quotes of one entity in one currency with the stated recovery; one hazard bootstrap (and its shocked versions) per entity and job |
 | `futures_quotes` | `FuturesQuote(contract_id, price, margined_price, evidence_id=None)` | the settlement price or mark the basis is calibrated to, and the price positions were last margined at |
 | `index_fixings` | `IndexFixingEntry(fixing_id, IndexFixings)` | foreign overnight index fixings of a floating XCCY foreign leg, dated the business date |
 | `ruonia_fixings` | `RuoniaFixingsEntry(fixing_id, RuoniaFixings)` | RUONIA with the declared unpublished days (rate futures); an undeclared gap rejects |
 | `ruonia_index` | `RuoniaIndexValue(index_date, value)` | published RUONIA index values; the index future grows the latest one |
-| `curves` | `CurveEntry` with a `KeyRateForwardCurve` under `rub_key_rate_swap_v1`, an `XccyCurveBootstrapRequest` under `cny_ruonia_xccy_v1`, or (0.35.0) an `FxImpliedCurveRequest(currency, curve_date, rub_curve_id, quotes, convention=None)` under `<ccy>_fx_implied_v1` | key-rate projection of swaps and KEYRATE futures; the CNY curve from XCCY par quotes (quote-basis risk); a foreign curve implied from FX swap points / outrights (RUB per one unit), built once per job on the snapshot `FxSpot` and the named RUB curve |
+| `curves` | `CurveEntry` with a `KeyRateForwardCurve` under `rub_key_rate_swap_v1`, an `XccyCurveBootstrapRequest` under `cny_ruonia_xccy_v1`, or (0.36.0) an `FxImpliedCurveRequest(currency, curve_date, rub_curve_id, quotes, convention=None)` under `<ccy>_fx_implied_v1` | key-rate projection of swaps and KEYRATE futures; the CNY curve from XCCY par quotes (quote-basis risk); a foreign curve implied from FX swap points / outrights (RUB per one unit), built once per job on the snapshot `FxSpot` and the named RUB curve |
 
 Fixing IDs are unique across `fixings`, `index_fixings` and `ruonia_fixings`. Existing
 snapshots keep their bytes and hashes; `to_dict` / `from_dict` round-trip the new
@@ -65,16 +65,16 @@ entries.
 (`<ccy>_discount_factors_v1`, the spec's model or a curve from
 `fx_forwards.implied_foreign_curve`), a curve implied from FX swaps
 (`<ccy>_fx_implied_v1`: the built curve or its quotes) or a built XCCY curve
-(`cny_ruonia_xccy_v1`), dated the business date. Since 0.35.0 the two per-currency specs
+(`cny_ruonia_xccy_v1`), dated the business date. Since 0.36.0 the two per-currency specs
 exist for **every** currency other than RUB (`get_curve_spec("chf_discount_factors_v1")`,
 `fx_implied_spec_id("KZT")`), so a CHF, GBP, JPY or KZT forward needs no release. An
 `XccyCurveBootstrapRequest` is rebuilt only by cross-currency swaps, whose spot must equal
 the snapshot `FxSpot`. A par-yield proxy (`usd_ust_par_proxy_v1`) is accepted only as a
-fallback (`ValuationPolicy.fx_curve_fallbacks`, BACKLOG #123): tried in order when the
+fallback (`ValuationPolicy.fx_curve_fallbacks`, BACKLOG #131): tried in order when the
 named curve is absent from the snapshot, with its own (calibrated) `FxBasis`; the row
 names the replaced curve in `curve_fallback_from` and `CurveUse.proxy` flags it.
 
-**NDF fixings (0.35.0, BACKLOG #49).** A cash-settled `FxForwardLeg` may name its
+**NDF fixings (0.36.0, BACKLOG #49).** A cash-settled `FxForwardLeg` may name its
 `fixing_date` and `fixing_source`. From the fixing date on, the adapter looks the
 published rate up in `fx_fixings` (times the trade's quote units) and freezes the leg at
 `N / q * (fixing - K) * DF_rub(P)`: no FX delta, foreign-curve or basis risk. On the
@@ -117,8 +117,8 @@ Added (product tuples omitted while empty):
 | Field | Content |
 |---|---|
 | `swaps` | `SwapPositionValuation`: PV, clean PV, accrued, leg PVs, par rate, annuity, curve IDs and bases, fixing ID and the fixing history's `snapshot_id` |
-| `fx_forwards` | `FxForwardPositionValuation`: kind (forward / swap), spot and value date, settlement calendar, basis, FX delta in currency, legs (forward rate, points, RUB DF, PV; a fixed NDF leg's `fixing_date` and `fixing_rate`), and (0.35.0, omitted at their defaults) `curve_fallback_from` and `points_held_rub_buckets` (RUB risk with the swap points held, `ValuationPolicy.fx_points_held_risk`, BACKLOG #46) |
-| `fx_crosses` | `FxCrossPositionValuation` (0.35.0): kind, both currencies, cross spot, each currency's spot, value date and basis, the three curve IDs, `fx_delta_base` and `fx_delta_quote` (spot-equivalent amounts against RUB), legs (base and quote notionals and forwards, cross forward and points, RUB DF, PV), fallbacks, points-held RUB risk |
+| `fx_forwards` | `FxForwardPositionValuation`: kind (forward / swap), spot and value date, settlement calendar, basis, FX delta in currency, legs (forward rate, points, RUB DF, PV; a fixed NDF leg's `fixing_date` and `fixing_rate`), and (0.36.0, omitted at their defaults) `curve_fallback_from` and `points_held_rub_buckets` (RUB risk with the swap points held, `ValuationPolicy.fx_points_held_risk`, BACKLOG #46) |
+| `fx_crosses` | `FxCrossPositionValuation` (0.36.0): kind, both currencies, cross spot, each currency's spot, value date and basis, the three curve IDs, `fx_delta_base` and `fx_delta_quote` (spot-equivalent amounts against RUB), legs (base and quote notionals and forwards, cross forward and points, RUB DF, PV), fallbacks, points-held RUB risk |
 | `xccy_swaps` | `XccyPositionValuation`: spot, basis, `fx_today`, curve ID per role, leg PVs, the foreign leg's par rate or spread |
 | `cds` | `CdsPositionValuation`: side, notional, coupon, curve recovery, PV in currency and RUB, clean PV, accrued premium, points upfront, par spread, risky annuity, `recovery01_rub`, JTD and its realised recovery |
 | `fx_futures` | `FxFuturesPositionValuation`: model and margined price, calibrated basis, notional, `variation_margin_rub` (= `pv_rub`) |
@@ -155,6 +155,7 @@ version; `portfolio_result_from_json` reads both (v2 into `PortfolioRiskResult`,
 | `floating` | a floating-coupon bond |
 | `has_optionality` | an embedded option valued without time value: a floater's floor or cap (intrinsic, outside the guard), OFZ futures' delivery options (not valued) |
 | `to_confirmed_put` | a bond valued to a confirmed put |
+| `perpetual_tail` | a never-called perpetual: its coupons continue forever after the listed ones (BACKLOG #125) |
 | `fx_translated` | amounts converted to RUB at the snapshot `FxRate` (non-RUB bond, non-RUB CDS) |
 | `real_curve` | an inflation-linked bond on a real curve |
 | `known_fixings` | fixings from the snapshot entered the value (an NDF leg frozen at its published fixing) |
@@ -192,7 +193,7 @@ version; `portfolio_result_from_json` reads both (v2 into `PortfolioRiskResult`,
   credit curve, the basket spreads of OFZ futures;
 - `fx_shocks_pct` moves the spot of FX forwards, XCCY and FX futures (each currency of a
   cross by its own move), and the conversion of non-RUB bonds and CDS;
-- **basis shifts (0.35.0, BACKLOG #103):** `basis_shifts_bp=((factor, bp), ...)` keyed by
+- **basis shifts (0.36.0, BACKLOG #103):** `basis_shifts_bp=((factor, bp), ...)` keyed by
   the factor the positions report: `FXBASIS|<ccy>` (FX forwards, crosses and FX futures of
   the currency), `XCCYBASIS|<ccy>`, `FUTBASIS|<contract>` (rate and OFZ futures). Other
   bases are held.
@@ -208,7 +209,8 @@ its resolved exercise implies (`callables.resolve_exercise`, `exercised_instrume
 `to_worst` at the snapshot quote), held under every bump and scenario, in
 `value_portfolio` and `horizon_portfolio`. The row records
 `PositionValuation.exercise_assumption` (the resolved identifier) and, for a call,
-`horizon="call"` with the call date. The numbers equal `value_assumed_portfolio`'s, which
+`horizon="call"` with the call date; a never-called perpetual `horizon="perpetual"` with
+its last listed coupon (BACKLOG #125; not in `horizon_portfolio` yet). The numbers equal `value_assumed_portfolio`'s, which
 is unchanged and remains the path for pass-throughs and a book-wide default exercise.
 A bond-only book with exercise assumptions stays v2 (the new keys appear only on the
 exercised rows).

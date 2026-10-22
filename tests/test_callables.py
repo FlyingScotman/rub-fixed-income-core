@@ -237,16 +237,18 @@ def perpetual(**kw: object) -> Instrument:
     )
 
 
-def test_perpetual_is_priced_to_a_named_call_only() -> None:
+def test_perpetual_is_priced_to_a_call_or_never_called() -> None:
     perp = perpetual()
     assert perp.is_perpetual
     to_first = yield_to_call(perp, SETTLE, 1000.0, FIRST_CALL)
     assert to_first.effective_yield == pytest.approx(0.12, abs=1e-12)
     with pytest.raises(UnsupportedProduct, match="no maturity"):
         resolve_exercise(perp, SETTLE, ExerciseAssumption.to_maturity())
-    with pytest.raises(UnsupportedProduct, match="never being called"):
+    # The worst case of a perpetual includes never being called (tests/test_perpetual.py);
+    # every listed call is a scenario too, and the 2036 call has no coupons known.
+    with pytest.raises(InvalidTerms, match="reset terms"):
         resolve_exercise(perp, SETTLE, ExerciseAssumption.to_worst(), dirty_price_rub=1000.0)
-    with pytest.raises(UnsupportedProduct, match="never being called"):
+    with pytest.raises(InvalidTerms, match="reset terms"):
         price_to_worst(perp, SETTLE, 0.12)
     # Coupons after 2032 are not known: the 2036 call needs reset terms.
     with pytest.raises(InvalidTerms, match="reset terms"):
@@ -319,6 +321,7 @@ def test_exercise_assumption_round_trips_through_to_dict() -> None:
         ExerciseAssumption.to_maturity(),
         ExerciseAssumption.to_call(FIRST_CALL),
         ExerciseAssumption.to_worst(reset),
+        ExerciseAssumption.never_called(),
     ):
         assert from_dict(ExerciseAssumption, to_dict(assumption)) == assumption
     assert ExerciseAssumption.to_call(FIRST_CALL).identifier == "exercise:to_call:2031-01-01"

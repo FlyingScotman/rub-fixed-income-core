@@ -20,7 +20,7 @@ market data, calendar or exchange specification is looked up here.
 on today's curves read forward and on rolled curves, with the basis held and the
 horizon spot set by a stated ``FxHorizon`` rule (:class:`FxForwardHorizonValuation`).
 
-NDFs (0.35.0, BACKLOG #49): a cash-settled leg names its fixing (``fixing_date``,
+NDFs (0.36.0, BACKLOG #49): a cash-settled leg names its fixing (``fixing_date``,
 ``fixing_source``); once the fixing is published (``fixing_rate``) the leg is frozen at
 ``N / q * (fixing - K) * DF_rub(P)``: no FX delta, no foreign-curve or basis risk, only
 the RUB discounting to the payment date. :class:`NdfConvention` derives the fixing and
@@ -605,7 +605,7 @@ class FxForwardLeg:
     (a deliverable leg). A cash-settled leg pays ``N / q * (F(T) - K)`` on its
     explicit payment date instead.
 
-    NDF fixing (0.35.0, each omitted at None), only on a cash-settled leg:
+    NDF fixing (0.36.0, each omitted at None), only on a cash-settled leg:
 
     - ``fixing_date``: the day the settlement rate is fixed (on or before the value and
       payment dates); ``value_date`` is then the date the fixing rate is the spot for,
@@ -887,7 +887,7 @@ class FxForwardBucketRisk:
 
 @dataclass(frozen=True)
 class FxForwardLegValuation:
-    """One leg. A fixed NDF leg (0.35.0) reports its ``fixing_date`` and ``fixing_rate``
+    """One leg. A fixed NDF leg (0.36.0) reports its ``fixing_date`` and ``fixing_rate``
     (both omitted at None) and its ``forward_rate`` is the fixing."""
 
     value_date: date

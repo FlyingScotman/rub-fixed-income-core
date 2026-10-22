@@ -28,7 +28,7 @@ sets, SOFR, ESTR) and passes a :class:`~rub_fixed_income.discount.DiscountCurve`
 only reads, interpolates and shifts it. Their quote conventions are the builder's, so
 core registers no foreign bootstrap.
 
-Package 3, phase 2 (0.34.0): a CNY bond is also discounted on the built
+Package 3, phase 2 (0.36.0): a CNY bond is also discounted on the built
 ``cny_ruonia_xccy_v1`` curve (the :class:`DiscountCurve` of
 :func:`~rub_fixed_income.xccy.bootstrap_xccy_curve`), and a USD or EUR bond on a
 government par-yield **proxy** (kind ``PAR_YIELD_PROXY``, ``proxy=True``) built by
@@ -109,6 +109,8 @@ class CurveSpec:
     sources: tuple[str, ...] = ()
     proxy: bool = False
     par_coupon_frequency: int | None = None
+    # Unit of a bucket shock of the built DiscountCurve (``CurveConvention.zero_shock``).
+    zero_shock: str = "continuous"
 
 
 _SPECS = (
@@ -122,6 +124,19 @@ _SPECS = (
         model_version=KBD_MODEL_VERSION,
         description="MOEX zero-coupon OFZ yield curve (KBD/G-curve) from B1..B3, T1, G1..G9; "
         "continuous zero rate, effective annual published yields",
+    ),
+    CurveSpec(
+        spec_id="rub_ofz_kbd_v2",
+        kind=CurveKind.KBD_PARAMETRIC,
+        currency="RUB",
+        time_day_count=DayCount.ACT_365_FIXED,
+        interpolation="kbd-formula; materialised log-linear-df (daily to 2Y, weekly to 5Y, "
+        "monthly to 30Y), flat-forward beyond",
+        model_version=KBD_MODEL_VERSION,
+        description="The KBD of rub_ofz_kbd_v1 as a risk curve: bucket shocks move the "
+        "effective annual zero yields MOEX publishes (annual_zero), the unit that sums with "
+        "par RUONIA OIS risk",
+        zero_shock="annual",
     ),
     CurveSpec(
         spec_id="rub_ruonia_ois_legacy_v1",
@@ -298,7 +313,7 @@ _XCCY_SPECS = (
         "payment lag, notional at the trade date's NCC central rate, initial exchange on the "
         "start and final exchange on the end date; quote = CNY fixed par rate "
         "(CNY-XCS-CNYRUO); CNY discount curve under RUB collateral. Built "
-        "(DiscountCurve), it also discounts CNY bonds (0.34.0)",
+        "(DiscountCurve), it also discounts CNY bonds (0.36.0)",
         fixed_leg_frequency_months=12,
         fixed_leg_day_count=DayCount.ACT_ACT_ISDA,
         spot_lag_business_days=1,

@@ -1,4 +1,4 @@
-"""FX products in ``value_portfolio`` (0.35.0): any currency, implied curves from swap
+"""FX products in ``value_portfolio`` (0.36.0): any currency, implied curves from swap
 points, crosses, NDF fixings, fallbacks to proxies, points-held risk, basis scenarios.
 
 Each row is checked against its engine run standalone on the same inputs.
@@ -480,7 +480,7 @@ def test_fixed_ndf_carries_its_known_amount_in_horizon_portfolio() -> None:
     assert row.received_rub == pytest.approx(1_000_000.0, rel=1e-14)
 
 
-# --- #123: fallbacks to proxy curves ----------------------------------------------------
+# --- #131: fallbacks to proxy curves ----------------------------------------------------
 
 
 def _proxy_market(**changes: object) -> MarketSnapshot:

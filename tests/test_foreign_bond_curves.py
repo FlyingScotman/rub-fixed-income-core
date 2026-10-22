@@ -1,4 +1,4 @@
-"""CNY / USD / EUR bonds on their own currency's curve (package 3, phase 2; 0.34.0).
+"""CNY / USD / EUR bonds on their own currency's curve (package 3, phase 2; 0.36.0).
 
 - CNY bonds on the built XCCY curve ``cny_ruonia_xccy_v1``;
 - USD / EUR bonds on government par-yield proxies (``proxy_curves``), flagged as proxies;

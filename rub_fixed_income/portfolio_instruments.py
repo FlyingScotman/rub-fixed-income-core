@@ -123,7 +123,7 @@ class FxForwardInstrument:
     Valued by covered parity on ``rub_curve_id`` and ``foreign_curve_id`` from the
     snapshot :class:`~rub_fixed_income.domain.FxSpot` of the currency (its value date and
     settlement calendar) and the :class:`~rub_fixed_income.domain.FxBasis` of the pair on
-    the foreign curve. Any currency other than RUB (0.35.0: ``<ccy>_discount_factors_v1``
+    the foreign curve. Any currency other than RUB (0.36.0: ``<ccy>_discount_factors_v1``
     or ``<ccy>_fx_implied_v1``); an NDF leg whose fixing date has come is frozen at the
     snapshot :class:`~rub_fixed_income.domain.FxFixing` of its ``fixing_source``.
     """
@@ -153,7 +153,7 @@ class FxForwardInstrument:
 
 @dataclass(frozen=True)
 class FxCrossInstrument:
-    """An outstanding FX forward or swap between two foreign currencies (0.35.0).
+    """An outstanding FX forward or swap between two foreign currencies (0.36.0).
 
     Valued in RUB under RUB collateral (``fx_crosses``): each currency on its own curve
     (``base_curve_id``, ``quote_curve_id``) from its snapshot
