@@ -132,6 +132,52 @@ day counts, the carried RUONIA business days and `bound` (`floor`, `cap` or None
 
 A negative coupon raises an error; give the floor if the terms have one.
 
+## KBD index (`ZR_YLD_CRV`, 0.34.0)
+
+Corporate floaters whose coupon is the MOEX zero-coupon yield curve (КБД) at a constant
+maturity plus a margin. The index is `FloatingCouponRule(index="kbd", averaging=
+"single_fixing", fixing_date=FixingDateRule("accrual_start", N, "business_days"),
+index_tenor_years=T, rate_day_count=ACT_365_FIXED, ...)`:
+
+- **Fixings.** `FixingHistory("kbd", ..., tenor_years=T)`: one history per tenor, rows the
+  effective annual KBD zero yield at T (`kbd_effective_yield`) of each day's end-of-day
+  ZCYC publication. Its calendar is the ZCYC publication calendar (business days = days
+  with a publication), so "the N-th business day before the start" is the N-th
+  publication. A coupon whose fixing is before the valuation date comes from the history
+  even while MOEX still lists it as unknown.
+- **Projection.** A fixing on or after the valuation date is the forward effective annual
+  yield of the projection curve over `[fixing, fixing + round(365 T) days)`:
+  `exp(ln(DF(fixing) / DF(fixing + T)) / T) - 1`. On a KBD from `kbd_discount_curve` that
+  is `(G(t + T)(t + T) - G(t) t) / T` of the ZCYC formula within about 0.02 bp. The
+  coupon rises with the long end (`t + T`) and falls with the short end (`t`): its
+  projection risk is a steepener on the KBD buckets.
+- **Convexity.** `FloatingCouponRule.convexity=ConstantMaturityConvexity(normal_vol_bp)`
+  adds `0.5 sigma^2 t (T + 1) / (1 + F)` to a projected fixing (`t` years to the fixing),
+  the convexity of a T-year zero yield; the payment-timing adjustment is not modelled.
+  About 23 bp of coupon at 150 bp a year and three years to a 7Y fixing. Without it
+  (the default) a projected fixing is the deterministic forward; the desk has no
+  volatility source yet (BACKLOG #122).
+- **Margin.** `FloatingCouponPeriod.margin` replaces the rule's margin for one period: a
+  margin reset at an offer (RZD 001B-03/04/06/08).
+- **Risk.** With `projection_curve` a KBD (`rub_ofz_kbd_v2`: annual-yield buckets) and
+  `curve` RUONIA OIS, the two-curve engine gives `IR|<KBD>|*` projection risk next to
+  `IR|<RUONIA>|*` discount risk and `CS`.
+
+Goldens (`tests/test_moex_kbd_floater_goldens.py`, fixture `tests/fixtures/kbd_floaters/`):
+126 known coupons of ten bonds to the kopeck, with the rule identified against its
+neighbours (another tenor, N ± 1):
+
+| Bonds | T | N | Note |
+| --- | --- | --- | --- |
+| KAMAZ BO-09/10/11, RUSNANO 08, RZD 001R-08R/09R | 7 | 5 | KAMAZ: five coupons of 2022-05..2024-05 rounded to 0.0001 %; RZD: from the second coupon |
+| RZD 001B-03/04/06/08 | 5 | 4 | margin reset at the offer: 1.65 → 2.15 / 2.10 %, 1.75 → 2.25 % |
+
+Pinned gaps: the first coupon of a bond (set at placement); Avtodor BO-002R-01 (12 of 15:
+two June coupons off), FPK 001R-05 (several coupons off by up to 0.14 pp: another
+calendar or rule), VTB T2-3, Gazprom Capital 001B-02/03, RZD 001B-01/02 and GTLK 001P-01
+(early coupons from another formula). Their terms are to come from issue documents
+through the market-data hub (BACKLOG #123).
+
 ## MOEX-confirmed rules
 
 `tests/test_moex_floater_goldens.py` reproduces 328 published coupons of 21 floaters

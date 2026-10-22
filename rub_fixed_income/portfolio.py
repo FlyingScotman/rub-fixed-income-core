@@ -26,7 +26,7 @@ from itertools import pairwise
 from typing import Literal, cast
 
 from ._money import finite_money, positive_money
-from ._risk_common import _shifts
+from ._risk_common import _curve_basis, _shifts
 from ._version import __version__
 from .bond import YieldRequest, solve_effective_annual_yield
 from .callables import ExerciseAssumption, ExercisedBond, exercised_instrument, resolve_exercise
@@ -658,10 +658,15 @@ def _build_curve(entry: CurveEntry, business_date: date) -> _BuiltCurve:
         if isinstance(source, ZcycParameters):
             if source.trade_date != business_date:
                 raise InvalidTerms("KBD parameters are not for the snapshot business date")
-            return _BuiltCurve(
-                entry, kbd_discount_curve(source), source, KBD_MODEL_VERSION, spec.currency
+            built = kbd_discount_curve(
+                source, zero_shock=cast(Literal["continuous", "annual"], spec.zero_shock)
             )
-        if isinstance(source, DiscountCurve) and source.model_version == KBD_MODEL_VERSION:
+            return _BuiltCurve(entry, built, source, KBD_MODEL_VERSION, spec.currency)
+        if (
+            isinstance(source, DiscountCurve)
+            and source.model_version == KBD_MODEL_VERSION
+            and source.convention.zero_shock == spec.zero_shock
+        ):
             return _BuiltCurve(entry, source, None, KBD_MODEL_VERSION, spec.currency)
         raise InvalidTerms(f"curve {entry.curve_id} does not match spec {spec.spec_id}")
     if spec.kind is CurveKind.OIS_BOOTSTRAP:
@@ -1284,9 +1289,7 @@ def _value_position(
     )
     nominal_rub = nominal * fx if foreign else nominal
     accrued_rub = accrued * fx if foreign else accrued
-    basis: Literal["continuous_zero", "ois_quote"] = (
-        "ois_quote" if isinstance(built.curve, CurveBootstrapRequest) else "continuous_zero"
-    )
+    basis = cast(Literal["continuous_zero", "annual_zero", "ois_quote"], _curve_basis(built.curve))
     projection_id: str | None = None
     yield_flows: Sequence[BondCashflow] = flows
     if isinstance(instrument.coupon_leg, FloatingCouponLeg):

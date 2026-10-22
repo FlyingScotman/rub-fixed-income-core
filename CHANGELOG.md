@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.34.0 — the KBD as a risk curve, KBD-linked floaters
+
+The desk's decision of 2026-10-22 on `docs/proposals/kbd-risk-curve.md` (option C): the
+KBD (`RUB OFZ`) becomes a full risk curve in the units of RUONIA OIS, OFZ are discounted
+on it, and floaters whose coupon is the KBD at a constant maturity (MOEX `ZR_YLD_CRV`)
+project off it. Every new field is omitted at its default and `rub_ofz_kbd_v1` is
+unchanged, so earlier encodings, job IDs, pinned hashes and stored results are unchanged.
+
+### Added
+
+- **Annual-yield curve risk.** `CurveConvention.zero_shock` (`"continuous"` default,
+  `"annual"`): a bucket shock of a `DiscountCurve` moves the effective annual zero yield,
+  `DF' = (DF^(-1/t) + s)^(-t)`, reported as `curve_basis = "annual_zero"`. A
+  continuous-zero bp is `1 + y` (14–16 %) larger than a par OIS or an annual Z-spread bp;
+  annual-yield risk sums with them (0.5–2 % apart on OFZ).
+- **Spec `rub_ofz_kbd_v2`**: the KBD from its ZCYC parameters with annual-yield risk;
+  `kbd_discount_curve(..., zero_shock=)`; `CurveSpec.zero_shock`.
+- **KBD index in floating coupons**: `FixingIndex` `"kbd"`,
+  `FloatingCouponRule(index_tenor_years=, convexity=)`, `FixingHistory(tenor_years=)`;
+  a projected fixing is the forward effective annual KBD yield over the tenor.
+  `MarketSnapshot.projection_curve` accepts a KBD spec for it, so `value_portfolio` values
+  KBD floaters (two-curve: KBD projection, RUONIA OIS discount).
+- **`ConstantMaturityConvexity(normal_vol_bp)`**: an optional convexity adjustment of a
+  projected constant-maturity fixing, `0.5 sigma^2 t (T + 1) / (1 + F)`; none by default.
+- **`FloatingCouponPeriod.margin`**: a period's margin replacing the rule's (a margin
+  reset at an offer).
+- **`basis_view(risk, base_curve_id, curve_id, basis_id)`**: a `FactorRisk` on
+  `(base, curve − base)` instead of `(base, curve)`, first order and Hessian (`J^T H J`).
+- **Goldens of KBD floaters** (`tests/test_moex_kbd_floater_goldens.py`): 126 coupons of
+  ten bonds to the kopeck from the hub's ZCYC history: KBD 7Y fixed on the 5th
+  publication day before the coupon (KAMAZ, RUSNANO, RZD 001R) and 5Y on the 4th (RZD
+  001B, margins reset at offers).
+
+### Changed
+
+- `local_risk` / `local_worker` accept `curve_basis="annual_zero"`; `RiskRunContext` of a
+  bond on an annual-shock curve must say so.
+
 ## 0.33.0 — what the Trading Desk Monitor needs: review, floater accrued and explain, history at scale
 
 Review of the core against the desk monitor's target interface

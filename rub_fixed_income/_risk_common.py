@@ -112,7 +112,14 @@ class _ZeroShockCurve:
             finite_money(math.fsum(w * shifts[i] for i, w in weights), "interpolated shift") * 1e-4
         )
         try:
-            result = base_df * math.exp(-shift * time)
+            if self.base.convention.zero_shock == "annual" and time > 0.0:
+                # Effective annual yield 1 + Y = DF^(-1/t), moved by the shift.
+                growth = base_df ** (-1.0 / time) + shift
+                if growth <= 0.0:
+                    raise ValueError("shocked annual yield must exceed -100 %")
+                result = growth ** (-time)
+            else:
+                result = base_df * math.exp(-shift * time)
         except OverflowError as exc:
             raise ValueError("shocked discount factor must be positive and finite") from exc
         return positive_money(result, "shocked discount factor")
@@ -330,7 +337,9 @@ def _copy_curve(curve: RiskCurve) -> RiskCurve:
 
 
 def _curve_basis(curve: RiskCurve) -> str:
-    return "ois_quote" if isinstance(curve, CurveBootstrapRequest) else "continuous_zero"
+    if isinstance(curve, CurveBootstrapRequest):
+        return "ois_quote"
+    return "annual_zero" if curve.convention.zero_shock == "annual" else "continuous_zero"
 
 
 def _base_curve(source: RiskCurve, cache: ShockedCurveCache) -> DiscountCurve:

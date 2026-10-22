@@ -21,6 +21,7 @@ bump (DEC08), so a Taylor expansion of the two is consistent.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Literal
 
@@ -32,6 +33,7 @@ __all__ = [
     "CS_FACTOR",
     "FactorRisk",
     "HessianEntry",
+    "basis_view",
     "bond_factor_risk",
     "fx_basis_factor",
     "fx_factor",
@@ -259,3 +261,69 @@ def linker_factor_risk(
         nominal.bump_bp,
         nominal.has_second_order,
     )
+
+
+def basis_view(risk: FactorRisk, base_curve_id: str, curve_id: str, basis_id: str) -> FactorRisk:
+    """The same risk on ``(base, basis = curve - base)`` instead of ``(base, curve)``.
+
+    With both curves bucketed alike and shocked in the same unit (for the KBD against
+    RUONIA OIS: ``rub_ofz_kbd_v2`` annual yields and par OIS quotes), moving the base
+    with the basis held moves both curves, and moving the basis moves ``curve`` alone:
+
+        ``IR|<base>|b  <- IR|<base>|b + IR|<curve>|b``,  ``IR|<basis>|b <- IR|<curve>|b``
+
+    and the Hessian is ``J^T H J`` for that linear change of coordinates, so a Taylor
+    expansion gives the same P&L in either view. ``IR|<curve>|*`` factors are renamed
+    ``IR|<basis>|*`` in place; base factors a position lacks are added (zero before the
+    change) ahead of them. A risk without ``curve`` factors is returned unchanged.
+    """
+    for label, name in (("base", base_curve_id), ("curve", curve_id), ("basis", basis_id)):
+        _component(name, f"{label} curve id")
+    if len({base_curve_id, curve_id, basis_id}) != 3:
+        raise InvalidTerms("base, curve and basis must be three different curve ids")
+    curve = {ir_factor(curve_id, b): b for b in RISK_BUCKETS}
+    if not any(f in curve for f in risk.factors):
+        return risk
+    if any(f.startswith(f"IR|{basis_id}|") for f in risk.factors):
+        raise InvalidTerms(f"the risk already carries {basis_id} factors")
+    factors = list(risk.factors)
+    missing = [
+        ir_factor(base_curve_id, b)
+        for b in RISK_BUCKETS
+        if ir_factor(base_curve_id, b) not in factors
+    ]
+    if missing:
+        at = min(i for i, f in enumerate(factors) if f in curve)
+        factors[at:at] = missing
+    renamed = tuple(ir_factor(basis_id, curve[f]) if f in curve else f for f in factors)
+    index = {f: i for i, f in enumerate(factors)}
+    size = len(factors)
+    # x = J y: a base factor y_R moves x_R and x_K; a basis factor y_B moves x_K.
+    columns: list[list[tuple[int, float]]] = []
+    for f in factors:
+        column = [(index[f], 1.0)]
+        if f.startswith(f"IR|{base_curve_id}|"):
+            twin = ir_factor(curve_id, f.rsplit("|", 1)[1])
+            if twin in index:
+                column.append((index[twin], 1.0))
+        columns.append(column)
+    grad = [0.0] * size
+    for f, value in zip(risk.factors, risk.first_order, strict=True):
+        grad[index[f]] = value
+    first = tuple(math.fsum(grad[k] * w for k, w in col) for col in columns)
+    hessian: tuple[HessianEntry, ...] = ()
+    if risk.hessian:
+        dense = [[0.0] * size for _ in range(size)]
+        for e in risk.hessian:
+            i, j = index[risk.factors[e.i]], index[risk.factors[e.j]]
+            dense[i][j] = dense[j][i] = e.value
+        hessian = _upper(
+            tuple(
+                tuple(
+                    math.fsum(dense[k][m] * wk * wm for k, wk in columns[a] for m, wm in columns[b])
+                    for b in range(size)
+                )
+                for a in range(size)
+            )
+        )
+    return FactorRisk(renamed, first, hessian, risk.difference, risk.bump_bp, risk.has_second_order)
