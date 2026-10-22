@@ -6,17 +6,18 @@ This boundary checks units, horizons and identities, not source authenticity.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal
 
 from ._money import non_negative_money, positive_money
 from ._risk_common import _curve_basis
 from ._version import __version__
-from .canonical import canonical_sha256
+from .canonical import OMIT_IF_DEFAULT, canonical_sha256
 from .cashflows import BondCashflow, clean_price_pct_to_dirty_rub
 from .conventions import ZSpreadConvention
 from .discount import CurveBootstrapRequest, DiscountCurve
+from .perpetual import PerpetualTail
 from .risk import (
     BondRiskEngine,
     BondRiskRequest,
@@ -59,13 +60,17 @@ class FixedRubBondInput:
     The caller must establish fixed coupons, RUB payments, calendar-adjusted
     dates and contractual redemption. Unknown/floating/FX-linked flows cannot
     be represented as fixed merely by supplying a projected amount.
+
+    A never-called perpetual (``horizon="perpetual"``) has no redemption: its listed
+    coupons are ``cashflows``, ``perpetual_tail`` the coupons after them and
+    ``horizon_date`` the tail's anchor, the last listed payment.
     """
 
     context: RiskRunContext
     cashflows: tuple[BondCashflow, ...]
     settlement_date: date
     horizon_date: date
-    horizon: Literal["maturity", "confirmed_investor_put"]
+    horizon: Literal["maturity", "confirmed_investor_put", "perpetual"]
     cashflow_currency: Literal["RUB"]
     coupon_model: Literal["fixed"]
     current_nominal_rub: float
@@ -75,6 +80,7 @@ class FixedRubBondInput:
     curve: DiscountCurve | CurveBootstrapRequest
     spread_convention: ZSpreadConvention
     spread_kind: Literal["credit", "ofz"]
+    perpetual_tail: PerpetualTail | None = field(default=None, metadata=OMIT_IF_DEFAULT)
 
 
 @dataclass(frozen=True)
@@ -126,8 +132,13 @@ def prepare_local_bond_risk(
     """
     if source.cashflow_currency != "RUB" or source.coupon_model != "fixed":
         raise ValueError("only validated fixed RUB cashflows are supported")
-    if source.horizon not in ("maturity", "confirmed_investor_put"):
+    if source.horizon not in ("maturity", "confirmed_investor_put", "perpetual"):
         raise ValueError("unsupported redemption horizon")
+    tail = source.perpetual_tail
+    if (source.horizon == "perpetual") != (tail is not None):
+        raise ValueError("a perpetual horizon needs its perpetual tail, and only it")
+    if tail is not None and source.horizon_date != tail.anchor_date:
+        raise ValueError("a perpetual's horizon date is its tail's anchor")
     if source.horizon_date <= source.settlement_date:
         raise ValueError("redemption horizon must follow settlement")
     flows = tuple(source.cashflows)
@@ -150,6 +161,7 @@ def prepare_local_bond_risk(
             spread_kind=source.spread_kind,
             dirty_price_rub=clean_price_pct_to_dirty_rub(clean, nominal, accrued),
             quantity=source.quantity,
+            perpetual_tail=tail,
         ),
         ShockedCurveCache() if curve_cache is None else curve_cache,
     )
@@ -165,7 +177,7 @@ def prepare_local_bond_risk(
             "clean_price_pct": clean,
             "accrued_interest_rub": accrued,
         }
-    )
+    )  # a perpetual tail is in core_base_id
     return PreparedLocalBondRisk(
         source.context,
         engine,

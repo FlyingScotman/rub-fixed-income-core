@@ -133,6 +133,7 @@ version; `portfolio_result_from_json` reads both (v2 into `PortfolioRiskResult`,
 | `floating` | a floating-coupon bond |
 | `has_optionality` | an embedded option valued without time value: a floater's floor or cap (intrinsic, outside the guard), OFZ futures' delivery options (not valued) |
 | `to_confirmed_put` | a bond valued to a confirmed put |
+| `perpetual_tail` | a never-called perpetual: its coupons continue forever after the listed ones (BACKLOG #125) |
 | `fx_translated` | amounts converted to RUB at the snapshot `FxRate` (non-RUB bond, non-RUB CDS) |
 | `real_curve` | an inflation-linked bond on a real curve |
 | `known_fixings` | fixings from the snapshot entered the value |
@@ -179,7 +180,8 @@ its resolved exercise implies (`callables.resolve_exercise`, `exercised_instrume
 `to_worst` at the snapshot quote), held under every bump and scenario, in
 `value_portfolio` and `horizon_portfolio`. The row records
 `PositionValuation.exercise_assumption` (the resolved identifier) and, for a call,
-`horizon="call"` with the call date. The numbers equal `value_assumed_portfolio`'s, which
+`horizon="call"` with the call date; a never-called perpetual `horizon="perpetual"` with
+its last listed coupon (BACKLOG #125; not in `horizon_portfolio` yet). The numbers equal `value_assumed_portfolio`'s, which
 is unchanged and remains the path for pass-throughs and a book-wide default exercise.
 A bond-only book with exercise assumptions stays v2 (the new keys appear only on the
 exercised rows).

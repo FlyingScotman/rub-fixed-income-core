@@ -630,13 +630,17 @@ From the Minfin terms (order No. 80n of 22.05.2015) as restated by the Bank of R
 - **Exercise assumption** (explicit, recorded): `to_maturity` (default; MOEX's
   treatment without a set call date), `to_call(date)` (MOEX's `CALLOPTIONYIELD` when the
   call date is set), `to_worst` (lowest yield at the quoted price; ties to the earliest
-  date; resolved once, then held under risk).
+  date; resolved once, then held under risk), `never_called` (no call: a dated bond's
+  maturity, a perpetual's endless coupons; the desk default).
 - **Yields** are effective annual on the instrument's `yield_convention` (default
   ACT/365F); durations Macaulay and modified at that yield.
 - **Coupons** must be known to the redemption date, which must be a coupon date; reset
   coupons are explicit `assumed_coupons`, never extrapolated.
-- **Perpetuals** are priced to a named call; MOEX publishes their current yield
-  (coupon rate / clean price).
+- **Perpetuals** are priced to a named call or never called: the listed coupons, then the
+  last one at the same step forever, valued exactly (curve read to 30 years, its own
+  flat-forward rate beyond; the sum to 600 years plus its geometric remainder). Yield
+  and duration are the endless stream's. MOEX publishes their current yield (coupon
+  rate / clean price), the same rate uncompounded.
 - **Pass-throughs:** constant annual CPR, `SMM = 1 - (1 - CPR)^(1/payments_per_year)`;
   scheduled principal scaled by actual over scheduled balance; prepayment on the balance
   after scheduled principal; coupon `B * rate * days / year` (unrounded) on the period-start

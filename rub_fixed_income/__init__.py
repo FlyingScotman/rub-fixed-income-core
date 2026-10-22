@@ -68,6 +68,7 @@ from .callables import (
     price_to_worst,
     redemption_scenarios,
     resolve_exercise,
+    yield_never_called,
     yield_to_call,
     yield_to_maturity,
     yield_to_worst,
@@ -383,6 +384,13 @@ from .pass_through import (
     pass_through_instrument,
     project_pass_through,
     weighted_average_life,
+)
+from .perpetual import (
+    PERPETUAL_TAIL_MODEL_VERSION,
+    PerpetualTail,
+    PerpetualYield,
+    perpetual_tail,
+    perpetual_yield,
 )
 from .portfolio import (
     PORTFOLIO_RESULT_SCHEMA,
@@ -953,6 +961,7 @@ __all__ = [
 __all__ += [
     "ASSUMED_BOOK_MODEL_VERSION",
     "CALL_MODEL_VERSION",
+    "PERPETUAL_TAIL_MODEL_VERSION",
     "PREPAYMENT_MODEL_VERSION",
     "AssumedBook",
     "AssumedHorizonResult",
@@ -971,6 +980,8 @@ __all__ += [
     "PassThroughProjection",
     "PassThroughRow",
     "PassThroughTerms",
+    "PerpetualTail",
+    "PerpetualYield",
     "PrepaymentAssumption",
     "PriceToWorst",
     "RedemptionScenario",
@@ -986,6 +997,8 @@ __all__ += [
     "pass_through_analytics",
     "pass_through_instrument",
     "perpetual_current_yield",
+    "perpetual_tail",
+    "perpetual_yield",
     "prepare_assumed_book",
     "price_to_worst",
     "project_pass_through",
@@ -994,6 +1007,7 @@ __all__ += [
     "value_assumed_portfolio",
     "verify_assumed_result",
     "weighted_average_life",
+    "yield_never_called",
     "yield_to_call",
     "yield_to_maturity",
     "yield_to_worst",

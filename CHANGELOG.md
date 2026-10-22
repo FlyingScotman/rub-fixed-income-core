@@ -1,5 +1,46 @@
 # Changelog
 
+## Unreleased — never-called perpetuals (BACKLOG #125)
+
+The owner's position: Russian perpetuals are practically never called, so their value
+and risk assume no call. Every new field is omitted at its default: earlier policies,
+job IDs, results and pinned hashes are unchanged, and a policy without `never_called`
+values exactly as before.
+
+### Added
+
+- `ExerciseAssumption.never_called(assumed_coupons=())`: no call is exercised. A dated
+  callable runs to maturity (as `to_maturity`); a perpetual pays its listed coupons and
+  then the last one at the same step forever. Resolved as `exercise="never"` (no
+  redemption date or price), identifier `exercise:never_called@never`.
+- Module `perpetual`: `PerpetualTail(anchor_date, amount, period_days | period_months)`,
+  `perpetual_tail(periods)` (the step of the last periods, the last known amount; an
+  unknown coupon is not continued), `perpetual_yield` / `PerpetualYield` (yield and
+  durations of the stream), `PERPETUAL_TAIL_MODEL_VERSION`. The tail is valued exactly:
+  the curve is read to 30 years, its flat-forward rate beyond, the sum runs to 600
+  years plus its geometric remainder; a divergent stream is worth infinity and the
+  solvers start above it.
+- `BondRiskRequest.perpetual_tail`, `FixedRubBondInput.perpetual_tail` (horizon
+  `"perpetual"`), `price_cashflows(..., perpetual_tail=)`, `solve_z_spread(...,
+  perpetual_tail=)`: the tail in the Z-spread, bucket DV01, CS01, Hessian and scenarios.
+- `yield_never_called`; for a perpetual `call_analysis` adds the never-called scenario
+  and `yield_to_worst`, `price_to_worst` and `to_worst` consider it (below par it is the
+  worst). `ScenarioYield`, `ResolvedExercise` and `PriceToWorst` take `redemption_date`
+  None for it; `ExercisedBond.perpetual_tail`.
+- `value_portfolio` values a never-called perpetual: `horizon="perpetual"`,
+  `horizon_date` its last listed coupon, yield and Macaulay duration of the stream,
+  model flag `perpetual_tail`; to the put when the policy's horizon picks one.
+
+### Changed
+
+- `yield_to_worst`, `price_to_worst` and `to_worst` no longer reject a perpetual: they
+  include its calls and never being called (a call whose coupons are unknown is still
+  rejected).
+- `horizon_portfolio` and `value_assumed_portfolio` reject a never-called perpetual
+  with `UNSUPPORTED_PRODUCT` (BACKLOG #126).
+- `docs/callables.md`: the portfolio section said `value_portfolio` rejects callables;
+  it has valued them under `exercise_assumptions` since 0.29.0.
+
 ## 0.34.0 — the KBD as a risk curve, KBD-linked floaters
 
 The desk's decision of 2026-10-22 on `docs/proposals/kbd-risk-curve.md` (option C): the

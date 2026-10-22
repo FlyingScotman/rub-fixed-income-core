@@ -588,3 +588,52 @@ period margins and an optional convexity adjustment, goldens of ten KBD floaters
      KBD floaters out of the fallback, `RUB OFZ` a real scenario curve, the cockpit with
      a «КБД / RUONIA + базис» view (`basis_view`), the fallback duration proxy divided by
      `1 + y`; see `docs/CONSUMERS.md`.
+
+## Never-called perpetuals — unreleased
+
+125. *(done)* **Perpetuals never called** (owner's position: Russian perpetuals are
+     practically never called). `ExerciseAssumption.never_called()`: a dated callable
+     runs to maturity, a perpetual pays its listed coupons and then the last one at the
+     same step forever (`perpetual.PerpetualTail`), valued exactly: curve read to 30
+     years, its flat-forward rate beyond, the sum to 600 years plus the geometric
+     remainder. Z-spread, bucket DV01 (the tail past 20 years in `20Y+`), CS01, the
+     Hessian and scenarios reprice the tail; yield and duration are the stream's;
+     `yield_never_called`, and never called is a candidate of `to_worst` /
+     `price_to_worst` for perpetuals. `value_portfolio` rows read `horizon="perpetual"`.
+     A truncated stream needs 50–60 years for 1 bp of Z-spread (30 years: 12–36 bp,
+     `tests/test_perpetual.py`). About 75 ms per perpetual with the Hessian against
+     about 10 ms for a dated bond.
+126. **Horizon P&L of a never-called perpetual.** `horizon_portfolio` rejects it
+     (`UNSUPPORTED_PRODUCT`): carry and roll-down need the tail priced at the horizon
+     date in `horizon.py` (the tail's anchor and the curve read move with the date).
+     `value_assumed_portfolio` rejects it too (the native path prices the tail). P1,
+     1 day.
+127. **Perpetuals with a coupon formula.** A floater perpetual (RUONIA or key rate plus a
+     margin) needs its floating leg continued to the tail with the projection (with #112,
+     callable floaters); a perpetual whose coupon resets every N years to the KBD / OFZ
+     yield of N years plus a margin is the KBD constant-maturity index of 0.34.0
+     (`FixingIndex` `"kbd"`, `index_tenor_years=N`) fixed once per reset period: its
+     floating leg continued past the listed periods, the reset coupon the forward KBD
+     yield at the reset date, its rate risk on the KBD as a projection curve. Until then
+     `never_called` rejects a floating leg, and an unknown listed coupon is not
+     continued. P1.
+128. *(downstream)* **TDM: no call by default.** In `backend/src/desk/valuation/bonds.py`:
+     replace `perpetual_call` / `PERPETUAL_CALL_YEARS` (a call assumed in five years) by
+     passing the perpetual to core as listed, with its calls, and
+     `ValuationPolicy.exercise_assumptions=((id, ExerciseAssumption.never_called()), ...)`
+     for every perpetual and callable; drop `redeem_at_horizon` for them; a dated
+     callable runs to maturity (`next_offer` stops choosing calls); puts stay the horizon
+     (`open_put`); a perpetual with an unknown coupon and no put is rejected, not
+     continued at the last rate. Note `perpetual: no call assumed` in `assumptions`.
+     Expect higher DV01 / CS01 (about twice) and lower yields and Z-spreads on discount
+     perpetuals than under the five-year call.
+129. **Long-end risk on a quoted OIS curve.** A curve bootstrapped from RUB OIS quotes
+     ends at 10 years and extrapolates flat-forward from its last two nodes, so every
+     flow past 10 years moves with the 7Y–10Y forward: under quote risk
+     (`ois_quote`) a never-called perpetual's DV01 is a large 7Y / 10Y pair of opposite
+     signs (in `tests/test_perpetual.py`'s book: +54 and −90 RUB/bp for −37 net), and
+     the same holds, smaller, for any bond past 10 years. Options for the owner: keep
+     it (it is the curve's model), extrapolate a flat zero rate past the last node (the
+     long-end risk then sits on the 10Y quote alone; a curve-model change for every
+     bond past 10 years), or report the long end in zero-rate buckets. P1, owner
+     decision.

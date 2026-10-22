@@ -10,7 +10,13 @@ named assumption:
 - ``to_call(date)``: the issuer calls on that listed date;
 - ``to_worst``: the redemption date (a call or maturity) with the lowest effective
   yield at the given price. It is resolved once, at the quoted price, and then held
-  fixed: risk and scenarios do not switch the exercise date.
+  fixed: risk and scenarios do not switch the exercise date;
+- ``never_called`` (BACKLOG #125): no call is ever exercised. A dated bond runs to
+  maturity (as ``to_maturity``); a perpetual pays its coupons forever: the listed
+  coupons, then the last one again at the same step without end
+  (:class:`~rub_fixed_income.perpetual.PerpetualTail`, valued exactly). For a perpetual
+  the never-called scenario is also a candidate of ``to_worst``: below par it is the
+  worst.
 
 Yields are effective annual from settlement on the instrument's
 ``yield_convention`` time basis (default ACT/365F, as MOEX publishes
@@ -20,7 +26,8 @@ yield, on the same basis.
 Coupons must be known up to the redemption date. When they are not (a coupon reset
 after the call, any coupon of a perpetual after its known periods), the caller passes
 the assumed periods (``assumed_coupons``) explicitly; otherwise the scenario is
-rejected. A call date must be a coupon payment date: core does not model a call in the
+rejected. A never-called perpetual needs its listed coupons known from settlement on
+(an unknown coupon is not continued: such a bond is valued to its put). A call date must be a coupon payment date: core does not model a call in the
 middle of a coupon period.
 
 Option-adjusted spreads need a short-rate model and a lattice, which core does not
@@ -32,14 +39,14 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date
 from itertools import pairwise
 from typing import Literal, NoReturn
 
 from ._money import finite_money, positive_money
 from .bond import YieldRequest, solve_effective_annual_yield
-from .canonical import canonical_sha256
+from .canonical import OMIT_IF_DEFAULT, canonical_sha256
 from .cashflows import Cashflow, CashflowKind
 from .compatibility import bond_duration
 from .conventions import YieldConvention
@@ -57,6 +64,7 @@ from .domain import (
 )
 from .errors import InvalidTerms, UnsupportedProduct
 from .inflation import IndexedCouponLeg
+from .perpetual import PerpetualTail, perpetual_tail, perpetual_yield, tail_pv_at_yield
 
 __all__ = [
     "CALL_MODEL_VERSION",
@@ -77,6 +85,7 @@ __all__ = [
     "price_to_worst",
     "redemption_scenarios",
     "resolve_exercise",
+    "yield_never_called",
     "yield_to_call",
     "yield_to_maturity",
     "yield_to_worst",
@@ -84,14 +93,14 @@ __all__ = [
 
 CALL_MODEL_VERSION = "rub-call-exercise-v1"
 
-ExerciseKind = Literal["to_maturity", "to_call", "to_worst"]
-Exercise = Literal["call", "maturity"]
+ExerciseKind = Literal["to_maturity", "to_call", "to_worst", "never_called"]
+Exercise = Literal["call", "maturity", "never"]
 AssumedCoupon = CouponPeriod | RateCouponPeriod
 
 _OAS_REASON = (
     "option-adjusted valuation needs a short-rate model and a lattice, which core does "
     "not have; value callables under an explicit exercise assumption "
-    "(to_maturity, to_call or to_worst)"
+    "(to_maturity, to_call, to_worst or never_called)"
 )
 
 
@@ -111,8 +120,10 @@ class ExerciseAssumption:
     def __post_init__(self) -> None:
         if self.kind == "option_adjusted":  # type: ignore[comparison-overlap]
             raise UnsupportedProduct(_OAS_REASON)
-        if self.kind not in ("to_maturity", "to_call", "to_worst"):
-            raise InvalidTerms("exercise kind must be to_maturity, to_call or to_worst")
+        if self.kind not in ("to_maturity", "to_call", "to_worst", "never_called"):
+            raise InvalidTerms(
+                "exercise kind must be to_maturity, to_call, to_worst or never_called"
+            )
         if (self.kind == "to_call") != (self.call_date is not None):
             raise InvalidTerms("a to_call assumption needs its call date, and only it")
         object.__setattr__(self, "assumed_coupons", tuple(self.assumed_coupons))
@@ -138,6 +149,11 @@ class ExerciseAssumption:
     @classmethod
     def to_worst(cls, assumed_coupons: Sequence[AssumedCoupon] = ()) -> ExerciseAssumption:
         return cls("to_worst", None, tuple(assumed_coupons))
+
+    @classmethod
+    def never_called(cls, assumed_coupons: Sequence[AssumedCoupon] = ()) -> ExerciseAssumption:
+        """No call is exercised: maturity for a dated bond, coupons forever for a perpetual."""
+        return cls("never_called", None, tuple(assumed_coupons))
 
     @property
     def identifier(self) -> str:
@@ -166,11 +182,14 @@ class ScenarioYield:
     """Effective annual yield and durations to one redemption date.
 
     ``yield_convention`` names the time basis (the instrument's; default ACT/365F).
+    The never-called scenario of a perpetual (``exercise="never"``) has no redemption:
+    ``redemption_date`` and ``price_pct`` are None, the yield and durations are those
+    of the endless coupon stream.
     """
 
     exercise: Exercise
-    redemption_date: date
-    price_pct: float
+    redemption_date: date | None
+    price_pct: float | None
     effective_yield: float
     macaulay_duration_years: float
     modified_duration_years: float
@@ -179,7 +198,11 @@ class ScenarioYield:
 
 @dataclass(frozen=True)
 class CallAnalysis:
-    """Yields to every call after settlement and to maturity, and the worst of them."""
+    """Yields to every call after settlement and to maturity, and the worst of them.
+
+    For a perpetual the scenarios end with the never-called one (``exercise="never"``)
+    and ``yield_to_maturity`` is None.
+    """
 
     instrument_id: str
     settlement_date: date
@@ -199,7 +222,7 @@ class PriceToWorst:
     accrued_interest_rub: float
     clean_price_pct: float
     exercise: Exercise
-    redemption_date: date
+    redemption_date: date | None
 
 
 @dataclass(frozen=True)
@@ -227,17 +250,22 @@ class ExtensionRisk:
 
 @dataclass(frozen=True)
 class ResolvedExercise:
-    """An assumption resolved for one bond at one settlement (and price, for to_worst)."""
+    """An assumption resolved for one bond at one settlement (and price, for to_worst).
+
+    A never-called perpetual (``exercise="never"``) has no redemption date or price.
+    """
 
     assumption: ExerciseAssumption
     settlement_date: date
     exercise: Exercise
-    redemption_date: date
-    price_pct: float
+    redemption_date: date | None
+    price_pct: float | None
     offer: Offer | None
 
     @property
     def identifier(self) -> str:
+        if self.redemption_date is None:
+            return f"{self.assumption.identifier}@{self.exercise}"
         return f"{self.assumption.identifier}@{self.exercise}:{self.redemption_date.isoformat()}"
 
 
@@ -247,12 +275,17 @@ class ExercisedBond:
 
     ``instrument`` keeps the original ID and is valued like any fixed bond (portfolio,
     horizon, risk). ``source_sha256`` identifies the callable terms it came from.
+
+    A never-called perpetual stays a perpetual without calls: ``instrument`` holds its
+    listed coupons and ``perpetual_tail`` the coupons after them, forever. Only
+    ``value_portfolio`` values it (its risk engine prices the tail).
     """
 
     instrument: Instrument
     resolved: ResolvedExercise
     source_sha256: str
     model_version: str = CALL_MODEL_VERSION
+    perpetual_tail: PerpetualTail | None = field(default=None, metadata=OMIT_IF_DEFAULT)
 
 
 def option_adjusted_spread(*_: object, **__: object) -> NoReturn:
@@ -343,6 +376,62 @@ def _scenario(
     )
 
 
+def _never_tail(bond: Instrument, settlement: date) -> PerpetualTail:
+    """The coupons a never-called perpetual pays after its listed ones.
+
+    The listed coupons (with any assumed ones) must run without a gap from settlement
+    and all be known: an unknown coupon (amount 0) is not continued.
+    """
+    leg = bond.coupon_leg
+    if leg is None:
+        raise InvalidTerms("a perpetual without coupons has no value if never called")
+    assert not isinstance(leg, (FloatingCouponLeg, IndexedCouponLeg))  # _extended rejects
+    periods: Sequence[CouponPeriod | RateCouponPeriod] = leg.periods
+    future = [p for p in periods if p.payment_date > settlement]
+    if not future:
+        raise InvalidTerms(
+            f"no coupon of the perpetual is listed after {settlement}; "
+            "pass the coupons (assumed_coupons) or value it to its put"
+        )
+    for left, right in pairwise(future):
+        if right.accrual_start != left.accrual_end:
+            raise InvalidTerms(
+                f"coupon periods have a gap from {left.accrual_end} to {right.accrual_start}"
+            )
+    for period in future:
+        if not period.amount > 0.0:
+            raise InvalidTerms(
+                f"the coupon paid {period.payment_date} is not known; a never-called "
+                "perpetual needs its listed coupons (value it to its put instead)"
+            )
+    return perpetual_tail(periods)
+
+
+def _never_yield(
+    bond: Instrument, settlement: date, dirty: float, convention: YieldConvention
+) -> ScenarioYield:
+    """Yield and durations of a perpetual's endless coupon stream at one dirty price."""
+    tail = _never_tail(bond, settlement)
+    flows = bond.cashflows(after=settlement)
+    solved = perpetual_yield(
+        settlement, dirty, tuple((f.payment_date, f.amount) for f in flows), tail, convention
+    )
+    return ScenarioYield(
+        "never",
+        None,
+        None,
+        solved.effective_yield,
+        solved.macaulay_duration_years,
+        solved.modified_duration_years,
+        convention.identifier,
+    )
+
+
+def _worst_key(scenario: ScenarioYield) -> tuple[float, date]:
+    """Lowest yield first; ties go to the earliest date, the never-called scenario last."""
+    return (scenario.effective_yield, scenario.redemption_date or date.max)
+
+
 def redemption_scenarios(
     instrument: Instrument,
     settlement: date,
@@ -417,14 +506,35 @@ def call_analysis(
 ) -> CallAnalysis:
     """Yield to each call, to maturity and to worst at one dirty price (RUB per bond).
 
-    The worst is the lowest effective yield; ties go to the earliest date.
+    The worst is the lowest effective yield; ties go to the earliest date. A
+    perpetual's scenarios are its calls and never being called, the last one.
     """
     dirty = positive_money(dirty_price_rub, "dirty price")
-    scenarios = redemption_scenarios(instrument, settlement, assumed_coupons=assumed_coupons)
-    yields = tuple(_yield(s, settlement, dirty, instrument.yield_convention) for s in scenarios)
-    worst = min(yields, key=lambda y: (y.effective_yield, y.redemption_date))
+    convention = instrument.yield_convention
+    scenarios = (
+        _perpetual_calls(instrument, settlement, assumed_coupons)
+        if instrument.is_perpetual
+        else redemption_scenarios(instrument, settlement, assumed_coupons=assumed_coupons)
+    )
+    yields = tuple(_yield(s, settlement, dirty, convention) for s in scenarios)
+    if instrument.is_perpetual:
+        bond = _extended(instrument, tuple(assumed_coupons))
+        yields = (*yields, _never_yield(bond, settlement, dirty, convention))
+    worst = min(yields, key=_worst_key)
     maturity = next((y for y in yields if y.exercise == "maturity"), None)
     return CallAnalysis(instrument.instrument_id, settlement, dirty, yields, maturity, worst)
+
+
+def _perpetual_calls(
+    instrument: Instrument, settlement: date, assumed_coupons: Sequence[AssumedCoupon]
+) -> tuple[RedemptionScenario, ...]:
+    """A perpetual's calls after settlement (possibly none)."""
+    bond = _extended(instrument, tuple(assumed_coupons))
+    return tuple(
+        _scenario(bond, settlement, call.offer_date, call)
+        for call in call_schedule(bond)
+        if call.offer_date > settlement
+    )
 
 
 def _pick(
@@ -474,7 +584,9 @@ def yield_to_maturity(
     """Effective annual yield and durations if no call is exercised."""
     maturity = instrument.maturity_date
     if maturity is None:
-        raise UnsupportedProduct("a perpetual bond has no maturity; name a call date")
+        raise UnsupportedProduct(
+            "a perpetual bond has no maturity; name a call date or assume never_called"
+        )
     bond = _extended(instrument, tuple(assumed_coupons))
     scenario = _scenario(bond, settlement, maturity, None)
     dirty = positive_money(dirty_price_rub, "dirty price")
@@ -488,18 +600,34 @@ def yield_to_worst(
     *,
     assumed_coupons: Sequence[AssumedCoupon] = (),
 ) -> ScenarioYield:
-    """The lowest yield over every call and maturity (see :func:`call_analysis`)."""
-    if instrument.is_perpetual:
-        raise UnsupportedProduct(_PERPETUAL_WORST)
+    """The lowest yield over every call and maturity (see :func:`call_analysis`).
+
+    For a perpetual, over its calls and never being called.
+    """
     return call_analysis(
         instrument, settlement, dirty_price_rub, assumed_coupons=assumed_coupons
     ).worst
 
 
-_PERPETUAL_WORST = (
-    "the worst case of a perpetual is never being called, which has no yield to a date; "
-    "name the call date (to_call)"
-)
+def yield_never_called(
+    instrument: Instrument,
+    settlement: date,
+    dirty_price_rub: float,
+    *,
+    assumed_coupons: Sequence[AssumedCoupon] = (),
+) -> ScenarioYield:
+    """Effective annual yield and durations if no call is ever exercised.
+
+    A dated bond: its yield to maturity. A perpetual: the yield of its endless coupon
+    stream (``exercise="never"``), the listed coupons and then the last one forever.
+    """
+    if not instrument.is_perpetual:
+        return yield_to_maturity(
+            instrument, settlement, dirty_price_rub, assumed_coupons=assumed_coupons
+        )
+    bond = _extended(instrument, tuple(assumed_coupons))
+    dirty = positive_money(dirty_price_rub, "dirty price")
+    return _never_yield(bond, settlement, dirty, instrument.yield_convention)
 
 
 def price_to_worst(
@@ -512,17 +640,30 @@ def price_to_worst(
     """The lowest dirty price over every call and maturity at one effective yield.
 
     At the yield to worst of a price it returns that price (price and yield are
-    inverse on the worst scenario, and every other scenario prices higher).
+    inverse on the worst scenario, and every other scenario prices higher). A
+    perpetual's scenarios are its calls and never being called.
     """
-    if instrument.is_perpetual:
-        raise UnsupportedProduct(_PERPETUAL_WORST)
     y = finite_money(effective_yield, "effective yield")
-    scenarios = redemption_scenarios(instrument, settlement, assumed_coupons=assumed_coupons)
-    priced = [
-        (_pv_at_yield(s.cashflows, settlement, y, instrument.yield_convention), s)
+    convention = instrument.yield_convention
+    perpetual = instrument.is_perpetual
+    scenarios = (
+        _perpetual_calls(instrument, settlement, assumed_coupons)
+        if perpetual
+        else redemption_scenarios(instrument, settlement, assumed_coupons=assumed_coupons)
+    )
+    priced: list[tuple[float, Exercise, date | None]] = [
+        (_pv_at_yield(s.cashflows, settlement, y, convention), s.exercise, s.redemption_date)
         for s in scenarios
     ]
-    dirty, worst = min(priced, key=lambda item: (item[0], item[1].redemption_date))
+    if perpetual:
+        bond = _extended(instrument, tuple(assumed_coupons))
+        tail = _never_tail(bond, settlement)
+        listed = _pv_at_yield(bond.cashflows(after=settlement), settlement, y, convention)
+        never = listed + tail_pv_at_yield(tail, settlement, y, convention)
+        if not math.isfinite(never):
+            raise InvalidTerms("the coupon stream does not converge at this yield")
+        priced.append((never, "never", None))
+    dirty, exercise, redemption = min(priced, key=lambda item: (item[0], item[2] or date.max))
     accrued = instrument.accrued(settlement)
     nominal = instrument.outstanding_face(settlement)
     return PriceToWorst(
@@ -530,8 +671,8 @@ def price_to_worst(
         dirty,
         accrued,
         (dirty - accrued) / nominal * 100.0,
-        worst.exercise,
-        worst.redemption_date,
+        exercise,
+        redemption,
     )
 
 
@@ -551,13 +692,15 @@ def extension_risk(
         instrument, settlement, dirty_price_rub, assumed_coupons=assumed_coupons
     )
     bond = _extended(instrument, tuple(assumed_coupons))
-    maturity = _scenario(bond, settlement, to_maturity.redemption_date, None)
+    maturity_date = to_maturity.redemption_date
+    assert maturity_date is not None  # yield_to_maturity rejects perpetuals
+    maturity = _scenario(bond, settlement, maturity_date, None)
     extended = _pv_at_yield(
         maturity.cashflows, settlement, to_call.effective_yield, instrument.yield_convention
     )
     return ExtensionRisk(
         call_date,
-        to_maturity.redemption_date,
+        maturity_date,
         to_call.effective_yield,
         to_maturity.effective_yield,
         to_call.macaulay_duration_years,
@@ -578,16 +721,22 @@ def resolve_exercise(
 ) -> ResolvedExercise:
     """The redemption date and price an assumption implies for this bond.
 
-    ``to_worst`` needs the dirty price. A perpetual needs ``to_call``: it has no
-    maturity, and its worst case (never called) has no redemption date.
+    ``to_worst`` needs the dirty price. A perpetual takes ``to_call``,
+    ``never_called`` (no redemption: ``exercise="never"``) or ``to_worst`` over both;
+    it has no maturity. ``never_called`` on a dated bond is its maturity.
     """
     if not isinstance(assumption, ExerciseAssumption):
         raise TypeError("assumption must be an ExerciseAssumption")
     assumed = assumption.assumed_coupons
-    if assumption.kind == "to_maturity":
+    if assumption.kind == "never_called" and instrument.is_perpetual:
+        _never_tail(_extended(instrument, assumed), settlement)
+        return ResolvedExercise(assumption, settlement, "never", None, None, None)
+    if assumption.kind in ("to_maturity", "never_called"):
         maturity = instrument.maturity_date
         if maturity is None:
-            raise UnsupportedProduct("a perpetual bond has no maturity; name a call date")
+            raise UnsupportedProduct(
+                "a perpetual bond has no maturity; name a call date or assume never_called"
+            )
         scenario = _scenario(_extended(instrument, assumed), settlement, maturity, None)
     elif assumption.kind == "to_call":
         assert assumption.call_date is not None
@@ -597,13 +746,13 @@ def resolve_exercise(
             )
         scenario = _pick(instrument, settlement, assumption.call_date, assumed)
     else:
-        if instrument.is_perpetual:
-            raise UnsupportedProduct(_PERPETUAL_WORST)
         if dirty_price_rub is None:
             raise InvalidTerms("a to_worst assumption needs the dirty price")
         worst = call_analysis(
             instrument, settlement, dirty_price_rub, assumed_coupons=assumed
         ).worst
+        if worst.redemption_date is None:
+            return ResolvedExercise(assumption, settlement, "never", None, None, None)
         scenario = _pick(instrument, settlement, worst.redemption_date, assumed)
     return ResolvedExercise(
         assumption,
@@ -626,12 +775,18 @@ def exercised_instrument(instrument: Instrument, resolved: ResolvedExercise) -> 
     """
     bond = _extended(instrument, resolved.assumption.assumed_coupons)
     redemption = resolved.redemption_date
+    if redemption is None:
+        # Never called: the perpetual keeps its coupons and puts, and the tail goes on.
+        tail = _never_tail(bond, resolved.settlement_date)
+        uncalled = replace(bond, offers=tuple(o for o in bond.offers if o.kind is OfferKind.PUT))
+        return ExercisedBond(uncalled, resolved, canonical_sha256(instrument), perpetual_tail=tail)
     _check_coupons(bond, resolved.settlement_date, redemption)
     if resolved.exercise == "maturity":
         # Only the calls go: the legs stay exactly as given, so a bond without calls
         # (or assumed coupons) is returned equal to the input, with the same hash.
         uncalled = replace(bond, offers=tuple(o for o in bond.offers if o.kind is OfferKind.PUT))
         return ExercisedBond(uncalled, resolved, canonical_sha256(instrument))
+    assert resolved.price_pct is not None
     if not math.isclose(resolved.price_pct, 100.0, rel_tol=0.0, abs_tol=1e-12):
         raise UnsupportedProduct(
             f"a call at {resolved.price_pct}% of face cannot be valued as an exercised "

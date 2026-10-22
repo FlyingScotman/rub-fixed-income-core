@@ -44,6 +44,7 @@ from .discount import (
 )
 from .errors import InvalidTerms
 from .floating import FloatingCouponProjection, FloatingLeg
+from .perpetual import PerpetualTail
 
 # Bucket weights, the shocked-curve cache and curve helpers live in ._risk_common since
 # 0.12.0 (shared with fx_futures); the public names stay importable from here.
@@ -101,6 +102,11 @@ class BondRiskRequest:
     curve, for example RUONIA OIS or a key-rate projection curve, while ``curve``
     discounts and the spread stays a margin over ``curve``. Both curves are dated
     alike and each is shocked in its own basis with its own 11 buckets.
+
+    ``perpetual_tail`` (BACKLOG #125) adds a never-called perpetual's coupons after its
+    last listed one, valued exactly on every shocked curve and spread
+    (``perpetual.tail_pv_at_spread``); ``cashflows`` are then the listed coupons. Fixed
+    coupons only.
     """
 
     cashflows: tuple[BondCashflow, ...]
@@ -116,6 +122,7 @@ class BondRiskRequest:
     projection_curve: DiscountCurve | CurveBootstrapRequest | None = field(
         default=None, metadata=OMIT_IF_DEFAULT
     )
+    perpetual_tail: PerpetualTail | None = field(default=None, metadata=OMIT_IF_DEFAULT)
 
     def __post_init__(self) -> None:
         if self.currency != "RUB":
@@ -146,7 +153,14 @@ class BondRiskRequest:
             BondCashflow(flow.payment_date, non_negative_money(flow.amount, "bond cashflow"))
             for flow in self.cashflows
         )
-        if not any(f.payment_date > self.settlement_date and f.amount > 0.0 for f in flows):
+        if self.perpetual_tail is not None:
+            if not isinstance(self.perpetual_tail, PerpetualTail):
+                raise TypeError("perpetual_tail must be a PerpetualTail")
+            if self.floating_leg is not None:
+                raise ValueError("a perpetual tail continues fixed coupons only")
+            if any(f.payment_date > self.perpetual_tail.anchor_date for f in flows):
+                raise ValueError("listed cashflows must not follow the perpetual tail's anchor")
+        elif not any(f.payment_date > self.settlement_date and f.amount > 0.0 for f in flows):
             raise ValueError("at least one positive future bond cashflow is required")
         object.__setattr__(self, "cashflows", tuple(sorted(flows, key=lambda f: f.payment_date)))
         if self.projection_curve is not None:
@@ -326,6 +340,7 @@ class BondRiskEngine:
                     curve,
                     settlement_date=req.settlement_date,
                     convention=req.spread_convention,
+                    perpetual_tail=req.perpetual_tail,
                 )
                 * 10_000.0
             )
@@ -357,6 +372,8 @@ class BondRiskEngine:
         if req.projection_curve is not None:
             identity["projection_curve_basis"] = self.projection_curve_basis
             identity["projection_curve"] = _curve_identity(req.projection_curve)
+        if req.perpetual_tail is not None:
+            identity["perpetual_tail"] = req.perpetual_tail
         object.__setattr__(self, "base_id", canonical_sha256(identity))
 
     @property
@@ -407,6 +424,7 @@ class BondRiskEngine:
                     spread=finite_money(self.spread_bp + spread, "shocked spread") * 1e-4,
                     settlement_date=self.request.settlement_date,
                     convention=self.request.spread_convention,
+                    perpetual_tail=self.request.perpetual_tail,
                 )
 
             units = []
@@ -573,6 +591,7 @@ class BondRiskEngine:
                     spread=finite_money(self.spread_bp + spread_shift, "shocked spread") * 1e-4,
                     settlement_date=self.request.settlement_date,
                     convention=self.request.spread_convention,
+                    perpetual_tail=self.request.perpetual_tail,
                 ),
                 "bond price",
             )
