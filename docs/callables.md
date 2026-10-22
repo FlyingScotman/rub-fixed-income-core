@@ -24,7 +24,8 @@ make-whole calls and notice periods are not modelled.
 |---|---|---|
 | `to_maturity()` | maturity, no call exercised | MOEX's treatment of call bonds without a set call date, and core's behaviour before (the default) |
 | `to_call(date)` | the listed call on `date` | MOEX's treatment when the call date is set (`CALLOPTIONYIELD`) |
-| `to_worst()` | the call or maturity with the lowest yield at the quoted price | resolved once, at the price, then held fixed |
+| `to_worst()` | the call or maturity with the lowest yield at the quoted price | resolved once, at the price, then held fixed; a perpetual's candidates are its calls and never being called |
+| `never_called()` | no call, ever: a dated bond's maturity, a perpetual's endless coupons | the desk default for Russian perpetuals and callables (BACKLOG #122); see [Perpetuals](#perpetuals) |
 
 `assumed_coupons` (on any of the three) are coupon periods the caller assumes after the
 instrument's known periods, for example the coupon after a reset. They must be of the
@@ -55,7 +56,9 @@ Macaulay and modified at that yield.
 - `call_analysis(instrument, settlement, dirty)`: yields and durations to every call
   and to maturity (`ScenarioYield`), the yield to maturity and the worst (lowest yield;
   ties go to the earliest date).
-- `yield_to_call`, `yield_to_maturity`, `yield_to_worst`.
+- `yield_to_call`, `yield_to_maturity`, `yield_to_worst`, `yield_never_called` (a dated
+  bond's yield to maturity; a perpetual's endless-stream yield, `exercise="never"`,
+  without a redemption date or price).
 - `price_to_worst(instrument, settlement, y)`: the lowest dirty price over the
   scenarios at yield `y`, with accrued and clean %. At `y = YTW(P)` it returns `P`.
 - `extension_risk(instrument, settlement, dirty, call_date)`: durations to the call and
@@ -69,8 +72,12 @@ Macaulay and modified at that yield.
 redemption date, kind and price. `exercised_instrument(instrument, resolved)` builds the
 deterministic bond it implies, with the same instrument ID:
 
-- `to_maturity`: only the calls are removed. A bond without calls (and without assumed
-  coupons) comes back equal to the input, with the same hash;
+- `to_maturity` (and `never_called` on a dated bond): only the calls are removed. A bond
+  without calls (and without assumed coupons) comes back equal to the input, with the
+  same hash;
+- `never_called` on a perpetual: the calls are removed, the bond stays a perpetual with
+  its listed coupons and puts, and `ExercisedBond.perpetual_tail` holds the coupons
+  after them (below);
 - a call: coupons up to the date, earlier amortizations, and the face outstanding
   redeemed on the date. Puts before it stay; calls go.
 
@@ -81,14 +88,54 @@ bonds examined for the goldens all call at 100 %.
 
 ## Perpetuals
 
-An `Instrument` with an empty principal leg. It needs `to_call(date)`: it has no
-maturity (`to_maturity` raises `UnsupportedProduct`), and its worst case is never being
-called, which has no yield to a date (`to_worst` and `price_to_worst` raise). Coupons
-past the known periods (resets) must be passed as `assumed_coupons`; otherwise the call
-is rejected.
+An `Instrument` with an empty principal leg. It takes `to_call(date)`, `never_called()`
+or `to_worst()` over both; it has no maturity (`to_maturity` raises
+`UnsupportedProduct`). Coupons past the known periods (resets) for a call must be passed
+as `assumed_coupons`; otherwise the call is rejected.
+
+### Never called: the endless coupon stream (BACKLOG #122)
+
+Russian perpetuals (bank AT1 and others) are rarely called, so the desk values them by
+default as never called: the listed coupons, then the **last listed coupon again, at
+the same step, forever** (`perpetual.PerpetualTail(anchor_date, amount, period_days |
+period_months)`, built by `perpetual_tail(periods)`):
+
+- the step is the last period in days when the last two periods are equally long in days
+  (91 / 182-day schedules), else whole months when the last two payments fall on the
+  same day of the month;
+- the listed coupons must run without a gap from settlement and all be known: an
+  unknown coupon (amount 0, as MOEX lists a coupon not set yet) is not continued; such a
+  bond usually has a put and is valued to it (`ValuationPolicy.horizon`). A perpetual
+  whose coupon follows a formula (a floater, a reset on the KBD) needs its projection
+  and is not continued (BACKLOG #124).
+
+**Exact tail.** The tail is valued exactly, not truncated (a stream cut at 30 years
+loses about a point of price and 12–36 bp of Z-spread at RUB rates; 50–60 years are
+needed for 1 bp). Each tail coupon is discounted as any flow (the settlement-forward
+zero rate in the spread convention plus the Z-spread). Discount factors are read from
+the curve up to 30 years from the curve date (`TAIL_CURVE_YEARS`); beyond, where every
+curve core builds is flat-forward (KBD nodes to 30 years, RUONIA OIS to 10) and every
+bucket shock is flat (20Y+), they follow the curve's own flat-forward rate, read over
+ten years past the 30-year point and checked at the midpoint (a curve that is not
+flat-forward there is read date by date). The sum runs to 600 years past the anchor
+(`TAIL_SUM_YEARS`) plus the geometric remainder of its last two terms. A stream whose
+total rate is at or below zero is worth infinity; the solvers start above it.
+
+`perpetual_yield(settlement, dirty, cashflows, tail, convention)` solves the effective
+annual yield of the stream, `P = sum CF (1 + y)^-t + sum_tail a (1 + y)^-t`, with its
+Macaulay and modified duration. On a coupon date with an even step it is
+`((P + a) / P)^(1 / dt) - 1`, the current yield compounded over the period. Below par
+it is the worst case (`to_worst` resolves to `"never"`); above par the first call is.
+
+**Risk.** The tail is part of the base price and of every bump: bucket DV01 (the tail
+past 20 years is all `20Y+`; at RUB rates 20–40 % of the DV01, the rest on 3Y–15Y),
+CS01, the Hessian and scenarios reprice it exactly
+(`BondRiskRequest.perpetual_tail`). At 85 % of face a 12 % coupon's Macaulay duration is
+about 7.6 years against 3.8 for a call in five years.
 
 MOEX publishes a perpetual's yield as the **current yield**, coupon rate over clean price
-(`perpetual_current_yield`), with no duration. It is not a yield to call.
+(`perpetual_current_yield`), with no duration. It is not a yield to call; it is the
+never-called yield before compounding.
 
 ## Pass-through MBS/ABS (deterministic constant CPR)
 
@@ -123,9 +170,17 @@ Rate risk of a pass-through holds the CPR fixed. CPR risk is reported only by
 
 ## Portfolio and horizon
 
-`value_portfolio` is unchanged: it still rejects callable and perpetual bonds
-(`UNSUPPORTED_PRODUCT`, "callable bonds are not supported (package 9)") and its result
-contract v2 has no field for an assumption. `value_assumed_portfolio` wraps it:
+`value_portfolio` values callable and perpetual bonds under
+`ValuationPolicy.exercise_assumptions` (BACKLOG #50, since 0.29.0) and rejects them
+without one (`UNSUPPORTED_PRODUCT`). A never-called perpetual reads `horizon="perpetual"`,
+`horizon_date` its last listed coupon (the tail's anchor), `exercise_assumption`
+`exercise:never_called@never`, the model flag `perpetual_tail`; its effective yield and
+Macaulay duration are the stream's. When the policy's `horizon` (`confirmed_put`,
+`open_put`) picks a put, the perpetual is valued to the put instead. Its horizon P&L
+(`horizon_portfolio`) is not modelled yet (`UNSUPPORTED_PRODUCT`, BACKLOG #123).
+
+`value_assumed_portfolio` wraps `value_portfolio` without assumptions in the policy (and
+rejects a never-called perpetual: only the native path prices its tail):
 
 1. `prepare_assumed_book` applies an `AssumptionPolicy` (`default_exercise` for callables
    without an override; per-instrument `InstrumentAssumption` with an exercise or a

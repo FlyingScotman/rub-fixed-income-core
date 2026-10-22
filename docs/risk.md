@@ -189,7 +189,9 @@ assumption (`docs/callables.md`): `to_worst` resolves the date at the base price
 date is then held through every bump, scenario and the Hessian (no switching, no option
 value; OAS is rejected). A pass-through's rate risk holds its CPR fixed; CPR risk is the
 separate `cpr_sensitivity` (central difference per 1 pp of CPR, forward at CPR below the
-bump) and is not a desk factor. Extension risk is reported by `extension_risk`
+bump) and is not a desk factor. A never-called perpetual's risk includes its endless
+coupons (`BondRiskRequest.perpetual_tail`), repriced exactly under every bump: the part
+past 20 years is all in `20Y+`. Extension risk is reported by `extension_risk`
 (duration to maturity minus duration to the call, and the value change if the call is
 skipped at the yield to call).
 

@@ -37,7 +37,7 @@ from .callables import (
 from .canonical import canonical_sha256
 from .cashflows import clean_price_pct_to_dirty_rub
 from .domain import Instrument, MarketSnapshot, Position, ProductType
-from .errors import CoreRejection, InvalidTerms, MissingAssumption
+from .errors import CoreRejection, InvalidTerms, MissingAssumption, UnsupportedProduct
 from .pass_through import (
     PassThroughTerms,
     PrepaymentAssumption,
@@ -133,7 +133,7 @@ class AssumptionUse:
     code: str | None
     message: str | None
     settlement_date: date | None
-    exercise: Literal["call", "maturity"] | None
+    exercise: Literal["call", "maturity", "never"] | None
     redemption_date: date | None
     wal_years: float | None
     source_sha256: str
@@ -234,6 +234,11 @@ def _exercise(
     dirty = _dirty(snapshot, instrument, settlement) if assumption.kind == "to_worst" else None
     resolved = resolve_exercise(instrument, settlement, assumption, dirty_price_rub=dirty)
     bond = exercised_instrument(instrument, resolved)
+    if bond.perpetual_tail is not None:
+        raise UnsupportedProduct(
+            "a never-called perpetual is valued by value_portfolio under "
+            "ValuationPolicy.exercise_assumptions, which prices its endless coupons"
+        )
     use = AssumptionUse(
         instrument.instrument_id,
         "perpetual" if instrument.is_perpetual else "callable",
