@@ -1,5 +1,7 @@
 # Backlog — remaining fixes and updates
 
+> **Frozen as a work list on 2026-10-23.** Open items are tracked in [GitHub Issues](https://github.com/FlyingScotman/rub-fixed-income-core/issues) (epics labelled `epic`; program root [FlyingScotman/trading-desk-monitor#5](https://github.com/FlyingScotman/trading-desk-monitor/issues/5)); rules in [AGENTS.md](../AGENTS.md). Item numbers stay stable and are cited as `B#N`; do not add new items here.
+
 Prioritised (P0 = production correctness risk, P1 = important, P2 = hygiene). Sources: the
 2026-10-14 shared-core audit and the 0.3.0 release work. Items marked *(downstream)* live in
 other repositories and must be changed there, not in this core.
