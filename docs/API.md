@@ -499,6 +499,18 @@ field is omitted at its default.
 | `FloatingCouponPeriod(..., margin=None)` | The period's margin, replacing the rule's. |
 | `basis_view(risk, base_curve_id, curve_id, basis_id)` | The same `FactorRisk` on the base curve and the basis `curve − base` (first order and Hessian). |
 
+## OFZ curve risk in par quotes (0.37.0)
+
+Why: [proposals/ofz-curve-risk-factors.md](proposals/ofz-curve-risk-factors.md) (in
+Russian). Every new field is omitted at its default.
+
+| Name | Description |
+| --- | --- |
+| `CurveConvention(..., zero_shock="annual_par")`; spec `rub_ofz_kbd_v3`; `kbd_discount_curve(..., zero_shock="annual_par")` | Bucket shocks of the par yields of annual-coupon instruments 1Y–20Y+ on the curve (`curve_basis = "annual_par"`; 1M–6M merged into 1Y). Also `local_risk` / `local_worker` accept `annual_par`. |
+| `BondRiskEngine.second_order(*, bump_bp=1.0, method="bump" \| "analytic")`, `ANALYTIC_SECOND_ORDER_MODEL_VERSION` | `analytic`: the exact gradient and Hessian of a fixed-cashflow bond on a `DiscountCurve` (else `InvalidTerms` with the reason); on `annual_par` through the par Jacobian with the instruments' curvature. Same factors as `bump`. |
+| `ValuationPolicy(..., second_order_method="bump" \| "analytic")` | `value_portfolio` takes the closed form for every bond that has one; others are bumped. |
+| `benchmark_equivalents(benchmarks, positions) -> BenchmarkHedge`; `BenchmarkHedge(curve_date, equivalents, total_risk_rub_per_bp, condition_number, warnings)`, `BenchmarkEquivalent(instrument_id, maturity, maturity_years, yield_dv01_rub, risk_rub_per_bp, hedge_quantity)`, `BENCHMARK_EQUIVALENTS_MODEL_VERSION` | The hedge view: risk per benchmark bond's own yield and the offsetting quantities. `benchmarks` are `(instrument_id, BondRiskEngine)` (for example `prepare_local_bond_risk(...).engine`), positions fixed-cashflow bond engines on the same curve. A warning when `cond(J) > 50`. |
+
 ## Desk-monitor additions (0.33.0)
 
 Why each exists and what the desk should call: [the review](reviews/CORE_REVIEW_FOR_DESK_MONITOR.md),

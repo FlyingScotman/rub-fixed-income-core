@@ -16,7 +16,10 @@ curve as a :class:`DiscountCurve` on a dense node grid, so every pricing and ris
 (Z-spread, bucket risk, Hessian, scenarios) works on it unchanged. With
 ``zero_shock="annual"`` (0.34.0; the ``rub_ofz_kbd_v2`` spec) bucket risk moves the
 effective annual yields MOEX publishes (``curve_basis = "annual_zero"``), so KBD DV01
-sums with par RUONIA OIS DV01; the default keeps continuous zero rates.
+sums with par RUONIA OIS DV01; the default keeps continuous zero rates. With
+``zero_shock="annual_par"`` (0.37.0; ``rub_ofz_kbd_v3``) a bucket moves the annual par
+yield of the KBD at its tenor, the factor and unit of a par OIS quote (1M-6M merged into
+1Y; ``docs/proposals/ofz-curve-risk-factors.md``).
 """
 
 from __future__ import annotations
@@ -150,14 +153,15 @@ def kbd_discount_curve(
     curve_date: date | None = None,
     *,
     horizon_years: int = 30,
-    zero_shock: Literal["continuous", "annual"] = "continuous",
+    zero_shock: Literal["continuous", "annual", "annual_par"] = "continuous",
 ) -> DiscountCurve:
     """Materialise the KBD curve as a log-linear-DF :class:`DiscountCurve`.
 
     ``DF(t) = exp(-G(t)/10^4 * t)`` at ACT/365F times on the node grid; beyond the last
     node the curve extrapolates flat-forward. ``curve_date`` defaults to the trade date.
     ``zero_shock`` is the unit of its bucket risk (``CurveConvention.zero_shock``):
-    continuous zero rates by default, ``"annual"`` the effective annual KBD yield.
+    continuous zero rates by default, ``"annual"`` the effective annual KBD yield,
+    ``"annual_par"`` (0.37.0) the par yields of annual-coupon instruments 1Y-20Y on the KBD.
     """
     start = params.trade_date if curve_date is None else curve_date
     if horizon_years < 1:

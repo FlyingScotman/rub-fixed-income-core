@@ -26,7 +26,7 @@ from .risk import (
     ShockedCurveCache,
 )
 
-CurveRiskBasis = Literal["continuous_zero", "annual_zero", "ois_quote"]
+CurveRiskBasis = Literal["continuous_zero", "annual_zero", "annual_par", "ois_quote"]
 
 
 @dataclass(frozen=True)
@@ -49,8 +49,10 @@ class RiskRunContext:
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{name} must be a nonempty string")
-        if self.curve_basis not in ("continuous_zero", "annual_zero", "ois_quote"):
-            raise ValueError("curve_basis must be continuous_zero, annual_zero or ois_quote")
+        if self.curve_basis not in ("continuous_zero", "annual_zero", "annual_par", "ois_quote"):
+            raise ValueError(
+                "curve_basis must be continuous_zero, annual_zero, annual_par or ois_quote"
+            )
 
 
 @dataclass(frozen=True)

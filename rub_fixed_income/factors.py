@@ -267,7 +267,8 @@ def basis_view(risk: FactorRisk, base_curve_id: str, curve_id: str, basis_id: st
     """The same risk on ``(base, basis = curve - base)`` instead of ``(base, curve)``.
 
     With both curves bucketed alike and shocked in the same unit (for the KBD against
-    RUONIA OIS: ``rub_ofz_kbd_v2`` annual yields and par OIS quotes), moving the base
+    RUONIA OIS: ``rub_ofz_kbd_v3`` par quotes and par OIS quotes, the par-par basis;
+    ``rub_ofz_kbd_v2`` annual yields agree with par to 0.5-2 %), moving the base
     with the basis held moves both curves, and moving the basis moves ``curve`` alone:
 
         ``IR|<base>|b  <- IR|<base>|b + IR|<curve>|b``,  ``IR|<basis>|b <- IR|<curve>|b``

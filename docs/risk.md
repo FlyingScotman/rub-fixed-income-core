@@ -45,6 +45,7 @@ The input type selects the basis, which is recorded in every result:
 | --- | --- | --- |
 | `DiscountCurve` | `continuous_zero` | Overlay a piecewise-linear shift on continuous zero rates: `DF'(t) = DF(t) exp(-s(t) t / 10000)` |
 | `DiscountCurve` with `convention.zero_shock="annual"` (0.34.0) | `annual_zero` | Shift the effective annual zero yield: `DF'(t) = (DF(t)^(-1/t) + s(t) / 10000)^(-t)` |
+| `DiscountCurve` with `convention.zero_shock="annual_par"` (0.37.0) | `annual_par` | Move the par yield of one annual-coupon instrument per bucket from 1Y to 20Y+ by the bucket's shift and solve the annual-zero overlay (hats on 1Y–20Y, flat below 1Y) that reprices all eight; 1M–6M have no instrument and no risk |
 | `CurveBootstrapRequest` | `ois_quote` | Interpolate the shift to each original OIS quote's maturity, add it to the decimal par rate, then bootstrap again using the same conventions |
 
 The zero overlay evaluates the original curve at each required date, preserving
@@ -78,6 +79,45 @@ annual Z-spread risk (`ofz_spr01_rub`, `cs01_rub`) and `annual_zero` risk agree 
 0.5–2 % on OFZ (docs/proposals/kbd-risk-curve.md §2.1), so a KBD risk curve
 (`rub_ofz_kbd_v2`) is bumped in annual yields to sum with RUONIA OIS risk. Hedge ratios
 do not depend on the unit as long as both sides use the same one.
+
+**Par quotes on the KBD (0.37.0, `rub_ofz_kbd_v3`).** The factor of RUONIA risk is a
+quote (an OIS par rate); `annual_par` makes the KBD's factor one too: the par yield of an
+annual-coupon instrument on the KBD (1, 2, 3, 5, 7, 10, 15, 20 years from the curve date,
+coupon dates rolled annually unadjusted, accrual ACT/365F). The curve is not refitted:
+an overlay of its effective annual zero yield, solved by Newton, reprices the eight
+instruments at their shifted yields, so the published KBD is unchanged at zero shock and
+the shock is local (a bump at tenor T leaves the overlay before T unchanged, up to the
+leap day of a maturity just past its pillar). The KBD has no OFZ shorter than about a
+year: its 1M–6M buckets are merged into 1Y (no instrument, zero risk, a shift there moves
+nothing). A par bond at a pillar has risk in its own bucket only; the bucket sum is the
+parallel risk; RUONIA (par quotes) and the KBD (par quotes) are then the same kind of
+factor in the same unit at the same tenors, so `basis_view` gives the par–par basis
+(swap spread) exactly. The solved overlay is cached per (curve, shift vector) and shared
+by every position on the curve: risk costs what `annual_zero` risk costs. Why and the
+evidence on 2024–2026 hub data: [proposals/ofz-curve-risk-factors.md](proposals/ofz-curve-risk-factors.md).
+
+**Closed-form second order (0.37.0).** `engine.second_order(method="analytic")` gives the
+exact gradient and Hessian of a fixed-cashflow bond on a `DiscountCurve` (any zero basis;
+no floating leg or perpetual tail) from one pass over its flows: the same factors as the
+bumped Hessian and equal to it up to the O(bump²) error of central differences (1e-7
+relative on the tests). On `annual_par` the zero-space derivatives are mapped to the par
+factors with the instruments' Jacobian `J = dq/dx` and their curvature,
+
+    dV/dq = J^-T dV/dx,     d2V/dq2 = J^-T (d2V/dx2 - sum_l (dV/dq)_l d2q_l/dx2) J^-1;
+
+without the second term the bucket gamma is wrong (by a multiple on a curve position,
+proposal §6). `ValuationPolicy(second_order_method="analytic")` takes it for every such
+bond in `value_portfolio` (the Hessian part about six times faster); everything else is
+bumped.
+
+**Benchmark equivalents (0.37.0, the hedge view).** `benchmark_equivalents(benchmarks,
+positions)` shows the positions' rate risk against benchmark bonds the caller chooses: an
+annual-zero overlay with nodes at the benchmarks' maturities, each benchmark's factor the
+overlay that moves its own effective annual yield by 1 bp and the others' by nothing. The
+result gives the risk per benchmark (RUB per bp of its yield), its yield DV01, the hedge
+quantity `-risk / DV01` and the condition number. A bond between two benchmarks maps to
+them; on 2025–2026 this beat hedging on the 11 fixed-tenor buckets by 25–37 % of residual
+daily P&L on 2.5–7.5 years. Fixed-cashflow bonds on one `DiscountCurve` only.
 
 ## Risk definitions
 

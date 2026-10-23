@@ -423,8 +423,11 @@ class CurveConvention:
     ``"continuous"`` (default) moves continuously compounded zero rates,
     ``DF'(t) = DF(t) exp(-s t)``; ``"annual"`` moves effective annual zero yields,
     ``DF'(t) = (DF(t)^(-1/t) + s)^(-t)``, the unit MOEX publishes the KBD in, which sums
-    with par OIS risk (``docs/risk.md``). Left out of canonical bytes and the identifier at
-    its default. OIS bootstrap requests ignore it: their quotes are shocked.
+    with par OIS risk (``docs/risk.md``); ``"annual_par"`` (0.37.0) moves the par yields of
+    annual-coupon instruments of 1Y-20Y on the curve, through an annual-zero overlay that
+    reprices them (``_par_overlay``), the unit and kind of factor of par OIS quotes. Left out
+    of canonical bytes and the identifier at its default. OIS bootstrap requests ignore it:
+    their quotes are shocked.
     """
 
     time_day_count: DayCount = DayCount.ACT_365_FIXED
@@ -433,13 +436,13 @@ class CurveConvention:
     fixed_leg_schedule: ScheduleConvention | None = None
     fixed_leg_day_count: DayCount = DayCount.ACT_365_FIXED
     ois_swap: OisSwapConvention | None = field(default=None, metadata=OMIT_IF_DEFAULT)
-    zero_shock: Literal["continuous", "annual"] = field(
+    zero_shock: Literal["continuous", "annual", "annual_par"] = field(
         default="continuous", metadata=OMIT_IF_DEFAULT
     )
 
     def __post_init__(self) -> None:
-        if self.zero_shock not in ("continuous", "annual"):
-            raise ValueError("zero_shock must be continuous or annual")
+        if self.zero_shock not in ("continuous", "annual", "annual_par"):
+            raise ValueError("zero_shock must be continuous, annual or annual_par")
         if self.interpolation != "log-linear-df":
             raise ValueError("only log-linear-df interpolation is supported")
         if self.extrapolation != "flat-forward":

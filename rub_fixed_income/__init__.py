@@ -315,6 +315,12 @@ from .fx_futures import (
     FxFuturesSecondOrderRisk,
     fx_futures_horizon,
 )
+from .hedge_equivalents import (
+    BENCHMARK_EQUIVALENTS_MODEL_VERSION,
+    BenchmarkEquivalent,
+    BenchmarkHedge,
+    benchmark_equivalents,
+)
 from .horizon import (
     FX_HORIZONS,
     HORIZON_MODEL_VERSION,
@@ -540,6 +546,7 @@ from .repo import (
     repo_start_amount,
 )
 from .risk import (
+    ANALYTIC_SECOND_ORDER_MODEL_VERSION,
     FLOATING_RISK_MODEL_VERSION,
     FLOATING_TWO_CURVE_RISK_MODEL_VERSION,
     RISK_BUCKETS,
@@ -1248,4 +1255,13 @@ __all__ += [
     "fx_cross_factor_risk",
     "fx_cross_rub_legs",
     "fx_implied_spec_id",
+]
+
+# 0.37.0: OFZ curve risk in par quotes (docs/proposals/ofz-curve-risk-factors.md).
+__all__ += [
+    "ANALYTIC_SECOND_ORDER_MODEL_VERSION",
+    "BENCHMARK_EQUIVALENTS_MODEL_VERSION",
+    "BenchmarkEquivalent",
+    "BenchmarkHedge",
+    "benchmark_equivalents",
 ]

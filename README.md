@@ -38,6 +38,7 @@ linear guardrail; they do not call the exact solver.
 - [Backlog](docs/BACKLOG.md) — remaining fixes and downstream migrations
 - [Desk-monitor review](docs/reviews/CORE_REVIEW_FOR_DESK_MONITOR.md) — what the Trading Desk Monitor interface needs from the core, MOEX validation of 2026-10-20, coverage, performance and gaps (in Russian; 0.33.0)
 - [KBD as a risk curve](docs/proposals/kbd-risk-curve.md) — OFZ basis, KBD-linked floaters (`ZR_YLD_CRV`) and hedging on the KBD buckets: options, the desk's decision (option C) and what 0.34.0 implements (in Russian)
+- [OFZ curve risk factors](docs/proposals/ofz-curve-risk-factors.md) — what to bump on the KBD so OFZ risk reads like RUONIA quote risk: units, zero/par/benchmark/refit compared on hub data, hedge backtest, Jacobian delta and gamma; the owner's decision of 2026-10-23 and what 0.37.0 implements (in Russian)
 - [Changelog](CHANGELOG.md)
 
 Conventions are explicit inputs (`rub_fixed_income.conventions`); defaults reproduce 0.2.1

@@ -207,6 +207,17 @@ OIS plus credit spread; OFZ-PK on RUONIA; KBD-linked floaters project off the KB
 `basis_view(risk, base, curve, basis)` shows the same risk on RUONIA and the
 KBD − RUONIA basis.
 
+**The KBD in par quotes (0.37.0).** Spec `rub_ofz_kbd_v3` (`zero_shock="annual_par"`,
+`curve_basis = "annual_par"`): a bucket shock moves the par yield of an annual-coupon
+instrument on the KBD at 1Y, 2Y, 3Y, 5Y, 7Y, 10Y, 15Y and 20Y+ (dates from the curve date
+rolled annually, unadjusted; ACT/365F; redeemed at par), through an annual-zero overlay that
+reprices them; 1M–6M are merged into 1Y (the KBD has no OFZ there). The factor and unit of
+par RUONIA OIS quotes, so (RUONIA, KBD) ↔ (RUONIA, KBD − RUONIA) is an exact linear change
+in one unit. Desk decision of 2026-10-23 ([proposals/ofz-curve-risk-factors.md](proposals/ofz-curve-risk-factors.md)):
+the risk ladder of `RUB OFZ` in these par buckets; the hedge view in benchmark-bond
+equivalents (`benchmark_equivalents`), benchmarks chosen by the monitor and changeable by
+the desk; the Hessian in closed form with the par instruments' curvature.
+
 ## Desk risk factors (0.11.0)
 
 `IR|<curve_id>|<bucket>` (1 bp at one of the 11 bucket pillars), `CS` (1 bp of own credit or
