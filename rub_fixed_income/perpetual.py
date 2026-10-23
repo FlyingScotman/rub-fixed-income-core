@@ -241,7 +241,7 @@ def _read(curve: DiscountFactorCurve, ordinals: np.ndarray) -> np.ndarray:
     if isinstance(curve, _ZeroShockCurve) and ordinals.size:
         times, weights, base = _shock_terms(curve.base, ordinals)
         shift = weights @ np.asarray(curve.shifts, dtype=float) * 1e-4
-        if curve.base.convention.zero_shock == "annual":
+        if curve.base.convention.zero_shock != "continuous":  # annual or annual_par overlay
             growth = base ** (-1.0 / times) + shift
             if np.any(growth <= 0.0):
                 raise ValueError("shocked annual yield must exceed -100 %")

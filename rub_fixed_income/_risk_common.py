@@ -14,6 +14,7 @@ from itertools import pairwise
 from typing import cast
 
 from ._money import finite_money, non_negative_money, positive_money
+from ._par_overlay import par_overlay_shifts
 from .canonical import _Canonical, _precanonical, canonical_sha256
 from .conventions import CurveConvention
 from .dates import BusinessCalendar
@@ -112,7 +113,7 @@ class _ZeroShockCurve:
             finite_money(math.fsum(w * shifts[i] for i, w in weights), "interpolated shift") * 1e-4
         )
         try:
-            if self.base.convention.zero_shock == "annual" and time > 0.0:
+            if self.base.convention.zero_shock != "continuous" and time > 0.0:
                 # Effective annual yield 1 + Y = DF^(-1/t), moved by the shift.
                 growth = base_df ** (-1.0 / time) + shift
                 if growth <= 0.0:
@@ -336,10 +337,21 @@ def _copy_curve(curve: RiskCurve) -> RiskCurve:
     return replace(curve, nodes=nodes)
 
 
+_CURVE_BASES = {"continuous": "continuous_zero", "annual": "annual_zero", "annual_par": "annual_par"}
+
+
 def _curve_basis(curve: RiskCurve) -> str:
     if isinstance(curve, CurveBootstrapRequest):
         return "ois_quote"
-    return "annual_zero" if curve.convention.zero_shock == "annual" else "continuous_zero"
+    return _CURVE_BASES[curve.convention.zero_shock]
+
+
+def _overlay_shifts(base: DiscountCurve, shifts: tuple[float, ...]) -> tuple[float, ...]:
+    """The zero-yield bucket shifts a bucket shock of ``base`` applies: the shock itself, or
+    for par-yield shocks (``zero_shock="annual_par"``) the solved overlay (``_par_overlay``)."""
+    if base.convention.zero_shock != "annual_par" or not any(shifts):
+        return shifts
+    return par_overlay_shifts(base, shifts)
 
 
 def _base_curve(source: RiskCurve, cache: ShockedCurveCache) -> DiscountCurve:
@@ -354,7 +366,12 @@ def _shock_curve(
     shifts: tuple[float, ...],
     cache: ShockedCurveCache,
 ) -> DiscountFactorCurve:
-    """Zero-rate overlay for a DiscountCurve, quote shift and rebootstrap for OIS."""
+    """Zero-rate overlay for a DiscountCurve, quote shift and rebootstrap for OIS.
+
+    A par-yield DiscountCurve (``zero_shock="annual_par"``) gets the annual-zero overlay that
+    reprices its par instruments at the shocked yields; the view keeps the solved zero shifts
+    and is cached under the par shifts.
+    """
     if not any(shifts):
         return base
     if isinstance(source, CurveBootstrapRequest):
@@ -371,7 +388,10 @@ def _shock_curve(
         object.__setattr__(base, "_zero_shock_views", views)
     view = cast(dict[tuple[float, ...], _ZeroShockCurve], views).get(shifts)
     if view is None:
-        view = _ZeroShockCurve(base, shifts)
+        moved = _overlay_shifts(base, shifts)
+        if not any(moved):  # par shifts of the 1M-6M buckets only: nothing moves
+            return base
+        view = _ZeroShockCurve(base, moved)
         if len(views) < _ZERO_SHOCK_VIEWS:
             views[shifts] = view
     return view

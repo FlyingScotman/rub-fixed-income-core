@@ -28,6 +28,7 @@ from datetime import date, datetime
 from itertools import pairwise
 from typing import Literal, cast
 
+from ._analytic_risk import supports_analytic
 from ._money import finite_money, positive_money
 from ._risk_common import _curve_basis, _shifts
 from ._version import __version__
@@ -118,7 +119,13 @@ from .portfolio_products import (
     horizon_adapter_for,
     jtd_totals,
 )
-from .risk import BondRiskEngine, BondRiskRequest, BondScenario, ShockedCurveCache
+from .risk import (
+    BondRiskEngine,
+    BondRiskRequest,
+    BondScenario,
+    BondSecondOrderRisk,
+    ShockedCurveCache,
+)
 from .serialization import decode
 from .xccy import XccyCurveBootstrapRequest
 
@@ -175,6 +182,16 @@ def _foreign_currency(value: object, label: str) -> str:
     if value == "RUB":
         raise InvalidTerms(f"{label} must be a currency other than RUB")
     return value
+
+
+def _bond_second_order(
+    engine: BondRiskEngine, policy: ValuationPolicy
+) -> BondSecondOrderRisk | None:
+    """The bond's Hessian under ``policy``: closed form where it has one and the policy asks."""
+    if not policy.include_second_order:
+        return None
+    analytic = policy.second_order_method == "analytic" and supports_analytic(engine) is None
+    return engine.second_order(bump_bp=policy.bump_bp, method="analytic" if analytic else "bump")
 
 
 @dataclass(frozen=True)
@@ -248,6 +265,12 @@ class ValuationPolicy:
     - ``fx_points_held_risk=True`` (BACKLOG #46) adds each FX forward's and cross's RUB
       curve risk with the swap points held (``points_held_rub_buckets``); the factor
       risk keeps the foreign curve held.
+
+    ``second_order_method="analytic"`` (0.37.0, omitted at its default ``"bump"``) takes the
+    Hessian of every fixed-cashflow bond on a discount curve in closed form
+    (:meth:`BondRiskEngine.second_order`): the same factors, equal to the bumped Hessian up
+    to its O(bump^2) error, the Hessian part about six times faster. Floaters, perpetual
+    tails, bonds on OIS quotes and every other product are still bumped.
     """
 
     discount_curve_id: str
@@ -274,6 +297,9 @@ class ValuationPolicy:
     )
     fx_curve_fallbacks: tuple[tuple[str, str], ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
     fx_points_held_risk: bool = field(default=False, metadata=OMIT_IF_DEFAULT)
+    second_order_method: Literal["bump", "analytic"] = field(
+        default="bump", metadata=OMIT_IF_DEFAULT
+    )
 
     def __post_init__(self) -> None:
         pairs = tuple(sorted(self.exercise_assumptions, key=lambda p: p[0]))
@@ -362,6 +388,8 @@ class ValuationPolicy:
             raise InvalidTerms("duplicate curve override")
         if not isinstance(self.include_second_order, bool):
             raise TypeError("include_second_order must be boolean")
+        if self.second_order_method not in ("bump", "analytic"):
+            raise InvalidTerms("second_order_method must be bump or analytic")
         positive_money(self.bump_bp, "bump_bp")
 
     def curve_for(self, instrument_id: str) -> str:
@@ -774,7 +802,7 @@ def _build_curve(entry: CurveEntry, business_date: date) -> _BuiltCurve:
             if source.trade_date != business_date:
                 raise InvalidTerms("KBD parameters are not for the snapshot business date")
             built = kbd_discount_curve(
-                source, zero_shock=cast(Literal["continuous", "annual"], spec.zero_shock)
+                source, zero_shock=cast(Literal["continuous", "annual", "annual_par"], spec.zero_shock)
             )
             return _BuiltCurve(entry, built, source, KBD_MODEL_VERSION, spec.currency)
         if (
@@ -1454,7 +1482,7 @@ def _value_position(
     )
     nominal_rub = nominal * fx if foreign else nominal
     accrued_rub = accrued * fx if foreign else accrued
-    basis = cast(Literal["continuous_zero", "annual_zero", "ois_quote"], _curve_basis(built.curve))
+    basis = cast(Literal["continuous_zero", "annual_zero", "annual_par", "ois_quote"], _curve_basis(built.curve))
     projection_id: str | None = None
     yield_flows: Sequence[BondCashflow] = flows
     if isinstance(instrument.coupon_leg, FloatingCouponLeg):
@@ -1516,7 +1544,7 @@ def _value_position(
         )
         engine, adapter_id = prepared.engine, prepared.calculation_id
     risk = engine.risk(bump_bp=policy.bump_bp, difference="central")
-    second = engine.second_order(bump_bp=policy.bump_bp) if policy.include_second_order else None
+    second = _bond_second_order(engine, policy)
     factor_risk = bond_factor_risk(risk, curve_id, second, projection_curve_id=projection_id)
     dirty = cast(float, engine.request.dirty_price_rub)
     dirty_ccy = (
@@ -1847,7 +1875,7 @@ def _value_linker_position(
     )
     engine = prepared.engine
     risk = engine.risk(bump_bp=policy.bump_bp, difference="central")
-    second = engine.second_order(bump_bp=policy.bump_bp) if policy.include_second_order else None
+    second = _bond_second_order(engine, policy)
     dirty = cast(float, engine.request.dirty_price_rub)
     real_yield, duration = _yield_and_duration(settlement, dirty, flows, convention)
     jtd = (

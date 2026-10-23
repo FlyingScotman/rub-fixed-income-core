@@ -18,6 +18,7 @@ def test_registered_specs() -> None:
     assert set(CURVE_SPECS) == {
         "rub_ofz_kbd_v1",
         "rub_ofz_kbd_v2",
+        "rub_ofz_kbd_v3",
         "rub_ruonia_ois_legacy_v1",
         "rub_ruonia_ois_moex_v2",
         "rub_key_rate_swap_v1",
@@ -35,6 +36,8 @@ def test_registered_specs() -> None:
     assert kbd.zero_shock == "continuous"
     kbd2 = get_curve_spec("rub_ofz_kbd_v2")
     assert kbd2.kind is CurveKind.KBD_PARAMETRIC and kbd2.zero_shock == "annual"
+    kbd3 = get_curve_spec("rub_ofz_kbd_v3")
+    assert kbd3.kind is CurveKind.KBD_PARAMETRIC and kbd3.zero_shock == "annual_par"
     assert get_curve_spec("rub_key_rate_swap_v1").model_version == CONVENTION_ID
     legacy = get_curve_spec("rub_ruonia_ois_legacy_v1")
     assert legacy.spot_lag_business_days == 0 and legacy.payment_lag_business_days == 0

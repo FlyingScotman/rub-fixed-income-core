@@ -78,7 +78,8 @@ KBD_FIXTURE = (
 
 
 def kbd(
-    horizon_years: int = 30, zero_shock: Literal["continuous", "annual"] = "continuous"
+    horizon_years: int = 30,
+    zero_shock: Literal["continuous", "annual", "annual_par"] = "continuous",
 ) -> DiscountCurve:
     row = json.loads(KBD_FIXTURE.read_text(encoding="utf-8"))["params"]["data"][0]
     params = ZcycParameters(
@@ -200,9 +201,9 @@ def listed_and_tail() -> tuple[tuple[BondCashflow, ...], PerpetualTail]:
     return listed, PerpetualTail(listed[-1].payment_date, 29.92, period_months=3)
 
 
-@pytest.mark.parametrize("zero_shock", ["continuous", "annual"])
+@pytest.mark.parametrize("zero_shock", ["continuous", "annual", "annual_par"])
 def test_risk_engine_with_a_tail_equals_the_engine_on_materialised_flows(
-    zero_shock: Literal["continuous", "annual"],
+    zero_shock: Literal["continuous", "annual", "annual_par"],
 ) -> None:
     """Bucket shocks in continuous zero rates and in annual yields (``rub_ofz_kbd_v2``)."""
     curve = kbd(zero_shock=zero_shock)
@@ -238,7 +239,11 @@ def test_risk_engine_with_a_tail_equals_the_engine_on_materialised_flows(
     # Every tail coupon is past 20 years or interpolated to it: the 20Y+ bucket
     # holds a large share of the rate risk, the rest sits on 3Y-15Y.
     share = left.buckets[-1].dv01_rub / left.dv01_rub
-    assert 0.15 < share < 0.5
+    if zero_shock == "annual_par":
+        # Against 20Y par bonds at these yields the stream is longer: long 20Y+, short the rest.
+        assert share > 1.0
+    else:
+        assert 0.15 < share < 0.5
     assert ours.base_id != theirs.base_id
 
 

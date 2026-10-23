@@ -27,6 +27,7 @@ from ._risk_common import (
     _central_derivatives,
     _curve_basis,
     _curve_identity,
+    _overlay_shifts,
     _shifts,
     _shock_curve,
     _snapshot_curve,
@@ -49,6 +50,7 @@ from .perpetual import PerpetualTail
 # Bucket weights, the shocked-curve cache and curve helpers live in ._risk_common since
 # 0.12.0 (shared with fx_futures); the public names stay importable from here.
 __all__ = [
+    "ANALYTIC_SECOND_ORDER_MODEL_VERSION",
     "FLOATING_RISK_MODEL_VERSION",
     "FLOATING_TWO_CURVE_RISK_MODEL_VERSION",
     "RISK_BUCKETS",
@@ -79,6 +81,7 @@ _SECOND_ORDER_MODELS = {
     FLOATING_RISK_MODEL_VERSION: "rub-floating-coupon-second-order-v1",
     FLOATING_TWO_CURVE_RISK_MODEL_VERSION: "rub-floating-two-curve-second-order-v1",
 }
+ANALYTIC_SECOND_ORDER_MODEL_VERSION = "rub-fixed-cashflow-second-order-analytic-v1"
 # Bounds on the per-engine memo of re-projected coupons (memory only, never numbers).
 _COUPON_MEMO_SIZE = 65_536
 _CURVE_MEMO_SIZE = 1024
@@ -520,9 +523,11 @@ class BondRiskEngine:
         req = self.request
         source = req.curve if req.projection_curve is None else req.projection_curve
         if isinstance(source, DiscountCurve):
+            # The zero shifts the shock applies: a par-yield shock moves nodes past its own.
+            moved = _overlay_shifts(self._projection, shifts)
             coupons = []
             for reuse in self._reuse:
-                key = (reuse.index, tuple(shifts[k] for k in reuse.buckets))
+                key = (reuse.index, tuple(moved[k] for k in reuse.buckets))
                 if not any(key[1]):
                     coupons.append(reuse.base)
                     continue
@@ -738,15 +743,43 @@ class BondRiskEngine:
             return _ZERO_SHOCK
         return scenario.curve_shifts_bp if projection is None else _shifts(tuple(projection))
 
-    def second_order(self, *, bump_bp: float = 1.0) -> BondSecondOrderRisk:
+    def second_order(
+        self, *, bump_bp: float = 1.0, method: Literal["bump", "analytic"] = "bump"
+    ) -> BondSecondOrderRisk:
         """Compute every rate/rate, rate/spread and spread/spread second derivative.
 
         Base calibration stays frozen. No sparsity is assumed. These central
         deltas deliberately differ from the default one-sided risk() result.
         Two-curve, the factors are 11 discount buckets, 11 projection buckets and
         the spread (23 x 23).
+
+        ``method="analytic"`` (0.37.0) gives the exact derivatives in closed form for a
+        fixed-cashflow bond on a ``DiscountCurve`` (no floating leg, no perpetual tail;
+        otherwise :class:`InvalidTerms`): the same factors, equal to the central
+        differences up to their O(bump^2) error, in one pass over the flows. On a par-yield
+        curve (``annual_par``) the zero-space derivatives are mapped through the par
+        instruments' Jacobian with their second-order term (``_analytic_risk``).
+        ``bump_bp`` is then only recorded, for the first-order risk it is paired with.
         """
         bump = positive_money(bump_bp, "second-order bump bp")
+        if method not in ("bump", "analytic"):
+            raise ValueError("method must be bump or analytic")
+        if method == "analytic":
+            from ._analytic_risk import analytic_second_order
+
+            gradient, hessian = analytic_second_order(self)
+            return BondSecondOrderRisk(
+                base_id=self.base_id,
+                curve_basis=self.curve_basis,
+                spread_convention=self.request.spread_convention.identifier,
+                factors=(*RISK_BUCKETS, self.request.spread_kind + "_spread"),
+                bump_bp=bump,
+                gradient_rub_per_bp=tuple(finite_money(g, "gradient") for g in gradient),
+                hessian_rub_per_bp2=tuple(
+                    tuple(finite_money(v, "gamma") for v in row) for row in hessian
+                ),
+                model_version=ANALYTIC_SECOND_ORDER_MODEL_VERSION,
+            )
         count = len(RISK_BUCKETS)
         size = count + 1 + (count if self.two_curve else 0)
 

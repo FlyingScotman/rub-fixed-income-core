@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.37.0 — OFZ curve risk in par quotes, closed-form gamma, benchmark equivalents
+
+The desk's decision of 2026-10-23 on how OFZ curve risk is bumped
+([proposals/ofz-curve-risk-factors.md](docs/proposals/ofz-curve-risk-factors.md), research
+on hub data of 2024–2026): the KBD's risk factors become par quotes, like RUONIA's; the
+Hessian is computed in zero space and mapped to them exactly; a hedge view in benchmark
+bonds. Every new field is omitted at its default: earlier policies, job IDs, results and
+pinned hashes are unchanged, and `rub_ofz_kbd_v1` / `v2` value and risk exactly as before.
+
+### Added
+
+- `CurveConvention.zero_shock="annual_par"` (`curve_basis = "annual_par"`) and spec
+  `rub_ofz_kbd_v3`: a bucket shock moves the par yield of an annual-coupon instrument on
+  the curve at 1Y, 2Y, 3Y, 5Y, 7Y, 10Y, 15Y and 20Y+ (curve-date annual roll, unadjusted,
+  curve day count, at par). The curve is not refitted: an annual-zero overlay (hat nodes
+  1Y–20Y, flat below 1Y) solved by Newton reprices all eight at their shifted yields;
+  1M–6M have no instrument (the KBD has no OFZ there), zero risk, and moving them moves
+  nothing. Every engine reads it through `_shock_curve`; the overlay is cached per curve
+  and shift vector. `kbd_discount_curve(..., zero_shock="annual_par")`; `local_risk` and
+  `local_worker` accept the basis.
+- `BondRiskEngine.second_order(method="analytic")`: the exact gradient and Hessian of a
+  fixed-cashflow bond on a `DiscountCurve` (any zero basis, any Z-spread convention,
+  settlement after the curve date) from one pass over the flows; on `annual_par` mapped
+  through the par Jacobian with the instruments' second-order term. Equal to the bumped
+  second order up to its O(bump²) error (1e-7 relative). Model
+  `ANALYTIC_SECOND_ORDER_MODEL_VERSION`. `InvalidTerms` with the reason for floaters,
+  perpetual tails and OIS quote curves.
+- `ValuationPolicy.second_order_method` (`"bump"` default, `"analytic"`): the closed form
+  for every bond that has one in `value_portfolio` (the KBD benchmark book: 4.9 ms instead
+  of 11.1 ms per position with the Hessian).
+- Module `hedge_equivalents`: `benchmark_equivalents(benchmarks, positions)` →
+  `BenchmarkHedge` / `BenchmarkEquivalent`: risk per benchmark bond's own effective annual
+  yield (overlay nodes at the benchmarks' maturities, every spread held), yield DV01,
+  hedge quantity, condition number with a warning above 50.
+- `docs/proposals/ofz-curve-risk-factors.md`: the research, the owner's decisions and
+  what this release implements.
+
+### Changed
+
+- `basis_view` docstring: with `rub_ofz_kbd_v3` the basis is par against par, exact.
+- Floater coupon reuse in `BondRiskEngine` keys on the zero shifts a shock applies (a par
+  shock moves nodes past its own); unchanged for the zero bases.
+
 ## 0.36.0 — CNY / USD / EUR bonds, FX forwards for any currency, never-called perpetuals
 
 One release for the three pieces of work after 0.34.0: never-called perpetuals (merged

@@ -139,6 +139,19 @@ _SPECS = (
         zero_shock="annual",
     ),
     CurveSpec(
+        spec_id="rub_ofz_kbd_v3",
+        kind=CurveKind.KBD_PARAMETRIC,
+        currency="RUB",
+        time_day_count=DayCount.ACT_365_FIXED,
+        interpolation="kbd-formula; materialised log-linear-df (daily to 2Y, weekly to 5Y, "
+        "monthly to 30Y), flat-forward beyond",
+        model_version=KBD_MODEL_VERSION,
+        description="The KBD of rub_ofz_kbd_v1 as a par-quote risk curve: a bucket shock moves "
+        "the par yield of an annual-coupon instrument of 1Y-20Y on the KBD (annual_par, 1M-6M "
+        "merged into 1Y), the factor and unit of par RUONIA OIS quotes",
+        zero_shock="annual_par",
+    ),
+    CurveSpec(
         spec_id="rub_ruonia_ois_legacy_v1",
         kind=CurveKind.OIS_BOOTSTRAP,
         currency="RUB",

@@ -1121,7 +1121,7 @@ class MarketSnapshot:
         if spec.kind is not expected[index]:
             raise InvalidTerms(f"curve {curve_id} ({spec.spec_id}) cannot project the {index}")
         if spec.kind is CurveKind.KBD_PARAMETRIC:
-            shock = cast(Literal["continuous", "annual"], spec.zero_shock)
+            shock = cast(Literal["continuous", "annual", "annual_par"], spec.zero_shock)
             if isinstance(source, ZcycParameters):
                 if source.trade_date != self.business_date:
                     raise InvalidTerms(f"curve {curve_id} is not dated the snapshot business date")
