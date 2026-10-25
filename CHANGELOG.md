@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.39.0 — OFZ risk as RUONIA plus a basis, both computed
 
 ### OFZ risk as RUONIA plus a basis, both computed (#83)
 

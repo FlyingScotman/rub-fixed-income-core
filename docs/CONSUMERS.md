@@ -148,7 +148,7 @@ FlyingScotman/trading-desk-monitor#171). Nothing changes until the monitor opts 
   the proxy (bonds, CDS, FX fallbacks) has `IR|<proxy>|<bucket>` in par yields
   (`curve_basis = "par_yield_quote"`).
 
-**Unreleased: RUONIA + basis computed** (FlyingScotman/rub-fixed-income-core#83, decision
+**From 0.39.0: RUONIA + basis computed** (FlyingScotman/rub-fixed-income-core#83, decision
 of 2026-10-25; the monitor side is FlyingScotman/trading-desk-monitor#213;
 [ofz-basis.md](ofz-basis.md)). Nothing changes until the monitor opts in. To show OFZ on
 the KBD as RUONIA + basis with both legs computed (instead of `basis_view`):
