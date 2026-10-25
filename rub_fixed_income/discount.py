@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import math
 from bisect import bisect_left
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import date
+from functools import lru_cache
 from typing import Any, Protocol, SupportsInt, cast
 
 from ._solver import bisect
@@ -46,6 +47,15 @@ def _fields_only_state(self: Any) -> dict[str, object]:
     """Pickle state without the lazily built caches kept beside the fields."""
     names = self.__dataclass_fields__
     return {k: v for k, v in self.__dict__.items() if k in names}
+
+
+def _fixed_leg_schedule(
+    curve_date: date, convention: CurveConvention, maturity: date
+) -> tuple[date, ...]:
+    schedule = convention.fixed_leg_schedule
+    if schedule is None:
+        return annual_schedule(curve_date, maturity)
+    return generate_schedule(curve_date, maturity, schedule)
 
 
 @dataclass(frozen=True)
@@ -154,10 +164,7 @@ class DiscountCurve:
         return last_df * math.exp(-flat_forward * self._time(last_date, target))
 
     def fixed_leg_schedule(self, maturity: date) -> tuple[date, ...]:
-        schedule = self.convention.fixed_leg_schedule
-        if schedule is None:
-            return annual_schedule(self.curve_date, maturity)
-        return generate_schedule(self.curve_date, maturity, schedule)
+        return _fixed_leg_schedule(self.curve_date, self.convention, maturity)
 
     def par_rate(self, maturity: date) -> float:
         previous = self.curve_date
@@ -307,6 +314,99 @@ def ois_quote_periods(
     return ois.periods(dates.effective_date, dates.unadjusted_end, dates.end_date)
 
 
+# One bootstrap root search evaluates its objective ~50 times. ``_NodeCurve`` gives the
+# discount factors those evaluations read without building a ``DiscountCurve`` per
+# trial: the same float operations as ``DiscountCurve._discount_factor``, with
+# everything that does not move with the solved node computed once, and the objectives
+# add their terms in the same order. The bisection then sees bit-identical objective
+# values and returns bit-identical nodes (``tests/test_bootstrap_exact.py``).
+_Interpolated = tuple[int, int, int, float]  # position, left slot, right slot, weight
+_Extrapolated = tuple[int, int, int, float, float]  # position, prior, last, tau, tau to target
+
+
+class _NodeCurve:
+    """``DiscountCurve(curve_date, nodes, convention=...).discount_factor`` at ``targets``
+    while the DF of node ``moving`` varies (its value in ``nodes`` is ignored).
+
+    ``values`` holds the DFs at the targets; :meth:`move` updates in place those that
+    depend on the moving node, none of them before position ``first_moving``.
+    """
+
+    def __init__(
+        self,
+        curve_date: date,
+        nodes: list[tuple[date, float]],
+        moving: int,
+        convention: CurveConvention,
+        targets: Sequence[date],
+    ) -> None:
+        self._slot = slot = moving + 1  # slot 0 is the curve date (log DF 0.0)
+        self._logs = [
+            0.0,
+            *(0.0 if i == moving else math.log(df) for i, (_, df) in enumerate(nodes)),
+        ]
+        self._dfs = [1.0, *(df for _, df in nodes)]
+        dates = [node_date for node_date, _ in nodes]
+        time = convention.time_day_count.year_fraction
+        self.values = [1.0] * len(targets)
+        self._interpolated: list[_Interpolated] = []
+        self._extrapolated: list[_Extrapolated] = []
+        for position, target in enumerate(targets):
+            if target < curve_date:
+                raise ValueError("cannot discount before curve date")
+            if target == curve_date:
+                continue
+            index = bisect_left(dates, target)
+            if index < len(dates):
+                left_date = dates[index - 1] if index else curve_date
+                weight = (target - left_date).days / (dates[index] - left_date).days
+                interpolated = (position, index, index + 1, weight)
+                if slot in (index, index + 1) or not self._fill(self._interpolate, interpolated):
+                    self._interpolated.append(interpolated)
+            else:
+                prior_date = dates[-2] if len(dates) > 1 else curve_date
+                last = len(dates)
+                tau = time(prior_date, dates[-1])
+                extrapolated = (position, last - 1, last, tau, time(dates[-1], target))
+                if slot in (last - 1, last) or not self._fill(self._extrapolate, extrapolated):
+                    self._extrapolated.append(extrapolated)
+        moving_positions = [p[0] for p in self._interpolated] + [p[0] for p in self._extrapolated]
+        self.first_moving = min(moving_positions, default=len(targets))
+
+    def _fill(self, value: Callable[[Any], float], plan: _Interpolated | _Extrapolated) -> bool:
+        # A DF that overflows is left to every trial, where the curve would raise it too.
+        try:
+            self.values[plan[0]] = value(plan)
+        except OverflowError:
+            return False
+        return True
+
+    def _interpolate(self, plan: _Interpolated) -> float:
+        _, left, right, weight = plan
+        logs = self._logs
+        return math.exp(logs[left] + weight * (logs[right] - logs[left]))
+
+    def _extrapolate(self, plan: _Extrapolated) -> float:
+        _, prior, last, tau, tau_target = plan
+        flat_forward = -(self._logs[last] - self._logs[prior]) / tau
+        return self._dfs[last] * math.exp(-flat_forward * tau_target)
+
+    def move(self, discount_factor: float) -> list[float]:
+        """Set the moving node's DF (validated as ``DiscountCurve`` does); returns ``values``."""
+        if not math.isfinite(discount_factor) or discount_factor <= 0.0:
+            raise ValueError("discount factors must be positive and finite")
+        logs, values, exp = self._logs, self.values, math.exp
+        logs[self._slot] = math.log(discount_factor)
+        self._dfs[self._slot] = discount_factor
+        # ``_interpolate`` and ``_extrapolate`` inlined: this runs on every trial.
+        for position, left, right, weight in self._interpolated:
+            values[position] = exp(logs[left] + weight * (logs[right] - logs[left]))
+        for position, prior, last, tau, tau_target in self._extrapolated:
+            flat_forward = -(logs[last] - logs[prior]) / tau
+            values[position] = self._dfs[last] * exp(-flat_forward * tau_target)
+        return values
+
+
 # Coupled spot-OIS bootstrap: a quote's last payment (end + payment lag) lies past its
 # node, so solving a later node moves an earlier quote slightly; repeat the sequential
 # solve with the other nodes held until every quote reprices within this tolerance.
@@ -314,37 +414,102 @@ _SPOT_OIS_TOLERANCE_BP = 1e-9
 _SPOT_OIS_MAX_PASSES = 50
 
 
+_SpotOisLayout = tuple[
+    tuple[tuple[OisSwapPeriod, ...], ...],  # periods of each quote's swap
+    tuple[tuple[date, ...], ...],  # their (start, end, payment) dates, flattened
+    tuple[tuple[tuple[float, float], ...], ...],  # fixed DCF and floating scale per period
+]
+
+
+@lru_cache(maxsize=256)
+def _spot_ois_layout(
+    curve_date: date, convention: CurveConvention, quotes: tuple[tuple[str, date], ...]
+) -> _SpotOisLayout:
+    """Swap periods and their day-count terms, as ``ois_swap_par_rate`` reads them.
+
+    They depend on the tenors and maturities only, so every shocked rebuild of one
+    request shares them.
+    """
+    ois = convention.ois_swap
+    assert ois is not None
+    legs = tuple(
+        ois_quote_periods(curve_date, OisQuote(tenor, maturity, 0.0), convention)
+        for tenor, maturity in quotes
+    )
+    targets = tuple(
+        tuple(d for p in periods for d in (p.start, p.end, p.payment)) for periods in legs
+    )
+    terms = tuple(
+        tuple(
+            (
+                ois.fixed_day_count.year_fraction(p.start, p.end),
+                ois.float_amount_scale(p.start, p.end),
+            )
+            for p in periods
+        )
+        for periods in legs
+    )
+    return legs, targets, terms
+
+
 def _bootstrap_spot_ois(request: CurveBootstrapRequest, ordered: list[OisQuote]) -> DiscountCurve:
     convention = request.convention
-    legs = [ois_quote_periods(request.curve_date, quote, convention) for quote in ordered]
+    legs, targets, terms = _spot_ois_layout(
+        request.curve_date, convention, tuple((q.tenor, q.maturity) for q in ordered)
+    )
     nodes: list[tuple[date, float]] = []
 
-    def solve(index: int, later: tuple[tuple[date, float], ...]) -> tuple[date, float]:
-        quote, periods = ordered[index], legs[index]
-        earlier = tuple(nodes[:index])
+    def solve(index: int, later: list[tuple[date, float]]) -> tuple[date, float]:
+        quote = ordered[index]
+        earlier = nodes[:index]
         previous_date, previous_df = earlier[-1] if earlier else (request.curve_date, 1.0)
         interval = convention.time_day_count.year_fraction(previous_date, quote.maturity)
+        trial = _NodeCurve(
+            request.curve_date,
+            [*earlier, (quote.maturity, 1.0), *later],
+            index,
+            convention,
+            targets[index],
+        )
+        # Periods before the first moving DF add the same terms on every trial.
+        rows = terms[index]
+        first = trial.first_moving // 3
+        dfs = trial.values
+        fixed_annuity = fixed_floating = 0.0
+        for period, (fixed_fraction, scale) in enumerate(rows[:first]):
+            start, end, pay = dfs[3 * period : 3 * period + 3]
+            fixed_annuity += fixed_fraction * pay
+            fixed_floating += (start / end - 1.0) * scale * pay
 
         def error(forward: float) -> float:
             exponent = max(-700.0, min(700.0, -forward * interval))
-            node = (quote.maturity, previous_df * math.exp(exponent))
-            candidate = DiscountCurve(
-                request.curve_date, earlier + (node,) + later, convention=convention
-            )
-            return candidate.ois_swap_par_rate(periods) - quote.par_rate
+            dfs = trial.move(previous_df * math.exp(exponent))
+            annuity, floating = fixed_annuity, fixed_floating
+            for period in range(first, len(rows)):
+                fixed_fraction, scale = rows[period]
+                start, end, pay = dfs[3 * period : 3 * period + 3]
+                annuity += fixed_fraction * pay
+                floating += (start / end - 1.0) * scale * pay
+            if annuity <= 0.0:
+                raise ValueError("OIS swap has no fixed-leg annuity")
+            return floating / annuity - quote.par_rate
 
         lower, upper = _dynamic_bracket(error)
         root = bisect(error, lower, upper, tolerance=1e-14, label="OIS bootstrap").root
         return quote.maturity, previous_df * math.exp(-root * interval)
 
     for index in range(len(ordered)):
-        nodes.append(solve(index, ()))
+        nodes.append(solve(index, []))
     for _ in range(_SPOT_OIS_MAX_PASSES):
         curve = DiscountCurve(request.curve_date, tuple(nodes), convention=convention)
-        if curve.max_repricing_error_bp(ordered) <= _SPOT_OIS_TOLERANCE_BP:
+        # ``max_repricing_error_bp`` on the periods already resolved.
+        errors = (
+            abs(curve.ois_swap_par_rate(p) - q.par_rate) * 10_000.0 for q, p in zip(ordered, legs)
+        )
+        if max(errors) <= _SPOT_OIS_TOLERANCE_BP:
             return curve
         for index in range(len(ordered)):
-            nodes[index] = solve(index, tuple(nodes[index + 1 :]))
+            nodes[index] = solve(index, nodes[index + 1 :])
     raise RuntimeError("spot-starting OIS bootstrap did not converge")
 
 
@@ -360,11 +525,10 @@ def bootstrap_discount_curve(request: CurveBootstrapRequest) -> DiscountCurve:
         raise ValueError("at least one OIS quote is required")
     if request.convention.ois_swap is not None:
         _check_quotes(request.curve_date, ordered)
-        curve = _bootstrap_spot_ois(request, ordered)
-        if curve.max_repricing_error_bp(ordered) > 1e-7:
-            raise RuntimeError("bootstrapped OIS curve failed exact repricing")
-        return curve
+        # Returned only once every quote reprices within 1e-9 bp (the 1e-7 bp check).
+        return _bootstrap_spot_ois(request, ordered)
     nodes: list[tuple[date, float]] = []
+    day_count = request.convention.fixed_leg_day_count
     for quote in ordered:
         if not math.isfinite(quote.par_rate):
             raise ValueError(f"OIS par rate must be finite for {quote.tenor}")
@@ -372,24 +536,41 @@ def bootstrap_discount_curve(request: CurveBootstrapRequest) -> DiscountCurve:
             raise ValueError("OIS maturities must be unique and increasing")
         previous_date, previous_df = nodes[-1] if nodes else (request.curve_date, 1.0)
         interval = request.convention.time_day_count.year_fraction(previous_date, quote.maturity)
-        existing = tuple(nodes)
+        # ``DiscountCurve.par_rate`` on the trial curve: its fixed-leg dates, then the
+        # maturity; accruals before the first moving DF add the same terms every trial.
+        schedule = _fixed_leg_schedule(request.curve_date, request.convention, quote.maturity)
+        trial = _NodeCurve(
+            request.curve_date,
+            [*nodes, (quote.maturity, 1.0)],
+            len(nodes),
+            request.convention,
+            [*schedule, quote.maturity],
+        )
+        accruals = [
+            day_count.year_fraction(start, end)
+            for start, end in zip((request.curve_date, *schedule), schedule)
+        ]
+        first = min(trial.first_moving, len(accruals))
+        fixed_annuity = 0.0
+        for accrual, df in zip(accruals[:first], trial.values):
+            fixed_annuity += accrual * df
 
         def error(
             forward: float,
             previous_df: float = previous_df,
             interval: float = interval,
-            existing: tuple[tuple[date, float], ...] = existing,
-            maturity: date = quote.maturity,
+            trial: _NodeCurve = trial,
+            accruals: list[float] = accruals,
+            first: int = first,
+            fixed_annuity: float = fixed_annuity,
             par_rate: float = quote.par_rate,
         ) -> float:
             exponent = max(-700.0, min(700.0, -forward * interval))
-            terminal_df = previous_df * math.exp(exponent)
-            candidate = DiscountCurve(
-                request.curve_date,
-                existing + ((maturity, terminal_df),),
-                convention=request.convention,
-            )
-            return candidate.par_rate(maturity) - par_rate
+            dfs = trial.move(previous_df * math.exp(exponent))
+            annuity = fixed_annuity
+            for position in range(first, len(accruals)):
+                annuity += accruals[position] * dfs[position]
+            return (1.0 - dfs[-1]) / annuity - par_rate
 
         lower, upper = _dynamic_bracket(error)
         solved_forward = bisect(error, lower, upper, tolerance=1e-14, label="OIS bootstrap").root

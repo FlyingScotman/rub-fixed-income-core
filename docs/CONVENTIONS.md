@@ -213,7 +213,10 @@ instrument on the KBD at 1Y, 2Y, 3Y, 5Y, 7Y, 10Y, 15Y and 20Y+ (dates from the c
 rolled annually, unadjusted; ACT/365F; redeemed at par), through an annual-zero overlay that
 reprices them; 1M–6M are merged into 1Y (the KBD has no OFZ there). The factor and unit of
 par RUONIA OIS quotes, so (RUONIA, KBD) ↔ (RUONIA, KBD − RUONIA) is an exact linear change
-in one unit. Desk decision of 2026-10-23 ([proposals/ofz-curve-risk-factors.md](proposals/ofz-curve-risk-factors.md)):
+of factors in one unit; the basis is the par–par spread exactly at the nodes 1Y–20Y+ and
+close to it between them (the two curves interpolate a bucket shift differently there). A
+scenario may leave the 1M–6M buckets of the KBD at zero or move them with 1Y; other values
+are refused (`InvalidTerms`). Desk decision of 2026-10-23 ([proposals/ofz-curve-risk-factors.md](proposals/ofz-curve-risk-factors.md)):
 the risk ladder of `RUB OFZ` in these par buckets; the hedge view in benchmark-bond
 equivalents (`benchmark_equivalents`), benchmarks chosen by the monitor and changeable by
 the desk; the Hessian in closed form with the par instruments' curvature.
@@ -459,7 +462,8 @@ from a registered spec); see [swaps](swaps.md).
 - **Signs.** Payer pays fixed. DV01 = central difference per curve role, positive for a
   payer; `krd_years = -dv01 / notional * 1e4`. Key-rate projection shifts move the
   forward key rate after the current-rate interval by the bucket hats at each day's
-  ACT/ACT ISDA time.
+  ACT/ACT ISDA time; on KRS quotes (`KeyRateCurveRequest`) they move each mid quote by
+  the hats at its maturity and the curve is recalibrated.
 
 | Spec | Swap convention |
 | --- | --- |

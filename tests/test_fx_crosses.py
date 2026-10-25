@@ -10,6 +10,7 @@ import pytest
 
 from rub_fixed_income import (
     RISK_BUCKETS,
+    CurveConvention,
     DiscountCurve,
     FxCrossForward,
     FxCrossRiskEngine,
@@ -248,3 +249,15 @@ def test_identity_and_validation() -> None:
         engine(cross(FxForwardLeg(C - timedelta(days=1), N, K)))
     with pytest.raises(ValueError, match="pivot rate"):
         fx_cross_rub_legs(cross(), pivot_rate=0.0)
+
+
+def test_scenarios_on_a_par_yield_rub_curve_refuse_dropped_short_shifts() -> None:
+    """As every engine: a par-yield curve's 1M-6M scenario shifts are zero or the 1Y's."""
+    par = DiscountCurve.flat(C, R, convention=CurveConvention(zero_shock="annual_par"))
+    risk = engine(rub_curve=par)
+    with pytest.raises(InvalidTerms, match="3M \\+25.0"):
+        risk.reprice(FxCrossScenario(rub_curve_shifts_bp=(0.0, 25.0) + (0.0,) * 9))
+    # A parallel shift is valid (the RUB legs of a cross offset: no PnL to check).
+    risk.reprice(FxCrossScenario(rub_curve_shifts_bp=(25.0,) * 11))
+    # Curves that are not par curves take any shifts.
+    engine().reprice(FxCrossScenario(rub_curve_shifts_bp=(0.0, 25.0) + (0.0,) * 9))

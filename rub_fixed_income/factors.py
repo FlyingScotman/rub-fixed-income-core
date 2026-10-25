@@ -267,14 +267,18 @@ def basis_view(risk: FactorRisk, base_curve_id: str, curve_id: str, basis_id: st
     """The same risk on ``(base, basis = curve - base)`` instead of ``(base, curve)``.
 
     With both curves bucketed alike and shocked in the same unit (for the KBD against
-    RUONIA OIS: ``rub_ofz_kbd_v3`` par quotes and par OIS quotes, the par-par basis;
-    ``rub_ofz_kbd_v2`` annual yields agree with par to 0.5-2 %), moving the base
-    with the basis held moves both curves, and moving the basis moves ``curve`` alone:
+    RUONIA OIS: ``rub_ofz_kbd_v3`` par quotes and par OIS quotes; ``rub_ofz_kbd_v2``
+    annual yields agree with par to 0.5-2 %), moving the base with the basis held moves
+    both curves, and moving the basis moves ``curve`` alone:
 
         ``IR|<base>|b  <- IR|<base>|b + IR|<curve>|b``,  ``IR|<basis>|b <- IR|<curve>|b``
 
     and the Hessian is ``J^T H J`` for that linear change of coordinates, so a Taylor
-    expansion gives the same P&L in either view. ``IR|<curve>|*`` factors are renamed
+    expansion gives the same P&L in either view. On ``rub_ofz_kbd_v3`` the basis is the
+    par-par spread exactly at the nodes 1Y-20Y+ only: between them the two curves spread a
+    bucket shift differently (a 4Y KBD par yield takes 0.49/0.51 of the 3Y/5Y shifts, a 4Y
+    OIS quote 0.50/0.50; at 13Y 0.37/0.64 of 10Y/15Y against 0.40/0.60), so there the basis
+    is close to, not exactly, a par-par spread. ``IR|<curve>|*`` factors are renamed
     ``IR|<basis>|*`` in place; base factors a position lacks are added (zero before the
     change) ahead of them. A risk without ``curve`` factors is returned unchanged.
     """

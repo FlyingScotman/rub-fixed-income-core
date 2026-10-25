@@ -14,7 +14,8 @@ from itertools import pairwise
 from typing import cast
 
 from ._money import finite_money, non_negative_money, positive_money
-from ._par_overlay import par_overlay_shifts
+from ._par_overlay import PAR_FIRST_BUCKET, par_overlay_shifts
+from ._quote_curves import QuoteCurve, quote_curve
 from .canonical import _Canonical, _precanonical, canonical_sha256
 from .conventions import CurveConvention
 from .dates import BusinessCalendar
@@ -198,9 +199,11 @@ class ShockedCurveCache:
 
     Bootstrapping is deterministic, so equal (request, shifts) keys give identical
     curves. Share one cache across engines on the same curve within a job; risk,
-    gamma and scenarios repeat the same shocked curves for every position. Failed
-    bootstraps are not cached. Once ``max_entries`` is reached new curves are built
-    but not stored, which bounds memory without changing any number.
+    gamma and scenarios repeat the same shocked curves for every position. Shift
+    vectors that leave the same shocked quotes (a bucket past the last quote moves
+    none) share one bootstrap. Failed bootstraps are not cached. Once ``max_entries``
+    is reached new curves are built but not stored, which bounds memory without
+    changing any number.
 
     Across jobs, :meth:`export` hands the curves to the caller and :meth:`seed` takes
     them back; a seeded curve must reprice its (shocked) quotes exactly, as a fresh
@@ -219,6 +222,8 @@ class ShockedCurveCache:
         self._curves: dict[CurveBootstrapRequest, dict[tuple[float, ...], DiscountCurve]] = {}
         self._last: tuple[CurveBootstrapRequest, dict[tuple[float, ...], DiscountCurve]] | None
         self._last = None
+        # Curves by the (shocked) request they were bootstrapped from.
+        self._built: dict[CurveBootstrapRequest, DiscountCurve] = {}
 
     def __len__(self) -> int:
         return self._size
@@ -251,6 +256,17 @@ class ShockedCurveCache:
         self.misses += 1
         curve = build()
         self._store(request, shifts, curve)
+        return curve
+
+    def _bootstrap_quotes(self, request: CurveBootstrapRequest) -> DiscountCurve:
+        """The curve of ``request``, bootstrapped once per distinct quote set."""
+        curve = self._built.get(request)
+        if curve is None:
+            curve = bootstrap_discount_curve(request)
+            # Only while the main store still takes curves: every curve kept here is then
+            # also one of its ``max_entries``, so the two together hold no more than that.
+            if self._size < self.max_entries:
+                self._built[request] = curve
         return curve
 
     def export(self) -> tuple[PrebuiltCurve, ...]:
@@ -301,13 +317,16 @@ def _snapshot_convention(convention: CurveConvention) -> CurveConvention:
 RiskCurve = DiscountCurve | CurveBootstrapRequest
 
 
-def _snapshot_curve(curve: RiskCurve) -> RiskCurve:
+def _snapshot_curve(curve: RiskCurve | QuoteCurve) -> RiskCurve | QuoteCurve:
     """Validate and copy a risk curve input so caller mutations cannot reach it.
 
     A curve whose containers are already immutable tuples is snapshotted once and the
     snapshot reused, so every position on it shares one curve object and the caches
-    kept on it (identity, zero-shock terms). A snapshot is its own snapshot.
+    kept on it (identity, zero-shock terms). A snapshot is its own snapshot. Quote
+    requests (``QuoteCurve``) are validated immutable values and kept as they are.
     """
+    if isinstance(curve, QuoteCurve):
+        return curve
     cached = curve.__dict__.get("_risk_snapshot")
     if cached is not None:
         return cast(RiskCurve, cached)
@@ -340,9 +359,11 @@ def _copy_curve(curve: RiskCurve) -> RiskCurve:
 _CURVE_BASES = {"continuous": "continuous_zero", "annual": "annual_zero", "annual_par": "annual_par"}
 
 
-def _curve_basis(curve: RiskCurve) -> str:
+def _curve_basis(curve: RiskCurve | QuoteCurve) -> str:
     if isinstance(curve, CurveBootstrapRequest):
         return "ois_quote"
+    if isinstance(curve, QuoteCurve):
+        return curve.quote_basis
     return _CURVE_BASES[curve.convention.zero_shock]
 
 
@@ -354,19 +375,53 @@ def _overlay_shifts(base: DiscountCurve, shifts: tuple[float, ...]) -> tuple[flo
     return par_overlay_shifts(base, shifts)
 
 
-def _base_curve(source: RiskCurve, cache: ShockedCurveCache) -> DiscountCurve:
+_SHORT_SHIFT_TOLERANCE_BP = 1e-9
+
+
+def _check_scenario_shifts(curve: object, shifts: tuple[float, ...]) -> None:
+    """Refuse scenario shifts that a par-yield curve (``zero_shock="annual_par"``) would drop.
+
+    Its 1M, 3M and 6M buckets have no instrument: the 1Y instrument carries the short end
+    and the zero overlay is flat below 1Y. A scenario may leave each of them at zero or move
+    it with the 1Y bucket (a parallel shift, or any shift uniform from 1M to 1Y); another
+    value would silently not move the curve, so it raises :class:`InvalidTerms` naming the
+    buckets. Equal means within ``_SHORT_SHIFT_TOLERANCE_BP``, so a shift built by arithmetic
+    (an interpolated twist) passes. Other curves take any shifts. Risk bumps of the short
+    buckets are not scenarios: they still read zero risk.
+    """
+    if not isinstance(curve, DiscountCurve) or curve.convention.zero_shock != "annual_par":
+        return
+    one_year = shifts[PAR_FIRST_BUCKET]
+    dropped = [
+        f"{bucket} {shift:+}"
+        for bucket, shift in zip(RISK_BUCKETS[:PAR_FIRST_BUCKET], shifts)
+        if abs(shift) > _SHORT_SHIFT_TOLERANCE_BP
+        and abs(shift - one_year) > _SHORT_SHIFT_TOLERANCE_BP
+    ]
+    if dropped:
+        raise InvalidTerms(
+            "a par-yield curve (annual_par) has no instrument below 1Y: its 1M-6M scenario "
+            f"shifts must be zero or equal to the 1Y shift ({one_year:+} bp), got "
+            f"{', '.join(dropped)} bp"
+        )
+
+
+def _base_curve(source: RiskCurve | QuoteCurve, cache: ShockedCurveCache) -> DiscountCurve:
     if isinstance(source, CurveBootstrapRequest):
-        return cache.bootstrap(source, _ZERO_SHOCK, lambda: bootstrap_discount_curve(source))
+        return cache.bootstrap(source, _ZERO_SHOCK, lambda: cache._bootstrap_quotes(source))
+    if isinstance(source, QuoteCurve):
+        return quote_curve(source, _ZERO_SHOCK)
     return source
 
 
 def _shock_curve(
-    source: RiskCurve,
+    source: RiskCurve | QuoteCurve,
     base: DiscountCurve,
     shifts: tuple[float, ...],
     cache: ShockedCurveCache,
 ) -> DiscountFactorCurve:
-    """Zero-rate overlay for a DiscountCurve, quote shift and rebootstrap for OIS.
+    """Zero-rate overlay for a DiscountCurve, quote shift and rebootstrap for OIS and for
+    a quote request that builds alone (``QuoteCurve``).
 
     A par-yield DiscountCurve (``zero_shock="annual_par"``) gets the annual-zero overlay that
     reprices its par instruments at the shocked yields; the view keeps the solved zero shifts
@@ -377,9 +432,11 @@ def _shock_curve(
     if isinstance(source, CurveBootstrapRequest):
 
         def build() -> DiscountCurve:
-            return bootstrap_discount_curve(_shocked_request(source, shifts))
+            return cache._bootstrap_quotes(_shocked_request(source, shifts))
 
         return cache.bootstrap(source, shifts, build)
+    if isinstance(source, QuoteCurve):
+        return quote_curve(source, shifts)
     # One shared view per (base curve, shifts): positions on the same curve then reuse
     # its memoised discount factors. Bounded; beyond the bound views are not kept.
     views = base.__dict__.get("_zero_shock_views")
@@ -434,12 +491,16 @@ def _central_derivatives(
     return tuple(gradient), tuple(tuple(row) for row in hessian)
 
 
-def _curve_identity(curve: DiscountCurve | CurveBootstrapRequest) -> _Canonical:
+def _curve_identity(curve: DiscountCurve | CurveBootstrapRequest | QuoteCurve) -> _Canonical:
     # Converted once per curve object and reused by every position's identity hash;
     # the canonical bytes are those of the plain payload.
     cached = curve.__dict__.get("_identity_canonical")
     if cached is not None:
         return cast(_Canonical, cached)
+    if isinstance(curve, QuoteCurve):
+        quoted = _precanonical(curve._quote_identity())
+        object.__setattr__(curve, "_identity_canonical", quoted)
+        return quoted
     payload: dict[str, object] = {
         "curve_date": curve.curve_date,
         "convention": curve.convention.identifier,

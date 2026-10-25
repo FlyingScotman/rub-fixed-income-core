@@ -11,6 +11,7 @@ from datetime import date
 from typing import Literal
 
 from ._money import non_negative_money, positive_money
+from ._quote_curves import QuoteCurve
 from ._risk_common import _curve_basis
 from ._version import __version__
 from .canonical import OMIT_IF_DEFAULT, canonical_sha256
@@ -26,7 +27,9 @@ from .risk import (
     ShockedCurveCache,
 )
 
-CurveRiskBasis = Literal["continuous_zero", "annual_zero", "annual_par", "ois_quote"]
+CurveRiskBasis = Literal[
+    "continuous_zero", "annual_zero", "annual_par", "ois_quote", "par_yield_quote"
+]
 
 
 @dataclass(frozen=True)
@@ -49,9 +52,16 @@ class RiskRunContext:
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{name} must be a nonempty string")
-        if self.curve_basis not in ("continuous_zero", "annual_zero", "annual_par", "ois_quote"):
+        if self.curve_basis not in (
+            "continuous_zero",
+            "annual_zero",
+            "annual_par",
+            "ois_quote",
+            "par_yield_quote",
+        ):
             raise ValueError(
-                "curve_basis must be continuous_zero, annual_zero, annual_par or ois_quote"
+                "curve_basis must be continuous_zero, annual_zero, annual_par, ois_quote "
+                "or par_yield_quote"
             )
 
 
@@ -79,7 +89,7 @@ class FixedRubBondInput:
     clean_price_pct: float
     accrued_interest_rub: float
     quantity: float
-    curve: DiscountCurve | CurveBootstrapRequest
+    curve: DiscountCurve | CurveBootstrapRequest | QuoteCurve
     spread_convention: ZSpreadConvention
     spread_kind: Literal["credit", "ofz"]
     perpetual_tail: PerpetualTail | None = field(default=None, metadata=OMIT_IF_DEFAULT)

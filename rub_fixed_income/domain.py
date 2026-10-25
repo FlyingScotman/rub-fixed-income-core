@@ -38,7 +38,8 @@ from .floating import (
 from .fx_forwards import FxImpliedCurveRequest
 from .inflation import CpiSeries, IndexedCouponLeg, IndexedPrincipalLeg
 from .kbd import ZcycParameters, kbd_discount_curve
-from .key_rate import KeyRateForwardCurve
+from .key_rate import KeyRateCurveRequest, KeyRateForwardCurve
+from .proxy_curves import ParYieldCurveRequest
 from .rate_futures import RuoniaFixings, RuoniaIndexValue
 from .xccy import IndexFixings, XccyCurveBootstrapRequest
 
@@ -705,12 +706,16 @@ class CurveEntry:
     ``curve`` is a built curve, OIS quotes to bootstrap, or KBD parameters; the
     valuation builds and shares it once per call. Derivative positions (result contract
     v3) also read a :class:`~rub_fixed_income.key_rate.KeyRateForwardCurve` under
-    ``rub_key_rate_swap_v1`` (key-rate swap projection, dated the business date) and an
+    ``rub_key_rate_swap_v1`` (key-rate swap projection, dated the business date) or its
+    KRS quotes (:class:`~rub_fixed_income.key_rate.KeyRateCurveRequest`, built once per
+    call; risk in the quotes with ``ValuationPolicy.quote_curve_risk``) and an
     :class:`~rub_fixed_income.xccy.XccyCurveBootstrapRequest` under
     ``cny_ruonia_xccy_v1`` (the CNY curve from XCCY par quotes), and (0.36.0) an
     :class:`~rub_fixed_income.fx_forwards.FxImpliedCurveRequest` under a
     ``<ccy>_fx_implied_v1`` spec (FX swap points, built on the snapshot FX spot). Bonds
-    reject all three.
+    reject all three. A par-yield proxy spec also takes its quotes, a
+    :class:`~rub_fixed_income.proxy_curves.ParYieldCurveRequest`: built once per call, or
+    the risk source of every engine on it with ``ValuationPolicy.quote_curve_risk``.
     """
 
     curve_id: str
@@ -720,8 +725,10 @@ class CurveEntry:
         | CurveBootstrapRequest
         | ZcycParameters
         | KeyRateForwardCurve
+        | KeyRateCurveRequest
         | XccyCurveBootstrapRequest
         | FxImpliedCurveRequest
+        | ParYieldCurveRequest
     )
 
     def __post_init__(self) -> None:

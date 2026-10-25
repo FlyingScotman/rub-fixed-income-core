@@ -1,5 +1,158 @@
 # Changelog
 
+## 0.38.0 — faster RUONIA rebuilds, curve risk in quotes for key-rate and FX curves, closed-form first order
+
+The second wave of the desk's 2026-10-23 decision (risk of every curve in its par quotes)
+and the follow-ups of 0.37.0: FlyingScotman/rub-fixed-income-core#77,
+FlyingScotman/rub-fixed-income-core#75 (review of 0.37.0) and
+FlyingScotman/rub-fixed-income-core#76. Every new field is omitted at its default and the
+bootstrap speed-up is exact: earlier policies, snapshots, job IDs, results and pinned
+hashes are unchanged. One behaviour change: a scenario on a par-yield KBD
+(`rub_ofz_kbd_v3`) whose 1M–6M shifts differ from zero and from its 1Y shift is refused
+instead of silently dropped (see Changed).
+
+### Faster OIS rebuilds (#77, part 1)
+
+The desk monitor now passes RUONIA OIS quotes as a `CurveBootstrapRequest`, so every
+bucket bump of its Hessian rebuilds the curve: about 245 coupled spot-OIS bootstraps per
+job at ~75 ms each. Both changes below are exact: no new field, and every curve, result,
+job ID and pinned hash is bit-identical to 0.37.0.
+
+- `bootstrap_discount_curve` no longer builds a `DiscountCurve` per bisection trial. The
+  objective reads its discount factors from a private evaluator that does the same float
+  operations as `DiscountCurve.discount_factor` and computes once everything that does
+  not move with the solved node; the swap terms are summed in the same order, and the
+  spot-OIS swap layout (periods, day-count fractions, floating scales) is cached per
+  tenor set and convention. Same bisection, same objective values, same nodes:
+  `tests/test_bootstrap_exact.py` keeps the 0.37.0 bootstrap as the reference and
+  compares by `float.hex` (steep, inverted, negative, humped and zero curves, 1W–30Y
+  pillars, bracket expansion, bucket shocks and their pairs). 17 MOEX RUONIA swaps:
+  ~77 ms → ~5 ms per bootstrap; the legacy convention ~11 ms → ~1 ms.
+- `ShockedCurveCache` bootstraps each distinct shocked quote set once: shift vectors that
+  leave the same quotes (a bucket past the last quote, alone or in a Hessian pair) share
+  the curve, within the same `max_entries`. Keys, `hits`/`misses`, `export` and `seed`
+  are unchanged. An 11-bucket
+  Hessian on 17 MOEX RUONIA swaps: 201 bootstraps instead of 243.
+- Together, `value_portfolio` with the Hessian on 17 MOEX RUONIA quotes: 50 bonds
+  ~19.5 s → ~1.4 s; the 2000-bond benchmark book 36.3 s → 15.3 s (now pricing-bound).
+- `benchmarks/portfolio_bench.py`: case `ruonia`, the same 17 tenors as MOEX standard
+  swaps under `rub_ruonia_ois_moex_v2` (the monitor's curve risk in quotes).
+
+### Added
+
+- `key_rate.KeyRateCurveRequest(build, business_date, rate_in_force)`: KRS quotes (a
+  `KeyRateCurveBuildRequest`) as the risk source of a key-rate projection curve.
+  `.curve()` is the mid calibration re-dated with `rebase_key_rate_curve`; a bucket shift
+  moves each mid quote by the bucket hats at its maturity (ACT/ACT ISDA from
+  `business_date`, as an OIS quote) and recalibrates on the same discount curve
+  (`.shocked`, the solve and checks of `build_key_rate_forward_curve`); bid, ask, the
+  calibration's discount curve and the decided rate do not move. The calibration is
+  linear in the quotes (`.shift_weights`), so key-rate swaps keep their exact linear
+  projection and a zero own Hessian block. `SwapRiskRequest` and `RateFuturesRiskRequest`
+  (KEYRATE) take it; curve basis `key_rate_quote`; carry on the mid curve.
+- XCCY par quotes (`XccyCurveBootstrapRequest`) as the foreign curve of
+  `FxForwardRiskRequest`, `FxCrossRiskRequest` and `FxFuturesRiskRequest` (basis
+  `xccy_quote`): rebuilt under every shock on the engine's shocked RUB curve, quotes held
+  under RUB shocks and moved by the bucket hats at their end dates under foreign ones, as
+  `XccyRiskEngine` does, so every product on the CNY quotes shares one factor unit.
+- `ParYieldCurveRequest` as a curve input (basis `par_yield_quote`, `.shocked(shifts)`):
+  each par yield moved by the bucket hats at its maturity's spec time, then
+  `bootstrap_par_yield_curve`. Bonds (`BondRiskRequest.curve`), CDS, FX products and XCCY
+  swaps take it; `local_risk.CurveRiskBasis` adds `par_yield_quote`.
+- `CurveEntry` takes a `KeyRateCurveRequest` under `rub_key_rate_swap_v1` (its
+  `business_date` must be the snapshot's) and a `ParYieldCurveRequest` under a
+  `*_par_proxy_v1` spec.
+- `ValuationPolicy.quote_curve_risk` (omitted at `False`): in `value_portfolio` and
+  `horizon_portfolio` a curve the snapshot holds as quotes is the risk source of every
+  position on it: key-rate swaps and KEYRATE futures on KRS quotes, FX forwards, swaps,
+  crosses and futures naming XCCY quotes (`INVALID_TERMS` without the flag, as before),
+  bonds, CDS and FX fallbacks on par-yield proxy quotes. Model flag `quote_curve` on the
+  derivative rows rebuilt from quotes (XCCY or par-yield proxy quotes, KRS quotes); bond
+  and CDS rows carry `curve_basis = "par_yield_quote"`.
+- Private module `_quote_curves` (`QuoteCurve`, the base of `XccyCurveBootstrapRequest`
+  and `ParYieldCurveRequest`): rebuilt curves memoised on the request per RUB curve and
+  shift vectors (at most 4096 per RUB curve, for the last four RUB curves); `_risk_common` shocks requests that build alone.
+- `BondRiskEngine.risk(method="analytic")`: the exact first derivatives of a
+  fixed-cashflow bond on a `DiscountCurve` (bucket DV01, KRD, parallel DV01, spread risk):
+  the gradient pass of `second_order(method="analytic")` without the Hessian, `J^-T` on
+  `annual_par`. The limit of the central difference (1e-7 relative from it on the tests)
+  and equal to the analytic second order's gradient bit for bit; `parallel_dv01_rub` is
+  the bucket sum, `bump_bp` only recorded; `difference` is central when omitted
+  (`"forward"` is a `ValueError`). Model `ANALYTIC_RISK_MODEL_VERSION`. `InvalidTerms`
+  with the reason for floaters, perpetual tails and OIS quote curves. About 3.5 times
+  faster per call (0.13–0.18 ms instead of 0.5–0.6 ms for a bond).
+- `ValuationPolicy.risk_method` (`"bump"` default, `"analytic"`): the closed-form first
+  order for every bond that has one in `value_portfolio` (`pv_rub`, `spread_buckets_rub`,
+  the factor first order without a Hessian); others are bumped. A field of its own, so
+  0.37.0 policies with `second_order_method="analytic"` keep their results. On the KBD
+  benchmark book, 2.3 instead of 2.7 ms per position without the Hessian, 2.8 instead of
+  3.5 ms with the analytic Hessian.
+- `benchmark_equivalents` positions: floaters that project or discount on the benchmarks'
+  curve, for example a KBD `ZR_YLD_CRV` floater projected off the KBD and discounted on
+  RUONIA OIS (coupons re-projected off the overlaid curve, node risk by central
+  differences of `FLOATER_NODE_BUMP_BP` = 0.1 bp), and OFZ basket futures
+  (`OfzFuturesRiskEngine`) whose bond or funding curve it is (closed form through the
+  cheapest-to-deliver bond, spread and basis held). At benchmarks on the 3Y–10Y pillars
+  both equal the engines' own central bucket DV01 to 1e-7. A new warning names positions
+  with a curve other than the benchmarks' (held: its risk is not in the view). Benchmarks
+  stay fixed-coupon bonds; anything else is `InvalidTerms` with the reason.
+
+### Fixed
+
+- Par-yield shocks (`zero_shock="annual_par"`, `rub_ofz_kbd_v3`): the overlay's Newton is
+  damped (a step is halved until the shocked annual yields at the instruments' coupon dates
+  stay above -100 % and the residual norm falls, Armijo). Realistic shocks take every full
+  step, so their results are bit-identical to 0.37.0 (checked on the 2022 and 2026 KBD for
+  2022-size and twice 2022-size shapes); where a large shock is damped (random shapes of
+  150–300 bp, 20Y -500 bp) the solution differs from 0.37.0 by at most 1e-8 bp; a 20Y
+  -1500 bp shock, which overshot to a domain error, now converges. A shock beyond the overlay's reach (for example the 20Y+ par yield
+  more than about 180 bp above the 15Y on a 16 % curve, 75 bp after +1000 bp, or a
+  +-500 bp saw-tooth) raises `ValueError` "par-yield shock did not converge" naming the
+  instrument that misses and by how much, instead of "shocked annual yield must exceed
+  -100 %".
+- `benchmark_equivalents`: a benchmark engine with `quantity=0` raised `LinAlgError`; the
+  benchmarks' Jacobian no longer depends on their quantity, as documented.
+- `second_order` docstring and proposal: a fixed-coupon par instrument's own gamma is that
+  of its annuity (`-2 dA/dq` in its quote), not zero.
+
+### Changed
+
+- Scenarios on an `annual_par` curve: the 1M, 3M and 6M shifts (no instrument there) must
+  each be zero or equal to the 1Y shift (within 1e-9 bp); any other value, which 0.37.0
+  dropped silently, raises `InvalidTerms` naming the buckets. A parallel shift and any shift uniform from 1M
+  to 1Y stay valid; risk bumps of the short buckets still read zero. Checked in the
+  scenario paths of every engine (`BondRiskEngine.reprice` / `approximate`, repo, swaps,
+  CDS, XCCY, FX forwards, crosses and futures, OFZ and rate futures) for each curve they shift; in
+  `value_portfolio` such a position fails that scenario (`CALCULATION_FAILED`, with the
+  message). Other curves and specs are unchanged.
+- `benchmark_equivalents` warnings: `CONDITION_WARNING` (cond(J) > 50) is removed; it never
+  fired (nodes at the benchmarks' maturities keep cond(J) near 3 even a day apart).
+  `AMPLIFICATION_WARNING = 3.0` warns when the gross benchmark risk exceeds the positions'
+  gross node risk more than 3 times (large neighbouring hedges of opposite sign; 5.9 for an
+  11Y zero against 25 % coupon benchmarks, 1.0-1.7 for coupon bonds and close benchmarks).
+  New warnings name positions that mature before the first benchmark or pay after the last
+  (the end benchmark carries that risk). `condition_number` is still reported.
+- `basis_view` docstring and docs: on `rub_ofz_kbd_v3` the basis is the par-par spread
+  exactly at the nodes 1Y-20Y+ only; between nodes the KBD overlay and the OIS quotes
+  spread a bucket shift differently (a 4Y par yield takes 0.49/0.51 of the 3Y/5Y shifts on
+  the KBD, 0.50/0.50 on OIS; 13Y: 0.37/0.64 against 0.40/0.60).
+- `benchmark_equivalents` compares curves by canonical value: an equal curve built apart
+  is the same curve (it was refused as another curve object).
+- The par Jacobian's inverse is cached on the curve; the analytic second order is
+  unchanged to the bit.
+- `build_key_rate_forward_curve` shares its quote-independent calibration with
+  `KeyRateCurveRequest`; its numbers are unchanged.
+- `ProductContext.discount_curve` rejects par-yield quotes for products that read only
+  built curves (swaps, repos, futures, XCCY projection); `quoted_discount_curve` passes
+  them to bonds, CDS and FX products.
+
+### Not covered
+
+- Curves implied from FX swaps (`FxImpliedCurveRequest`) are still built once and shifted
+  on their zero rates; the KRS calibration's own discount curve does not move with the
+  discount factors; rebuilt KRS, XCCY-for-FX and proxy curves are not persisted across
+  jobs (`ShockedCurveCache.export` holds OIS curves only).
+
 ## 0.37.0 — OFZ curve risk in par quotes, closed-form gamma, benchmark equivalents
 
 The desk's decision of 2026-10-23 on how OFZ curve risk is bumped
@@ -33,13 +186,13 @@ pinned hashes are unchanged, and `rub_ofz_kbd_v1` / `v2` value and risk exactly 
 - Module `hedge_equivalents`: `benchmark_equivalents(benchmarks, positions)` →
   `BenchmarkHedge` / `BenchmarkEquivalent`: risk per benchmark bond's own effective annual
   yield (overlay nodes at the benchmarks' maturities, every spread held), yield DV01,
-  hedge quantity, condition number with a warning above 50.
+  hedge quantity, condition number with a warning above 50 (replaced in 0.38.0).
 - `docs/proposals/ofz-curve-risk-factors.md`: the research, the owner's decisions and
   what this release implements.
 
 ### Changed
 
-- `basis_view` docstring: with `rub_ofz_kbd_v3` the basis is par against par, exact.
+- `basis_view` docstring: with `rub_ofz_kbd_v3` the basis is par against par, exact at the nodes 1Y–20Y+.
 - Floater coupon reuse in `BondRiskEngine` keys on the zero shifts a shock applies (a par
   shock moves nodes past its own); unchanged for the zero bases.
 

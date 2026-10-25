@@ -20,12 +20,14 @@ from typing import Literal
 
 from ._curve_views import FxHorizon, fx_horizon, roll_curve
 from ._money import finite_money, positive_money
+from ._quote_curves import QuoteCurve, quote_curve
 from ._risk_common import (
     _ZERO_SHOCK,
     RISK_BUCKETS,
     ShockedCurveCache,
     _base_curve,
     _central_derivatives,
+    _check_scenario_shifts,
     _curve_basis,
     _curve_identity,
     _shifts,
@@ -95,15 +97,16 @@ class FxFuturesRiskRequest:
 
     Supply exactly one of ``futures_price`` (market, calibrates the basis) and
     ``basis_bp``. Both curves must be valued on the same date; each curve's type
-    selects its risk basis as in ``BondRiskRequest``. ``spot_rate`` is quoted in
-    the futures' price units for value date ``spot_value_date``.
+    selects its risk basis as in ``BondRiskRequest`` (the foreign curve may also be XCCY
+    par quotes, rebuilt on the shocked RUB curve, as in ``FxForwardRiskRequest``).
+    ``spot_rate`` is quoted in the futures' price units for value date ``spot_value_date``.
     """
 
     contract: FxFuturesContract
     spot_rate: float
     spot_value_date: date
     rub_curve: DiscountCurve | CurveBootstrapRequest
-    foreign_curve: DiscountCurve | CurveBootstrapRequest
+    foreign_curve: ForeignCurve
     futures_price: float | None = None
     basis_bp: float | None = None
     basis_day_count: DayCount = DayCount.ACT_365_FIXED
@@ -112,9 +115,10 @@ class FxFuturesRiskRequest:
     def __post_init__(self) -> None:
         if not isinstance(self.contract, FxFuturesContract):
             raise TypeError("contract must be an FxFuturesContract")
-        for name in ("rub_curve", "foreign_curve"):
-            if not isinstance(getattr(self, name), (DiscountCurve, CurveBootstrapRequest)):
-                raise TypeError(f"{name} must be DiscountCurve or CurveBootstrapRequest")
+        if not isinstance(self.rub_curve, (DiscountCurve, CurveBootstrapRequest)):
+            raise TypeError("rub_curve must be DiscountCurve or CurveBootstrapRequest")
+        if not isinstance(self.foreign_curve, (DiscountCurve, CurveBootstrapRequest, QuoteCurve)):
+            raise TypeError("foreign_curve must be DiscountCurve, CurveBootstrapRequest or quotes")
         if not isinstance(self.basis_day_count, DayCount):
             raise TypeError("basis_day_count must be a DayCount")
         if self.rub_curve.curve_date != self.foreign_curve.curve_date:
@@ -331,6 +335,37 @@ def _parity_growth(
     )
 
 
+ForeignCurve = DiscountCurve | CurveBootstrapRequest | QuoteCurve
+
+
+def _foreign_base(
+    source: ForeignCurve,
+    rub_source: DiscountCurve | CurveBootstrapRequest,
+    rub: DiscountCurve,
+    cache: ShockedCurveCache,
+) -> DiscountCurve:
+    """The base foreign curve; quotes whose build reads the RUB curve (XCCY) on ``rub``."""
+    if isinstance(source, QuoteCurve) and source.needs_rub:
+        return quote_curve(source, _ZERO_SHOCK, rub_source, rub)
+    return _base_curve(source, cache)
+
+
+def _foreign_view(
+    source: ForeignCurve,
+    base: DiscountCurve,
+    shifts: tuple[float, ...],
+    rub_source: DiscountCurve | CurveBootstrapRequest,
+    rub: DiscountFactorCurve,
+    rub_shifts: tuple[float, ...],
+    cache: ShockedCurveCache,
+) -> DiscountFactorCurve:
+    """The foreign curve under ``shifts``; XCCY quotes rebuilt on the shocked RUB curve
+    ``rub`` (``rub_source`` under ``rub_shifts``) with the quotes held."""
+    if isinstance(source, QuoteCurve) and source.needs_rub:
+        return quote_curve(source, shifts, rub_source, rub, rub_shifts)
+    return _shock_curve(source, base, shifts, cache)
+
+
 _Moves = tuple[tuple[float, ...], tuple[float, ...], float, float]
 _NO_MOVE: _Moves = (_ZERO_SHOCK, _ZERO_SHOCK, 0.0, 0.0)
 
@@ -360,7 +395,11 @@ class FxFuturesRiskEngine:
         if not isinstance(self.curve_cache, ShockedCurveCache):
             raise TypeError("curve_cache must be a ShockedCurveCache")
         object.__setattr__(self, "_rub_curve", _base_curve(req.rub_curve, self.curve_cache))
-        object.__setattr__(self, "_foreign_curve", _base_curve(req.foreign_curve, self.curve_cache))
+        object.__setattr__(
+            self,
+            "_foreign_curve",
+            _foreign_base(req.foreign_curve, req.rub_curve, self._rub_curve, self.curve_cache),
+        )
         carry = positive_money(
             req.basis_day_count.year_fraction(req.spot_value_date, req.contract.delivery_date),
             "basis accrual time",
@@ -425,8 +464,14 @@ class FxFuturesRiskEngine:
             rub: DiscountFactorCurve = _shock_curve(
                 req.rub_curve, self._rub_curve, rub_shifts, self.curve_cache
             )
-            foreign: DiscountFactorCurve = _shock_curve(
-                req.foreign_curve, self._foreign_curve, foreign_shifts, self.curve_cache
+            foreign = _foreign_view(
+                req.foreign_curve,
+                self._foreign_curve,
+                foreign_shifts,
+                req.rub_curve,
+                rub,
+                rub_shifts,
+                self.curve_cache,
             )
             rub_growth = rub.discount_factor(start) / rub.discount_factor(end)
             foreign_growth = foreign.discount_factor(start) / foreign.discount_factor(end)
@@ -531,6 +576,8 @@ class FxFuturesRiskEngine:
         """Exact variation margin, each factor group isolated, and their interaction."""
         rub, foreign = scenario.rub_curve_shifts_bp, scenario.foreign_curve_shifts_bp
         basis, spot = scenario.basis_shift_bp, scenario.fx_spot_shift_pct
+        _check_scenario_shifts(self.request.rub_curve, rub)
+        _check_scenario_shifts(self.request.foreign_curve, foreign)
         shocked = self._price((rub, foreign, basis, spot))
 
         def pnl(moves: _Moves, label: str) -> float:

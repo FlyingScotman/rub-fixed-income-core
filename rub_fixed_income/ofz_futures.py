@@ -51,6 +51,7 @@ from ._risk_common import (
     ShockedCurveCache,
     _base_curve,
     _central_derivatives,
+    _check_scenario_shifts,
     _curve_basis,
     _curve_identity,
     _shifts,
@@ -780,6 +781,8 @@ class OfzFuturesRiskEngine:
         """Exact variation margin, factor groups isolated, and the cheapest bond after it."""
         bond, funding = scenario.bond_curve_shifts_bp, scenario.funding_curve_shifts_bp
         spread, basis = scenario.spread_shift_bp, scenario.basis_shift_bp
+        _check_scenario_shifts(self.request.bond_curve, bond)
+        _check_scenario_shifts(self.request.funding_curve, funding)
         shocked, index = self._price((bond, funding, spread, basis))
 
         def pnl(moves: _Moves, label: str) -> float:

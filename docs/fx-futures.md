@@ -49,7 +49,9 @@ not net out, because they are risks to different curves.
   - Both curves must have the same `curve_date`, and `curve_date <= spot_value_date < delivery_date`.
   - Each curve is a `DiscountCurve` (`continuous_zero` basis) or a
     `CurveBootstrapRequest` (`ois_quote` basis), the same as in
-    [risk.md](risk.md). The bases may differ, for example a RUB OIS
+    [risk.md](risk.md); the foreign curve may also be XCCY par quotes
+    (`XccyCurveBootstrapRequest`, `xccy_quote`: rebuilt on the shocked RUB curve, as for
+    [FX forwards](fx-forwards.md)). The bases may differ, for example a RUB OIS
     rebootstrap with a foreign curve given as discount factors. Each result
     records both bases.
   - `quantity` is signed contracts.

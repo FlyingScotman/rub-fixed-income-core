@@ -32,16 +32,18 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from itertools import pairwise
-from typing import Literal, cast
+from typing import ClassVar, Literal, cast
 
 from ._curve_views import FxHorizon, roll_curve
 from ._curve_views import fx_horizon as _check_fx_horizon
 from ._money import finite_money, positive_money
+from ._quote_curves import QuoteCurve
 from ._risk_common import (
     _ZERO_SHOCK,
     RISK_BUCKETS,
     ShockedCurveCache,
     _base_curve,
+    _check_scenario_shifts,
     _curve_basis,
     _curve_identity,
     _shift_at,
@@ -797,7 +799,7 @@ class XccyParQuote:
 
 
 @dataclass(frozen=True)
-class XccyCurveBootstrapRequest:
+class XccyCurveBootstrapRequest(QuoteCurve):
     """Inputs of :func:`bootstrap_xccy_curve`; the curve date is ``trade_date``.
 
     ``spot_rate`` (RUB per foreign unit, value date ``spot_value_date``) converts foreign
@@ -805,7 +807,15 @@ class XccyCurveBootstrapRequest:
     of the trade date for ``XCS CNYRUB``). ``short_end`` (for example a curve implied from
     FX swaps) supplies nodes before the first quote, as MOEX's hybrid curve takes FX swaps
     up to 9M; the quotes then start after its last node.
+
+    FX engines (``fx_forwards``, ``fx_crosses``, ``fx_futures``) take it in place of a
+    built foreign curve for risk in the quotes: rebuilt under every shock on their shocked
+    RUB curve (discounting and projecting RUONIA), quotes held under RUB shocks and moved
+    by the bucket hats at their end dates under foreign shocks, as ``XccyRiskEngine``.
     """
+
+    quote_basis: ClassVar[str] = "xccy_quote"
+    needs_rub: ClassVar[bool] = True
 
     trade_date: date
     currency: str
@@ -848,6 +858,17 @@ class XccyCurveBootstrapRequest:
     @property
     def curve_date(self) -> date:
         return self.trade_date
+
+    def _quote_build(
+        self, shifts: tuple[float, ...], rub: DiscountFactorCurve | None
+    ) -> DiscountCurve:
+        assert rub is not None
+        if rub.curve_date != self.trade_date:
+            raise InvalidTerms("RUB curves must be dated the trade date")
+        return _bootstrap(self, rub, rub, _shocked_rates(self, shifts))
+
+    def _quote_identity(self) -> object:
+        return _foreign_identity(self)
 
 
 @dataclass(frozen=True)
@@ -1075,7 +1096,7 @@ class XccyCurveCache:
 
 
 RubCurve = DiscountCurve | CurveBootstrapRequest
-ForeignCurve = DiscountCurve | XccyCurveBootstrapRequest
+ForeignCurve = DiscountCurve | XccyCurveBootstrapRequest | QuoteCurve
 
 
 @dataclass(frozen=True)
@@ -1121,7 +1142,7 @@ class XccyRiskRequest:
         if self.rub_discount_curve is None:
             raise TypeError("rub_discount_curve is required")
         foreign = self.foreign_discount_curve
-        if not isinstance(foreign, (DiscountCurve, XccyCurveBootstrapRequest)):
+        if not isinstance(foreign, (DiscountCurve, QuoteCurve)):
             raise TypeError(
                 "foreign_discount_curve must be DiscountCurve or XccyCurveBootstrapRequest"
             )
@@ -1408,7 +1429,7 @@ def _fixings_identity(fixings: Fixings | None) -> _Canonical | None:
 
 
 def _foreign_identity(curve: ForeignCurve) -> _Canonical:
-    if isinstance(curve, DiscountCurve):
+    if not isinstance(curve, XccyCurveBootstrapRequest):
         return _curve_identity(curve)
     cached = curve.__dict__.get("_xccy_identity")
     if cached is None:
@@ -1542,14 +1563,17 @@ class XccyRiskEngine:
 
     # --- curves ------------------------------------------------------------------
 
-    def curve_basis(self, role: XccyCurveRole) -> str:
+    def _role_source(self, role: XccyCurveRole) -> RubCurve | ForeignCurve | None:
         req = self.request
-        source = {
+        return {
             "rub_discount": req.rub_discount_curve,
             "rub_projection": req.rub_projection_curve,
             "foreign_discount": req.foreign_discount_curve,
             "foreign_projection": req.foreign_projection_curve,
         }[role]
+
+    def curve_basis(self, role: XccyCurveRole) -> str:
+        source = self._role_source(role)
         if source is None:
             raise InvalidTerms(f"this swap has no {role} curve")
         return _role_basis(source)
@@ -1579,8 +1603,9 @@ class XccyRiskEngine:
         req = self.request
         source = req.foreign_discount_curve
         own = self._shift(shifts, "foreign_discount")
-        if isinstance(source, DiscountCurve):
-            return _shock_curve(source, source, own, self.curve_cache)
+        if not isinstance(source, XccyCurveBootstrapRequest):  # built, or par-yield quotes
+            base = _base_curve(source, self.curve_cache)
+            return _shock_curve(source, base, own, self.curve_cache)
         rub_d = self._shift(shifts, "rub_discount")
         rub_p = self._shift(shifts, "rub_projection")
         sources = (source, req.rub_discount_curve, req.rub_projection_curve)
@@ -1784,6 +1809,8 @@ class XccyRiskEngine:
         if "foreign_projection" not in roles and scenario.foreign_projection_shifts_bp is not None:
             raise InvalidTerms("this swap has no foreign projection curve")
         full = tuple(vector(r) for r in roles)
+        for role, moves in zip(roles, full, strict=True):
+            _check_scenario_shifts(self._role_source(role), moves)
         rub_only = tuple(vector(r) if r.startswith("rub") else zero for r in roles)
         foreign_only = tuple(vector(r) if r.startswith("foreign") else zero for r in roles)
         none = self._zero()

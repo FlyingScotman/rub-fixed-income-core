@@ -39,11 +39,13 @@ from typing import Literal
 
 from ._curve_views import FxHorizon
 from ._money import finite_money, positive_money
+from ._quote_curves import QuoteCurve
 from ._risk_common import (
     _ZERO_SHOCK,
     RISK_BUCKETS,
     ShockedCurveCache,
     _base_curve,
+    _check_scenario_shifts,
     _curve_basis,
     _curve_identity,
     _shock_curve,
@@ -60,7 +62,14 @@ from .discount import (
 )
 from .errors import InvalidTerms
 from .factors import FactorRisk, _upper, fx_basis_factor, fx_factor, ir_factor
-from .fx_futures import FxFuturesScenario, _horizon_rule, _horizon_views, _HorizonView
+from .fx_futures import (
+    FxFuturesScenario,
+    _foreign_base,
+    _foreign_view,
+    _horizon_rule,
+    _horizon_views,
+    _HorizonView,
+)
 from .tenors import parse_tenor, resolve_tenor
 
 __all__ = [
@@ -831,7 +840,9 @@ class FxForwardRiskRequest:
     ``basis_bp`` is explicit: zero when ``foreign_curve`` is implied from FX swaps (it
     then carries the whole cross-currency basis), or calibrated with
     :func:`fx_forward_basis_bp` when it is, for example, a foreign OIS curve. Each
-    curve's type selects its risk basis as in ``BondRiskRequest``. A leg whose value
+    curve's type selects its risk basis as in ``BondRiskRequest``; ``foreign_curve`` may also
+    be XCCY par quotes (``xccy.XccyCurveBootstrapRequest``: rebuilt on the shocked RUB
+    curve under every shock, basis ``xccy_quote``). A leg whose value
     date or payment date precedes the curve date has settled and is rejected; a fixed
     NDF leg (``fixing_rate``) only when its payment date does, and an unfixed one whose
     fixing date precedes the curve date needs its published fixing.
@@ -841,16 +852,17 @@ class FxForwardRiskRequest:
     spot_rate: float
     spot_value_date: date
     rub_curve: DiscountCurve | CurveBootstrapRequest
-    foreign_curve: DiscountCurve | CurveBootstrapRequest
+    foreign_curve: DiscountCurve | CurveBootstrapRequest | QuoteCurve
     basis_bp: float
     basis_day_count: DayCount = DayCount.ACT_365_FIXED
 
     def __post_init__(self) -> None:
         if not isinstance(self.instrument, (FxForward, FxSwap)):
             raise TypeError("instrument must be an FxForward or an FxSwap")
-        for name in ("rub_curve", "foreign_curve"):
-            if not isinstance(getattr(self, name), (DiscountCurve, CurveBootstrapRequest)):
-                raise TypeError(f"{name} must be DiscountCurve or CurveBootstrapRequest")
+        if not isinstance(self.rub_curve, (DiscountCurve, CurveBootstrapRequest)):
+            raise TypeError("rub_curve must be DiscountCurve or CurveBootstrapRequest")
+        if not isinstance(self.foreign_curve, (DiscountCurve, CurveBootstrapRequest, QuoteCurve)):
+            raise TypeError("foreign_curve must be DiscountCurve, CurveBootstrapRequest or quotes")
         if not isinstance(self.basis_day_count, DayCount):
             raise TypeError("basis_day_count must be a DayCount")
         curve_date = self.rub_curve.curve_date
@@ -1100,7 +1112,11 @@ class FxForwardRiskEngine:
         if not isinstance(self.curve_cache, ShockedCurveCache):
             raise TypeError("curve_cache must be a ShockedCurveCache")
         object.__setattr__(self, "_rub_curve", _base_curve(req.rub_curve, self.curve_cache))
-        object.__setattr__(self, "_foreign_curve", _base_curve(req.foreign_curve, self.curve_cache))
+        object.__setattr__(
+            self,
+            "_foreign_curve",
+            _foreign_base(req.foreign_curve, req.rub_curve, self._rub_curve, self.curve_cache),
+        )
         instrument = req.instrument
         legs = tuple(
             _Leg(
@@ -1150,8 +1166,14 @@ class FxForwardRiskEngine:
     ) -> tuple[DiscountFactorCurve, DiscountFactorCurve]:
         req = self.request
         rub = _shock_curve(req.rub_curve, self._rub_curve, rub_shifts, self.curve_cache)
-        foreign = _shock_curve(
-            req.foreign_curve, self._foreign_curve, foreign_shifts, self.curve_cache
+        foreign = _foreign_view(
+            req.foreign_curve,
+            self._foreign_curve,
+            foreign_shifts,
+            req.rub_curve,
+            rub,
+            rub_shifts,
+            self.curve_cache,
         )
         return rub, foreign
 
@@ -1366,6 +1388,8 @@ class FxForwardRiskEngine:
             raise TypeError("scenario must be an FxFuturesScenario")
         rub, foreign = scenario.rub_curve_shifts_bp, scenario.foreign_curve_shifts_bp
         basis, spot = scenario.basis_shift_bp, scenario.fx_spot_shift_pct
+        _check_scenario_shifts(self.request.rub_curve, rub)
+        _check_scenario_shifts(self.request.foreign_curve, foreign)
         shocked = finite_money(self._pv((rub, foreign, basis, spot)), "shocked PV")
 
         def pnl(moves: _Moves, label: str) -> float:

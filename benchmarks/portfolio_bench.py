@@ -2,12 +2,15 @@
 
 Builds a synthetic book of distinct fixed-coupon RUB bonds (bullets, amortizers and
 confirmed puts, 1-15 years) and values it with ``value_portfolio`` on the archived
-KBD publication of 15 October 2026 and on a 17-tenor RUONIA OIS quote set:
+KBD publication of 15 October 2026 and on a 17-tenor RUONIA OIS quote set, under the
+legacy convention (``ois``) and as the MOEX spot-starting swaps of
+``rub_ruonia_ois_moex_v2`` (``ruonia``, the desk monitor's curve risk in quotes; each
+shocked curve is a full coupled bootstrap):
 
 - ``first``: PV, spread and first-order desk-factor risk;
 - ``hessian``: plus the 12x12 Hessian per position;
 - ``scenarios``: Hessian plus five curve scenarios;
-- ``warm``: OIS only, the same job with a cache seeded from a previous job's
+- ``warm``: OIS curves only, the same job with a cache seeded from a previous job's
   :meth:`ShockedCurveCache.export` (the backend's persisted curves).
 
 The ``fx`` curve case (package 3) is the same book as CNY, USD and EUR bonds in turn,
@@ -25,6 +28,7 @@ Run from the repository root::
 
     uv run python benchmarks/portfolio_bench.py --positions 2000
     uv run python benchmarks/portfolio_bench.py --positions 2000 --cases mixed
+    uv run python benchmarks/portfolio_bench.py --positions 50 --cases ruonia
 
 The numbers are machine-dependent; the target is <= 10 ms per position amortised
 for OIS with the Hessian at 2k positions.
@@ -72,6 +76,8 @@ from rub_fixed_income import (
     ValuationPolicy,
     ZcycParameters,
     __version__,
+    ois_curve_convention,
+    ois_quotes,
     value_portfolio,
 )
 from rub_fixed_income.dates import add_months
@@ -126,6 +132,15 @@ def ois_request() -> CurveBootstrapRequest:
         for tenor, days in OIS_TENORS
     )
     return CurveBootstrapRequest(BUSINESS_DATE, quotes)
+
+
+def ruonia_request() -> CurveBootstrapRequest:
+    """The same tenors as MOEX standard OIS RUONIA swaps (``rub_ruonia_ois_moex_v2``)."""
+    rates = [(tenor, 0.137 + 0.002 * days / 365.0) for tenor, days in OIS_TENORS]
+    convention = ois_curve_convention("rub_ruonia_ois_moex_v2", CALENDAR)
+    return CurveBootstrapRequest(
+        BUSINESS_DATE, ois_quotes(BUSINESS_DATE, rates, CALENDAR), convention
+    )
 
 
 FOREIGN = {"CNY": (11.4, 0.017), "USD": (81.5, 0.042), "EUR": (94.2, 0.023)}
@@ -274,7 +289,11 @@ def run_case(
         AS_OF,
         curves=(
             CurveEntry("RUB_OFZ_KBD", "rub_ofz_kbd_v1", kbd_parameters()),
-            CurveEntry("RUB_OIS", "rub_ruonia_ois_legacy_v1", ois_request()),
+            (
+                CurveEntry("RUB_OIS", "rub_ruonia_ois_moex_v2", ruonia_request())
+                if curve == "ruonia"
+                else CurveEntry("RUB_OIS", "rub_ruonia_ois_legacy_v1", ois_request())
+            ),
             *(
                 CurveEntry(f"{c}_DF", f"{c.lower()}_discount_factors_v1", foreign_curve(r))
                 for c, (_, r) in FOREIGN.items()
@@ -312,7 +331,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--positions", type=int, default=2000)
     parser.add_argument("--json", type=Path, help="also write the timings as JSON")
     parser.add_argument(
-        "--cases", default="kbd,ois,fx,mixed", help="comma-separated: kbd, ois, fx, mixed"
+        "--cases",
+        default="kbd,ois,ruonia,fx,mixed",
+        help="comma-separated: kbd, ois, ruonia, fx, mixed",
     )
     args = parser.parse_args(argv)
     size = args.positions
@@ -325,7 +346,7 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             timing, cache = run_case(curve, mode, size)
             timings.append(timing)
-            if curve == "ois" and mode == "hessian":
+            if curve in ("ois", "ruonia") and mode == "hessian":
                 warm_cache = ShockedCurveCache()
                 warm_cache.seed(cache.export())
                 warm, _ = run_case(curve, "warm", size, warm_cache)

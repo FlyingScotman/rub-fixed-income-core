@@ -33,7 +33,15 @@ from typing import Literal
 
 from ._curve_views import FxHorizon
 from ._money import finite_money, positive_money
-from ._risk_common import _ZERO_SHOCK, RISK_BUCKETS, ShockedCurveCache, _curve_identity, _shifts
+from ._quote_curves import QuoteCurve
+from ._risk_common import (
+    _ZERO_SHOCK,
+    RISK_BUCKETS,
+    ShockedCurveCache,
+    _check_scenario_shifts,
+    _curve_identity,
+    _shifts,
+)
 from .canonical import canonical_sha256
 from .conventions import DayCount
 from .discount import CurveBootstrapRequest, DiscountCurve
@@ -203,7 +211,7 @@ class FxCrossRiskRequest:
 
     Each currency has its own curve, spot (with its value date) and basis, as in an
     :class:`~rub_fixed_income.fx_forwards.FxForwardRiskRequest`; the three curves share
-    one valuation date.
+    one valuation date. A foreign curve may be XCCY par quotes, as for a forward.
     """
 
     instrument: FxCrossForward | FxCrossSwap
@@ -212,8 +220,8 @@ class FxCrossRiskRequest:
     quote_spot_rate: float
     quote_spot_value_date: date
     rub_curve: DiscountCurve | CurveBootstrapRequest
-    base_curve: DiscountCurve | CurveBootstrapRequest
-    quote_curve: DiscountCurve | CurveBootstrapRequest
+    base_curve: DiscountCurve | CurveBootstrapRequest | QuoteCurve
+    quote_curve: DiscountCurve | CurveBootstrapRequest | QuoteCurve
     base_basis_bp: float
     quote_basis_bp: float
     base_basis_day_count: DayCount = DayCount.ACT_365_FIXED
@@ -637,6 +645,12 @@ class FxCrossRiskEngine:
         )
         bb, qb = scenario.base_basis_shift_bp, scenario.quote_basis_shift_bp
         bs, qs = scenario.base_spot_shift_pct, scenario.quote_spot_shift_pct
+        for curve, moves in (
+            (self.request.rub_curve, rub),
+            (self.request.base_curve, base),
+            (self.request.quote_curve, quote),
+        ):
+            _check_scenario_shifts(curve, moves)
         z = _ZERO_SHOCK
         shocked = finite_money(self._pv((rub, base, quote, bb, qb, bs, qs)), "shocked PV")
 

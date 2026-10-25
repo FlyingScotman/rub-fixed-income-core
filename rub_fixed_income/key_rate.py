@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from itertools import pairwise
-from typing import Literal
+from typing import Literal, cast
 
 import numpy as np
 
+from ._risk_common import _shift_at, _shifts, key_rate_weights
+from .canonical import canonical_sha256
 from .conventions import DayCount
 from .dates import BusinessCalendar, add_months
 from .discount import DiscountCurve
@@ -394,9 +396,20 @@ def _scenario(
     )
 
 
-def build_key_rate_forward_curve(
-    request: KeyRateCurveBuildRequest,
-) -> KeyRateCurveBuildResult:
+@dataclass(frozen=True)
+class _Calibration:
+    """The quote-independent part of a KRS calibration: rates = solve(exposure, quotes - base)."""
+
+    effective_date: date
+    maturities: tuple[date, ...]
+    state_starts: tuple[date, ...]
+    exposure: np.ndarray
+    base: np.ndarray
+    rank: int
+    singular_values: np.ndarray
+
+
+def _calibration(request: KeyRateCurveBuildRequest) -> _Calibration:
     if not request.quotes:
         raise ValueError("at least one KRS quote is required")
     if len({quote.tenor.strip().upper() for quote in request.quotes}) != len(request.quotes):
@@ -466,6 +479,22 @@ def build_key_rate_forward_curve(
         raise ValueError(
             f"KRS pillar-forward system is rank deficient: rank {rank}/{len(request.quotes)}"
         )
+    return _Calibration(
+        effective_date, maturities, state_starts, exposure, base, rank, singular_values
+    )
+
+
+def build_key_rate_forward_curve(
+    request: KeyRateCurveBuildRequest,
+) -> KeyRateCurveBuildResult:
+    calibration = _calibration(request)
+    effective_date = calibration.effective_date
+    maturities = calibration.maturities
+    state_starts = calibration.state_starts
+    exposure = calibration.exposure
+    base = calibration.base
+    rank = calibration.rank
+    singular_values = calibration.singular_values
     inverse = np.linalg.inv(exposure)
     diagnostics = KeyRateCurveDiagnostics(
         equation_count=len(request.quotes),
@@ -522,3 +551,137 @@ def build_key_rate_forward_curve(
         diagnostics=diagnostics,
         calendar_version=request.calendar.version,
     )
+
+
+_SHOCKED_CURVES = 4096
+
+
+@dataclass(frozen=True)
+class _QuoteRisk:
+    calibration: _Calibration
+    mid: np.ndarray
+    times: tuple[float, ...]
+    curve: KeyRateForwardCurve
+    jacobian: np.ndarray  # segment forward move per bp of each bucket, in bp
+    shocked: dict[tuple[float, ...], KeyRateForwardCurve]
+
+
+@dataclass(frozen=True)
+class KeyRateCurveRequest:
+    """KRS quotes of a key-rate projection curve: the source of quote-basis risk.
+
+    ``build`` is the TOM calibration of :func:`build_key_rate_forward_curve`;
+    :meth:`curve` is its mid curve re-dated to ``business_date`` at ``rate_in_force``
+    (:func:`rebase_key_rate_curve`), the curve every engine prices on. An engine given
+    this request instead of a :class:`KeyRateForwardCurve` bumps quotes, not forwards: a
+    bucket shift of ``s`` bp moves each KRS mid quote by the shift at its maturity (the
+    hats of the risk buckets at ACT/ACT ISDA time from ``business_date``, as each quote of
+    an OIS ``CurveBootstrapRequest``) and recalibrates the mid curve on the same discount
+    curve (:meth:`shocked`). Bid, ask, the discount curve of the calibration and the
+    decided rate do not move. The calibration is linear in the quotes, so each bucket
+    moves the forwards by a fixed vector (:meth:`shift_weights`). Calibrations are
+    built lazily and kept on the request.
+    """
+
+    build: KeyRateCurveBuildRequest
+    business_date: date
+    rate_in_force: float
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.build, KeyRateCurveBuildRequest):
+            raise TypeError("build must be a KeyRateCurveBuildRequest")
+        if not isinstance(self.business_date, date):
+            raise TypeError("business_date must be a date")
+        if not math.isfinite(self.rate_in_force):
+            raise InvalidTerms("rate in force must be finite")
+        if type(self.build.quotes) is not tuple:
+            object.__setattr__(self, "build", replace(self.build, quotes=tuple(self.build.quotes)))
+
+    @property
+    def curve_date(self) -> date:
+        return self.business_date
+
+    @property
+    def identity(self) -> str:
+        """Canonical SHA-256 of the request, computed once."""
+        cached = self.__dict__.get("_identity")
+        if cached is None:
+            cached = canonical_sha256(self)
+            object.__setattr__(self, "_identity", cached)
+        return cast(str, cached)
+
+    def _risk(self) -> _QuoteRisk:
+        state = self.__dict__.get("_quote_risk")
+        if state is not None:
+            return cast(_QuoteRisk, state)
+        build = self.build
+        calibration = _calibration(build)
+        mid = np.asarray([quote.mid for quote in build.quotes])
+        curve = self._rebase(self._solve(calibration, mid))
+        times = tuple(
+            DayCount.ACT_ACT_ISDA.year_fraction(self.business_date, maturity)
+            for maturity in calibration.maturities
+        )
+        weights = np.asarray([key_rate_weights(time) for time in times])
+        jacobian = np.linalg.solve(calibration.exposure, weights)
+        state = _QuoteRisk(calibration, mid, times, curve, jacobian, {})
+        object.__setattr__(self, "_quote_risk", state)
+        return state
+
+    def _solve(self, calibration: _Calibration, target: np.ndarray) -> KeyRateForwardCurve:
+        return _scenario(
+            side="mid",
+            target=target,
+            exposure=calibration.exposure,
+            base=calibration.base,
+            request=self.build,
+            effective_date=calibration.effective_date,
+            maturities=calibration.maturities,
+            state_starts=calibration.state_starts,
+        ).curve
+
+    def _rebase(self, curve: KeyRateForwardCurve) -> KeyRateForwardCurve:
+        try:
+            return rebase_key_rate_curve(
+                curve, self.business_date, rate_in_force=self.rate_in_force
+            )
+        except InvalidTerms as exc:
+            raise InvalidTerms(
+                f"KRS quotes dated {self.business_date.isoformat()}: {exc}"
+            ) from None
+
+    def curve(self) -> KeyRateForwardCurve:
+        """The mid curve dated ``business_date``."""
+        return self._risk().curve
+
+    def shocked(self, shifts: tuple[float, ...]) -> KeyRateForwardCurve:
+        """The mid curve recalibrated to the quotes moved by bucket ``shifts`` (bp).
+
+        The same solve as :func:`build_key_rate_forward_curve` on the moved mid quotes,
+        with its domain and repricing checks.
+        """
+        moves = _shifts(tuple(shifts))
+        state = self._risk()
+        if not any(moves):
+            return state.curve
+        cached = state.shocked.get(moves)
+        if cached is None:
+            target = state.mid + np.asarray([_shift_at(t, moves) * 1e-4 for t in state.times])
+            cached = self._rebase(self._solve(state.calibration, target))
+            if len(state.shocked) < _SHOCKED_CURVES:
+                state.shocked[moves] = cached
+        return cached
+
+    def shift_weights(self, start: date, end: date) -> tuple[float, ...]:
+        """Per bucket, the forward key rate summed over the days of ``[start, end)`` after
+        the current-rate interval, per unit of quote shift (the unit of
+        ``swaps``' forward-bucket weights: the average moves by ``1e-4 * w / days`` per bp).
+        """
+        state = self._risk()
+        curve = state.curve
+        first = max(start, curve.current_rate_end)
+        days = np.zeros(len(curve.segments))
+        for index, segment in enumerate(curve.segments):
+            overlap = (min(end, segment.end_date) - max(first, segment.start_date)).days
+            days[index] = max(overlap, 0)
+        return tuple(float(value) for value in days @ state.jacobian)

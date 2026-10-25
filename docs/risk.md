@@ -47,6 +47,7 @@ The input type selects the basis, which is recorded in every result:
 | `DiscountCurve` with `convention.zero_shock="annual"` (0.34.0) | `annual_zero` | Shift the effective annual zero yield: `DF'(t) = (DF(t)^(-1/t) + s(t) / 10000)^(-t)` |
 | `DiscountCurve` with `convention.zero_shock="annual_par"` (0.37.0) | `annual_par` | Move the par yield of one annual-coupon instrument per bucket from 1Y to 20Y+ by the bucket's shift and solve the annual-zero overlay (hats on 1Y–20Y, flat below 1Y) that reprices all eight; 1M–6M have no instrument and no risk |
 | `CurveBootstrapRequest` | `ois_quote` | Interpolate the shift to each original OIS quote's maturity, add it to the decimal par rate, then bootstrap again using the same conventions |
+| `ParYieldCurveRequest` (0.38.0, issue #77) | `par_yield_quote` | The same for the par yields of a USD / EUR proxy: the shift at each quote's maturity (spec day count from the curve date) added to the par yield, then `bootstrap_par_yield_curve` again |
 
 The zero overlay evaluates the original curve at each required date, preserving
 its interpolation and extrapolation; it does not replace the original curve by
@@ -88,11 +89,21 @@ an overlay of its effective annual zero yield, solved by Newton, reprices the ei
 instruments at their shifted yields, so the published KBD is unchanged at zero shock and
 the shock is local (a bump at tenor T leaves the overlay before T unchanged, up to the
 leap day of a maturity just past its pillar). The KBD has no OFZ shorter than about a
-year: its 1M–6M buckets are merged into 1Y (no instrument, zero risk, a shift there moves
-nothing). A par bond at a pillar has risk in its own bucket only; the bucket sum is the
-parallel risk; RUONIA (par quotes) and the KBD (par quotes) are then the same kind of
+year: its 1M–6M buckets are merged into 1Y (no instrument, zero risk, a risk bump there
+moves nothing). A par bond at a pillar has risk in its own bucket only; the bucket sum is
+the parallel risk; RUONIA (par quotes) and the KBD (par quotes) are then the same kind of
 factor in the same unit at the same tenors, so `basis_view` gives the par–par basis
-(swap spread) exactly. The solved overlay is cached per (curve, shift vector) and shared
+(swap spread) exactly at the nodes 1Y–20Y+. Between nodes the two curves spread a bucket
+shift differently (a 4Y KBD par yield takes 0.49/0.51 of the 3Y/5Y shifts, a 4Y OIS quote
+0.50/0.50; at 13Y 0.37/0.64 against 0.40/0.60), so there the basis is close to, not
+exactly, a par–par spread. A scenario on the KBD may leave 1M–6M at zero or move them with
+1Y (a parallel shift does); other values there are refused (`InvalidTerms`), as they would
+move nothing. Newton is damped (step halving on the repricing error, inside the domain);
+realistic shocks take full steps. The overlay has a finite reach: raising a node can at
+most drive the discount factors past the previous node to zero, so the 20Y+ par yield can
+exceed the 15Y one by less than `par(15Y)·DF(15Y)/(1 − DF(15Y))` (about 180 bp on a 16 %
+curve, 75 bp after +1000 bp); a shock beyond it raises "did not converge" naming the
+instrument and its miss. The solved overlay is cached per (curve, shift vector) and shared
 by every position on the curve: risk costs what `annual_zero` risk costs. Why and the
 evidence on 2024–2026 hub data: [proposals/ofz-curve-risk-factors.md](proposals/ofz-curve-risk-factors.md).
 
@@ -110,14 +121,48 @@ proposal §6). `ValuationPolicy(second_order_method="analytic")` takes it for ev
 bond in `value_portfolio` (the Hessian part about six times faster); everything else is
 bumped.
 
+**Closed-form first order (0.38.0).** `engine.risk(difference="central", method="analytic")`
+gives the first derivatives of the same bonds in closed form: the gradient pass of the
+second order without the Hessian (`J^-T` on `annual_par`), the same `BondRiskResult`
+fields with `model_version = ANALYTIC_RISK_MODEL_VERSION`. It is the limit of the central
+difference (1e-7 relative from it on the tests) and equals the analytic second order's
+gradient to the bit; `parallel_dv01_rub` is the bucket sum (the bucket weights sum to one)
+and `bump_bp` is only recorded. A forward difference has no closed form: `method="analytic"`
+with `difference="forward"` is a `ValueError`. `ValuationPolicy(risk_method="analytic")`
+takes it in `value_portfolio` (about 3.5 times faster per `risk()` call: 0.13-0.18 ms
+instead of 0.5-0.6 ms for a bond); floaters, perpetual tails and bonds on OIS quotes are
+still bumped.
+
 **Benchmark equivalents (0.37.0, the hedge view).** `benchmark_equivalents(benchmarks,
 positions)` shows the positions' rate risk against benchmark bonds the caller chooses: an
 annual-zero overlay with nodes at the benchmarks' maturities, each benchmark's factor the
 overlay that moves its own effective annual yield by 1 bp and the others' by nothing. The
 result gives the risk per benchmark (RUB per bp of its yield), its yield DV01, the hedge
-quantity `-risk / DV01` and the condition number. A bond between two benchmarks maps to
-them; on 2025–2026 this beat hedging on the 11 fixed-tenor buckets by 25–37 % of residual
-daily P&L on 2.5–7.5 years. Fixed-cashflow bonds on one `DiscountCurve` only.
+quantity `-risk / DV01` and the condition number. Warnings flag positions that mature
+before the first benchmark or pay after the last (the overlay is flat beyond the end
+benchmarks, which carry that risk) and hedges whose gross risk exceeds the positions' gross
+node risk more than 3 times (large opposite-sign neighbours, for example coupon-heavy
+benchmarks around a zero). Close benchmarks are harmless: the nodes sit at their
+maturities, `J` is nearly triangular and its condition number stays near 3 even a day
+apart. A bond between two benchmarks maps to them; on 2025–2026 this beat hedging on the
+11 fixed-tenor buckets by 25–37 % of residual daily P&L on 2.5–7.5 years. Benchmarks are
+fixed-cashflow bonds on one `DiscountCurve`; positions (0.38.0) are fixed-cashflow bonds on
+it, floaters that project or discount on it and OFZ basket futures whose bond or funding
+curve it is:
+
+- a floater (for example a KBD `ZR_YLD_CRV` floater projected off the KBD and discounted on
+  RUONIA OIS) is repriced on the overlaid curve with its coupons re-projected, the node
+  risk the central difference over `FLOATER_NODE_BUMP_BP` = 0.1 bp (its O(h²) error is
+  below 1e-9 relative); at benchmarks on the 3Y–10Y pillars it equals the engine's own
+  central bucket DV01 to 1e-7;
+- an OFZ future takes the closed form through the cheapest-to-deliver bond, as the engine
+  prices it: the bond's forward price over its conversion factor, its spread and the basis
+  held. A switch of the cheapest bond is not first order and is not shown;
+- a curve that is not the benchmarks' (a floater's RUONIA discount curve, a future's
+  funding curve) is held and a warning names those positions; hedge that risk on its own
+  curve. A product on none of the benchmarks' curves is `InvalidTerms`.
+
+Curves compare by canonical value: equal curves built apart are the same curve.
 
 ## Risk definitions
 
@@ -133,6 +178,9 @@ For unit price `P`, signed quantity `q`, and a bump of `h` basis points:
 - `parallel_dv01_rub` is independently repriced with all pillars bumped together.
   Finite-bump curvature makes it differ slightly from the bucket sum. No
   rescaling conceals that difference.
+- `method="analytic"` (0.38.0, central only, fixed-cashflow bonds on a `DiscountCurve`)
+  replaces the differences by the exact derivatives; `parallel_dv01_rub` is then the
+  bucket sum.
 - `cs01_rub` bumps the base spread if `spread_kind="credit"`; `ofz_spr01_rub`
   does so if `spread_kind="ofz"`. The other field is zero, avoiding double count.
 

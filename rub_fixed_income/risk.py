@@ -15,6 +15,7 @@ from datetime import date
 from typing import Literal, cast
 
 from ._money import finite_money, non_negative_money, positive_money
+from ._quote_curves import QuoteCurve
 from ._risk_common import (
     _ZERO_SHOCK,
     RISK_BUCKETS,
@@ -25,6 +26,7 @@ from ._risk_common import (
     ShockedCurveCache,
     _base_curve,
     _central_derivatives,
+    _check_scenario_shifts,
     _curve_basis,
     _curve_identity,
     _overlay_shifts,
@@ -50,6 +52,7 @@ from .perpetual import PerpetualTail
 # Bucket weights, the shocked-curve cache and curve helpers live in ._risk_common since
 # 0.12.0 (shared with fx_futures); the public names stay importable from here.
 __all__ = [
+    "ANALYTIC_RISK_MODEL_VERSION",
     "ANALYTIC_SECOND_ORDER_MODEL_VERSION",
     "FLOATING_RISK_MODEL_VERSION",
     "FLOATING_TWO_CURVE_RISK_MODEL_VERSION",
@@ -82,6 +85,7 @@ _SECOND_ORDER_MODELS = {
     FLOATING_TWO_CURVE_RISK_MODEL_VERSION: "rub-floating-two-curve-second-order-v1",
 }
 ANALYTIC_SECOND_ORDER_MODEL_VERSION = "rub-fixed-cashflow-second-order-analytic-v1"
+ANALYTIC_RISK_MODEL_VERSION = "rub-fixed-cashflow-risk-analytic-v1"
 # Bounds on the per-engine memo of re-projected coupons (memory only, never numbers).
 _COUPON_MEMO_SIZE = 65_536
 _CURVE_MEMO_SIZE = 1024
@@ -92,7 +96,8 @@ class BondRiskRequest:
     """Amounts are RUB per bond; quantity is signed bonds, price is dirty RUB/bond.
 
     Supply exactly one of spread_bp and dirty_price_rub. A DiscountCurve selects
-    continuous-zero risk; a CurveBootstrapRequest selects par-OIS quote risk.
+    continuous-zero risk; a CurveBootstrapRequest selects par-OIS quote risk; a par-yield
+    proxy request (``proxy_curves.ParYieldCurveRequest``) par-yield quote risk.
     Payments on/before settlement are excluded. Put/amortization schedules must
     already contain the contractual redemption and no post-horizon payments.
 
@@ -114,7 +119,7 @@ class BondRiskRequest:
 
     cashflows: tuple[BondCashflow, ...]
     settlement_date: date
-    curve: DiscountCurve | CurveBootstrapRequest
+    curve: DiscountCurve | CurveBootstrapRequest | QuoteCurve
     spread_convention: ZSpreadConvention
     spread_kind: Literal["credit", "ofz"]
     spread_bp: float | None = None
@@ -137,8 +142,10 @@ class BondRiskRequest:
                 raise ValueError("floating fixing history must be dated at the curve date")
         if self.spread_kind not in ("credit", "ofz"):
             raise ValueError("spread_kind must be credit or ofz")
-        if not isinstance(self.curve, (DiscountCurve, CurveBootstrapRequest)):
-            raise TypeError("curve must be DiscountCurve or CurveBootstrapRequest")
+        if not isinstance(self.curve, (DiscountCurve, CurveBootstrapRequest, QuoteCurve)) or (
+            isinstance(self.curve, QuoteCurve) and self.curve.needs_rub
+        ):
+            raise TypeError("curve must be DiscountCurve, CurveBootstrapRequest or par yields")
         if not isinstance(self.spread_convention, ZSpreadConvention):
             raise TypeError("an explicit ZSpreadConvention is required")
         if self.settlement_date < self.curve.curve_date:
@@ -604,7 +611,11 @@ class BondRiskEngine:
             raise ValueError("shock is outside the supported numerical domain") from exc
 
     def risk(
-        self, *, bump_bp: float = 1.0, difference: Literal["forward", "central"] = "forward"
+        self,
+        *,
+        bump_bp: float = 1.0,
+        difference: Literal["forward", "central"] | None = None,
+        method: Literal["bump", "analytic"] = "bump",
     ) -> BondRiskResult:
         """Signed RUB/bp. Default is exact +1bp P&L; central is a derivative estimate.
 
@@ -613,10 +624,28 @@ class BondRiskEngine:
         With a separate projection curve, ``buckets`` are the discount curve's and
         ``projection_buckets`` the projection curve's; dv01 sums both and
         parallel_dv01 moves both curves together.
+
+        ``method="analytic"`` (0.38.0) gives the exact first derivatives in closed form for
+        a fixed-cashflow bond on a ``DiscountCurve`` (as ``second_order(method="analytic")``,
+        without the Hessian; otherwise :class:`InvalidTerms`): the limit of the central
+        difference, which it equals up to its O(bump^2) error. ``difference`` is then central
+        when omitted; ``"forward"`` is refused. ``parallel_dv01`` is the bucket sum (the
+        bucket weights sum to one) and ``bump_bp`` is only recorded. Model ``ANALYTIC_RISK_MODEL_VERSION``.
         """
         bump = positive_money(bump_bp, "risk bump bp")
+        if difference is None:
+            difference = "central" if method == "analytic" else "forward"
         if difference not in ("forward", "central"):
             raise ValueError("difference must be forward or central")
+        if method not in ("bump", "analytic"):
+            raise ValueError("method must be bump or analytic")
+        if method == "analytic":
+            if difference != "central":
+                raise ValueError(
+                    "analytic risk is a derivative, the limit of the central difference: "
+                    "pass difference='central'"
+                )
+            return self._analytic_risk(bump)
 
         def sensitivity(
             shifts: tuple[float, ...], spread: float, projection: tuple[float, ...] = _ZERO_SHOCK
@@ -691,6 +720,36 @@ class BondRiskEngine:
             projection_buckets=tuple(projection_buckets),
         )
 
+    def _analytic_risk(self, bump: float) -> BondRiskResult:
+        from ._analytic_risk import analytic_risk
+
+        units, spread_unit = analytic_risk(self)
+        quantity = self.request.quantity
+        buckets = tuple(
+            BucketRisk(
+                bucket,
+                finite_money(unit * quantity, "bucket DV01"),
+                finite_money(-unit / self.base_price_rub * 10_000.0, "key rate duration"),
+            )
+            for bucket, unit in zip(RISK_BUCKETS, units, strict=True)
+        )
+        spread = finite_money(spread_unit * quantity, "spread sensitivity")
+        return BondRiskResult(
+            base_id=self.base_id,
+            curve_basis=self.curve_basis,
+            spread_convention=self.request.spread_convention.identifier,
+            difference="central",
+            bump_bp=bump,
+            pv_rub=finite_money(self.base_price_rub * quantity, "position PV"),
+            spread_bp=self.spread_bp,
+            buckets=buckets,
+            dv01_rub=finite_money(math.fsum(b.dv01_rub for b in buckets), "bucket sum DV01"),
+            parallel_dv01_rub=finite_money(math.fsum(units) * quantity, "DV01"),
+            cs01_rub=spread if self.request.spread_kind == "credit" else 0.0,
+            ofz_spr01_rub=spread if self.request.spread_kind == "ofz" else 0.0,
+            model_version=ANALYTIC_RISK_MODEL_VERSION,
+        )
+
     def reprice(
         self,
         scenario: BondScenario,
@@ -737,11 +796,15 @@ class BondRiskEngine:
     def _scenario_projection(
         self, scenario: BondScenario, projection: tuple[float, ...] | None
     ) -> tuple[float, ...]:
+        """The projection shifts of a scenario, after checking each curve can apply its own."""
+        _check_scenario_shifts(self.request.curve, scenario.curve_shifts_bp)
         if not self.two_curve:
             if projection is not None:
                 raise ValueError("projection curve shifts need a separate projection curve")
             return _ZERO_SHOCK
-        return scenario.curve_shifts_bp if projection is None else _shifts(tuple(projection))
+        moves = scenario.curve_shifts_bp if projection is None else _shifts(tuple(projection))
+        _check_scenario_shifts(self.request.projection_curve, moves)
+        return moves
 
     def second_order(
         self, *, bump_bp: float = 1.0, method: Literal["bump", "analytic"] = "bump"

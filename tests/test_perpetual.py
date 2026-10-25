@@ -229,6 +229,11 @@ def test_risk_engine_with_a_tail_equals_the_engine_on_materialised_flows(
     assert left.cs01_rub == pytest.approx(right.cs01_rub, rel=1e-8)
     assert left.parallel_dv01_rub == pytest.approx(right.parallel_dv01_rub, rel=1e-8)
     scenario = BondScenario((-50.0, 0, 0, 0, 0, 25.0, 0, 0, 0, 40.0, 100.0), 30.0)
+    if zero_shock == "annual_par":
+        # No par instrument below 1Y: a 1M shift that would move nothing is refused.
+        with pytest.raises(InvalidTerms, match="1M -50"):
+            ours.reprice(scenario)
+        scenario = BondScenario((0, 0, 0, 0, 0, 25.0, 0, 0, 0, 40.0, 100.0), 30.0)
     assert ours.reprice(scenario).total_pnl_rub == pytest.approx(
         theirs.reprice(scenario).total_pnl_rub, rel=1e-8
     )

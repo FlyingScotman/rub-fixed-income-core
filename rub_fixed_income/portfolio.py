@@ -119,9 +119,11 @@ from .portfolio_products import (
     horizon_adapter_for,
     jtd_totals,
 )
+from .proxy_curves import ParYieldCurveRequest, bootstrap_par_yield_curve
 from .risk import (
     BondRiskEngine,
     BondRiskRequest,
+    BondRiskResult,
     BondScenario,
     BondSecondOrderRisk,
     ShockedCurveCache,
@@ -182,6 +184,15 @@ def _foreign_currency(value: object, label: str) -> str:
     if value == "RUB":
         raise InvalidTerms(f"{label} must be a currency other than RUB")
     return value
+
+
+def _bond_risk(engine: BondRiskEngine, policy: ValuationPolicy) -> BondRiskResult:
+    """The bond's central first-order risk under ``policy``: closed form where it has one and
+    the policy asks."""
+    analytic = policy.risk_method == "analytic" and supports_analytic(engine) is None
+    return engine.risk(
+        bump_bp=policy.bump_bp, difference="central", method="analytic" if analytic else "bump"
+    )
 
 
 def _bond_second_order(
@@ -271,6 +282,26 @@ class ValuationPolicy:
     (:meth:`BondRiskEngine.second_order`): the same factors, equal to the bumped Hessian up
     to its O(bump^2) error, the Hessian part about six times faster. Floaters, perpetual
     tails, bonds on OIS quotes and every other product are still bumped.
+
+    ``risk_method="analytic"`` (0.38.0, omitted at its default ``"bump"``) takes the
+    first-order risk of the same bonds in closed form (:meth:`BondRiskEngine.risk`): the
+    limit of the central difference, equal to it up to its O(bump^2) error. It feeds the
+    factor first order when there is no Hessian, ``pv_rub`` and ``spread_buckets_rub``; with
+    a Hessian the factor first order is still that Hessian's gradient. A separate field
+    from ``second_order_method`` so that policies of 0.37.0 keep their results.
+
+    ``quote_curve_risk=True`` (0.38.0, omitted at its default ``False``) takes the risk of a
+    curve the snapshot holds as par quotes in those quotes, as for RUONIA OIS quotes: a
+    key-rate projection curve given as KRS quotes (``KeyRateCurveRequest`` under
+    ``rub_key_rate_swap_v1``) is recalibrated to quotes shifted by each bucket's hat at
+    their maturity, so ``IR|<curve>|<bucket>`` of key-rate swaps and KEYRATE futures is risk
+    to the KRS quotes. Without it such quotes are built once and their mid curve takes
+    forward-rate bucket shifts, as a caller-built curve. With it FX forwards, FX swaps,
+    crosses and FX futures may also name XCCY par quotes (``XccyCurveBootstrapRequest``,
+    otherwise ``INVALID_TERMS``) as their foreign curve: rebuilt on their shocked RUB curve
+    under every shock, as cross-currency swaps rebuild it. A USD / EUR proxy held as par
+    yields (``ParYieldCurveRequest``) is the risk source of every position on it
+    (``curve_basis = "par_yield_quote"``); without the flag it is built once.
     """
 
     discount_curve_id: str
@@ -300,6 +331,8 @@ class ValuationPolicy:
     second_order_method: Literal["bump", "analytic"] = field(
         default="bump", metadata=OMIT_IF_DEFAULT
     )
+    risk_method: Literal["bump", "analytic"] = field(default="bump", metadata=OMIT_IF_DEFAULT)
+    quote_curve_risk: bool = field(default=False, metadata=OMIT_IF_DEFAULT)
 
     def __post_init__(self) -> None:
         pairs = tuple(sorted(self.exercise_assumptions, key=lambda p: p[0]))
@@ -378,6 +411,7 @@ class ValuationPolicy:
             "require_known_coupons",
             "spread_buckets",
             "fx_points_held_risk",
+            "quote_curve_risk",
         ):
             if not isinstance(getattr(self, flag), bool):
                 raise TypeError(f"{flag} must be boolean")
@@ -390,6 +424,8 @@ class ValuationPolicy:
             raise TypeError("include_second_order must be boolean")
         if self.second_order_method not in ("bump", "analytic"):
             raise InvalidTerms("second_order_method must be bump or analytic")
+        if self.risk_method not in ("bump", "analytic"):
+            raise InvalidTerms("risk_method must be bump or analytic")
         positive_money(self.bump_bp, "bump_bp")
 
     def curve_for(self, instrument_id: str) -> str:
@@ -792,9 +828,19 @@ class _BuiltCurve:
     currency: str
     # A real (CPI-adjusted) curve: discounts only inflation-linked bonds (package 9a).
     real: bool = False
+    # Par-yield proxy quotes the engines rebuild under shocks (quote_curve_risk, #77).
+    quotes: ParYieldCurveRequest | None = None
+
+    @property
+    def source(self) -> DiscountCurve | CurveBootstrapRequest | ParYieldCurveRequest:
+        """What a discounting engine takes: the quotes when they are the risk source."""
+        return self.curve if self.quotes is None else self.quotes
 
 
-def _build_curve(entry: CurveEntry, business_date: date) -> _BuiltCurve:
+def _build_curve(entry: CurveEntry, business_date: date, quote_risk: bool = False) -> _BuiltCurve:
+    """The curve of ``entry`` as the engines read it. Par-yield proxy quotes are built
+    here, or with ``quote_risk`` (``ValuationPolicy.quote_curve_risk``) passed on as the
+    risk source, rebuilt from shifted quotes under every shock (#77)."""
     spec = get_curve_spec(entry.spec_id)
     source = entry.curve
     if spec.kind is CurveKind.KBD_PARAMETRIC:
@@ -857,6 +903,16 @@ def _build_curve(entry: CurveEntry, business_date: date) -> _BuiltCurve:
                 f"curve {entry.curve_id} holds FX swap quotes; a bond needs the built curve "
                 "(implied_foreign_curve) under the spec"
             )
+        if isinstance(source, ParYieldCurveRequest):
+            if source.spec_id != spec.spec_id:
+                raise InvalidTerms(f"curve {entry.curve_id} quotes are of spec {source.spec_id}")
+            if source.curve_date != business_date:
+                raise InvalidTerms(
+                    f"curve {entry.curve_id} is not dated the snapshot business date"
+                )
+            quotes = source if quote_risk else None
+            built = bootstrap_par_yield_curve(source)
+            return _BuiltCurve(entry, built, None, spec.model_version, spec.currency, False, quotes)
         if (
             isinstance(source, DiscountCurve)
             and source.model_version == spec.model_version
@@ -1171,7 +1227,9 @@ def _product_context(
     def curve(curve_id: str) -> _BuiltCurve:
         if curve_id not in built:
             try:
-                built[curve_id] = _build_curve(snapshot.curve(curve_id), snapshot.business_date)
+                built[curve_id] = _build_curve(
+                    snapshot.curve(curve_id), snapshot.business_date, policy.quote_curve_risk
+                )
             except CoreRejection as exc:
                 built[curve_id] = exc
         outcome = built[curve_id]
@@ -1198,6 +1256,7 @@ def _product_context(
         bonds,
         fx_curve_fallbacks=policy.fx_curve_fallbacks,
         fx_points_held_risk=policy.fx_points_held_risk,
+        quote_curve_risk=policy.quote_curve_risk,
     )
 
 
@@ -1482,7 +1541,10 @@ def _value_position(
     )
     nominal_rub = nominal * fx if foreign else nominal
     accrued_rub = accrued * fx if foreign else accrued
-    basis = cast(Literal["continuous_zero", "annual_zero", "annual_par", "ois_quote"], _curve_basis(built.curve))
+    basis = cast(
+        Literal["continuous_zero", "annual_zero", "annual_par", "ois_quote", "par_yield_quote"],
+        _curve_basis(built.source),
+    )
     projection_id: str | None = None
     yield_flows: Sequence[BondCashflow] = flows
     if isinstance(instrument.coupon_leg, FloatingCouponLeg):
@@ -1535,7 +1597,7 @@ def _value_position(
                 clean_price_pct=quote.clean_price_pct,
                 accrued_interest_rub=accrued_rub,
                 quantity=position.quantity,
-                curve=built.curve,
+                curve=built.source,
                 spread_convention=policy.spread_convention,
                 spread_kind=spread_kind,
                 perpetual_tail=None if tail is None else tail.scaled(fx) if foreign else tail,
@@ -1543,7 +1605,7 @@ def _value_position(
             curve_cache=cache,
         )
         engine, adapter_id = prepared.engine, prepared.calculation_id
-    risk = engine.risk(bump_bp=policy.bump_bp, difference="central")
+    risk = _bond_risk(engine, policy)
     second = _bond_second_order(engine, policy)
     factor_risk = bond_factor_risk(risk, curve_id, second, projection_curve_id=projection_id)
     dirty = cast(float, engine.request.dirty_price_rub)
@@ -1761,7 +1823,7 @@ def _floating_engine(
         BondRiskRequest(
             cashflows=tuple(BondCashflow(f.payment_date, f.amount) for f in flows),
             settlement_date=settlement,
-            curve=built.curve,
+            curve=built.source,
             spread_convention=policy.spread_convention,
             spread_kind=policy.spread_kind_for(instrument.instrument_id),
             dirty_price_rub=clean_price_pct_to_dirty_rub(quote.clean_price_pct, nominal, accrued),
@@ -1874,7 +1936,7 @@ def _value_linker_position(
         curve_cache=cache,
     )
     engine = prepared.engine
-    risk = engine.risk(bump_bp=policy.bump_bp, difference="central")
+    risk = _bond_risk(engine, policy)
     second = _bond_second_order(engine, policy)
     dirty = cast(float, engine.request.dirty_price_rub)
     real_yield, duration = _yield_and_duration(settlement, dirty, flows, convention)
@@ -2335,7 +2397,9 @@ def _horizon_position(
     curve_id = policy.curve_for(instrument.instrument_id)
     if curve_id not in built:
         try:
-            built[curve_id] = _build_curve(snapshot.curve(curve_id), snapshot.business_date)
+            built[curve_id] = _build_curve(
+                snapshot.curve(curve_id), snapshot.business_date, policy.quote_curve_risk
+            )
         except CoreRejection as exc:
             built[curve_id] = exc
     outcome = built[curve_id]
