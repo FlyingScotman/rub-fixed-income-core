@@ -15,6 +15,7 @@ from itertools import combinations
 
 import pytest
 
+import rub_fixed_income._risk_common as risk_common
 from rub_fixed_income import (
     BusinessCalendar,
     CurveBootstrapRequest,
@@ -22,12 +23,13 @@ from rub_fixed_income import (
     DiscountCurve,
     OisQuote,
     ScheduleConvention,
+    ShockedCurveCache,
     bootstrap_discount_curve,
     ois_curve_convention,
     ois_quote_periods,
     ois_quotes,
 )
-from rub_fixed_income._risk_common import RISK_BUCKETS, _shocked_request
+from rub_fixed_income._risk_common import RISK_BUCKETS, _shock_curve, _shocked_request
 from rub_fixed_income._solver import bisect
 from rub_fixed_income.discount import (
     _SPOT_OIS_MAX_PASSES,
@@ -221,6 +223,35 @@ def test_node_curve_reads_the_curve_bitwise() -> None:
                 assert all(values[p] == view.values[p] for p in range(view.first_moving))
     with pytest.raises(ValueError, match="positive and finite"):
         _NodeCurve(TRADE, nodes, 0, V2, targets).move(0.0)
+
+
+def test_shifts_that_move_no_quote_share_one_bootstrap(monkeypatch: pytest.MonkeyPatch) -> None:
+    base_request = v2_request(shapes(len(MOEX))["upward"])
+    built: list[CurveBootstrapRequest] = []
+
+    def counted(request: CurveBootstrapRequest) -> DiscountCurve:
+        built.append(request)
+        return bootstrap_discount_curve(request)
+
+    monkeypatch.setattr(risk_common, "bootstrap_discount_curve", counted)
+    cache = ShockedCurveCache()
+    base = risk_common._base_curve(base_request, cache)
+    one = tuple(10.0 if k == 0 else 0.0 for k in range(len(RISK_BUCKETS)))
+    beyond = (0.0,) * (len(RISK_BUCKETS) - 1) + (10.0,)  # 20Y+: no quote past 15Y
+    both = tuple(a + b for a, b in zip(one, beyond))
+    assert _shock_curve(base_request, base, beyond, cache) is base
+    shocked = _shock_curve(base_request, base, one, cache)
+    assert _shock_curve(base_request, base, both, cache) is shocked
+    assert len(built) == 2 and cache.misses == 4 and len(cache) == 4
+    assert shocked == bootstrap_discount_curve(_shocked_request(base_request, one))
+    # The cache keys and its export are unchanged: one entry per shift vector.
+    assert sorted(e.shifts for e in cache.export()) == sorted(
+        [(0.0,) * len(RISK_BUCKETS), one, beyond, both]
+    )
+    uncached = ShockedCurveCache(max_entries=0)
+    _shock_curve(base_request, base, beyond, uncached)
+    _shock_curve(base_request, base, beyond, uncached)
+    assert len(uncached) == 0 and len(built) == 4
 
 
 def test_layout_follows_the_calendar() -> None:

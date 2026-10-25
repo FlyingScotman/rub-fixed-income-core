@@ -198,9 +198,11 @@ class ShockedCurveCache:
 
     Bootstrapping is deterministic, so equal (request, shifts) keys give identical
     curves. Share one cache across engines on the same curve within a job; risk,
-    gamma and scenarios repeat the same shocked curves for every position. Failed
-    bootstraps are not cached. Once ``max_entries`` is reached new curves are built
-    but not stored, which bounds memory without changing any number.
+    gamma and scenarios repeat the same shocked curves for every position. Shift
+    vectors that leave the same shocked quotes (a bucket past the last quote moves
+    none) share one bootstrap. Failed bootstraps are not cached. Once ``max_entries``
+    is reached new curves are built but not stored, which bounds memory without
+    changing any number.
 
     Across jobs, :meth:`export` hands the curves to the caller and :meth:`seed` takes
     them back; a seeded curve must reprice its (shocked) quotes exactly, as a fresh
@@ -219,6 +221,8 @@ class ShockedCurveCache:
         self._curves: dict[CurveBootstrapRequest, dict[tuple[float, ...], DiscountCurve]] = {}
         self._last: tuple[CurveBootstrapRequest, dict[tuple[float, ...], DiscountCurve]] | None
         self._last = None
+        # Curves by the (shocked) request they were bootstrapped from.
+        self._built: dict[CurveBootstrapRequest, DiscountCurve] = {}
 
     def __len__(self) -> int:
         return self._size
@@ -251,6 +255,15 @@ class ShockedCurveCache:
         self.misses += 1
         curve = build()
         self._store(request, shifts, curve)
+        return curve
+
+    def _bootstrap_quotes(self, request: CurveBootstrapRequest) -> DiscountCurve:
+        """The curve of ``request``, bootstrapped once per distinct quote set."""
+        curve = self._built.get(request)
+        if curve is None:
+            curve = bootstrap_discount_curve(request)
+            if len(self._built) < self.max_entries:
+                self._built[request] = curve
         return curve
 
     def export(self) -> tuple[PrebuiltCurve, ...]:
@@ -356,7 +369,7 @@ def _overlay_shifts(base: DiscountCurve, shifts: tuple[float, ...]) -> tuple[flo
 
 def _base_curve(source: RiskCurve, cache: ShockedCurveCache) -> DiscountCurve:
     if isinstance(source, CurveBootstrapRequest):
-        return cache.bootstrap(source, _ZERO_SHOCK, lambda: bootstrap_discount_curve(source))
+        return cache.bootstrap(source, _ZERO_SHOCK, lambda: cache._bootstrap_quotes(source))
     return source
 
 
@@ -377,7 +390,7 @@ def _shock_curve(
     if isinstance(source, CurveBootstrapRequest):
 
         def build() -> DiscountCurve:
-            return bootstrap_discount_curve(_shocked_request(source, shifts))
+            return cache._bootstrap_quotes(_shocked_request(source, shifts))
 
         return cache.bootstrap(source, shifts, build)
     # One shared view per (base curve, shifts): positions on the same curve then reuse
