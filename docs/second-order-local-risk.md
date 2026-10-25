@@ -29,6 +29,9 @@ There are 288 bumped price evaluations. No Hessian entry is removed by a
 sparsity assumption. Settlement rebasing alone can create a cross derivative
 between distant zero-rate factors; OIS bootstrapping also couples factors.
 All OIS quote shocks are applied to the original quotes and rebootstrap the curve.
+A bump that moves no quote (the `20Y+` bucket on quotes up to 10Y) reuses the curve
+of the quotes it leaves, bit for bit; with 17 MOEX RUONIA swaps the 11-bucket Hessian
+bootstraps 201 distinct curves instead of 243.
 
 The central gradient is intentionally separate from the forward +1bp P&L
 returned by `risk()` by default. Do not add gamma to a one-sided sensitivity

@@ -54,7 +54,7 @@ All convention objects are frozen and hashable.
   - `DiscountCurve.flat(curve_date, continuous_rate, *, convention=None)` — raises for non-finite rate.
 - `OisQuote(tenor, maturity, par_rate)`.
 - `CurveBootstrapRequest(curve_date, quotes, convention=CurveConvention())` **(0.3.0: `convention`)**.
-- `bootstrap_discount_curve(request) -> DiscountCurve` — raises for empty / non-increasing / non-finite quotes, unbracketed forward; `RuntimeError` if repricing > 1e-7 bp. With `convention.ois_swap` (0.22.0) each quote must be a `D/W/M/Y` tenor whose resolved end is its maturity (`InvalidTerms` otherwise).
+- `bootstrap_discount_curve(request) -> DiscountCurve` — raises for empty / non-increasing / non-finite quotes, unbracketed forward; `RuntimeError` if repricing > 1e-7 bp. With `convention.ois_swap` (0.22.0) each quote must be a `D/W/M/Y` tenor whose resolved end is its maturity (`InvalidTerms` otherwise). Since FlyingScotman/rub-fixed-income-core#77 the root search reads its trial discount factors without building a curve per trial: the same bisection on bit-identical objective values, so the nodes and every hash are unchanged, about 10x faster for 17 MOEX RUONIA swaps.
 - `ois_quote_periods(trade_date, quote, convention) -> tuple[OisSwapPeriod, ...]` (0.22.0) — periods of the spot-starting swap behind `quote` (tenor resolved with `resolve_tenor`).
 
 ## Yield, duration, spreads (`compatibility`)
@@ -328,7 +328,7 @@ and the recovery are explicit.
 | `PrebuiltCurve(request, shifts, curve)` | A bootstrapped OIS curve for a `CurveBootstrapRequest` with 11 bucket shifts (bp). `.request_id` and `.curve_key` are canonical SHA-256 strings for the backend's store; `to_dict`/`from_dict` serialise it. |
 | `ShockedCurveCache.export()` | Every cached base and shocked curve as `PrebuiltCurve`s, ordered by `curve_key`. |
 | `ShockedCurveCache.seed(entries)` | Adds caller-held curves; each must reprice its (shocked) quotes within 1e-7 bp and match the request's date, convention and model, otherwise `InvalidTerms` and nothing is added. Returns the number added; `.seeded` counts them. |
-| `value_portfolio(..., curve_cache=cache)` | Reuses `cache` (seeded or kept in memory across calls). Results are byte-identical with or without it. |
+| `value_portfolio(..., curve_cache=cache)` | Reuses `cache` (seeded or kept in memory across calls). Results are byte-identical with or without it. Shift vectors that leave the same shocked quotes (a bucket past the last quote, alone or in a Hessian pair) share one bootstrap; the cache still keeps and exports one entry per shift vector. |
 
 `benchmarks/portfolio_bench.py --positions 2000` measures ms per position (KBD and OIS;
 first order, Hessian, scenarios, seeded). CI runs it on windows-latest / Python 3.11 and

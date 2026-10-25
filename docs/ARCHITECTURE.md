@@ -160,3 +160,9 @@ root, iteration count, and the residual. Brackets/tolerances per caller:
 | Z-spread continuous | `(-5.0, 5.0)` | 1e-13 | 1e-13 | 240 |
 | `analyze_bond` spread (bp) | `CalculationPolicy` bounds (default ±5000 bp) | policy | policy | 240 |
 | OIS bootstrap forward | dynamic, from `(-0.5, 2.0)` doubled ×12 | 1e-14 | – | 240 |
+
+The OIS bootstrap objective reads its trial discount factors from `discount._NodeCurve`,
+not from a `DiscountCurve` built per trial: the same float operations, with everything
+that does not move with the solved node computed once. Objective values, and so the
+bisection path and every node, are bit-identical to the per-trial curve
+(`tests/test_bootstrap_exact.py` keeps the 0.37.0 bootstrap as the reference).
