@@ -46,6 +46,7 @@ from ._risk_common import (
     ShockedCurveCache,
     _base_curve,
     _central_derivatives,
+    _check_scenario_shifts,
     _curve_basis,
     _curve_identity,
     _shift_at,
@@ -997,6 +998,7 @@ class RateFuturesRiskEngine:
 
     def reprice(self, scenario: RateFuturesScenario) -> RateFuturesScenarioResult:
         """Exact variation margin of the scenario, rates and basis isolated."""
+        _check_scenario_shifts(self.request.projection_curve, scenario.curve_shifts_bp)
         shocked = self._price((scenario.curve_shifts_bp, scenario.basis_shift_bp))
 
         def pnl(moves: _Moves, label: str) -> float:

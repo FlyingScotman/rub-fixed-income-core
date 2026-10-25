@@ -13,9 +13,20 @@ with the hat weights of the risk buckets (``key_rate_weights``) and the 1M-6M no
 instruments reprice at their shocked par yields exactly. This is the bootstrap of a quote
 curve, done as an overlay so the base curve (the published KBD) is untouched at zero shock.
 
+Newton is damped: a step is halved until every shocked annual yield at the coupon dates stays
+above -100 % and the norm of the repricing error falls (Armijo). Realistic shocks take every
+full step (2-9 iterations), so their results are those of plain Newton to the last bit. The
+overlay has a finite reach: raising a node can at most drive the discount factors past the
+node before it to zero, so the 20Y+ par yield exceeds the 15Y one by less than
+``par_15Y DF(15Y) / (1 - DF(15Y))`` (about 180 bp on a 16 % curve, 75 bp after +1000 bp),
+and likewise for the other nodes. A shock beyond the reach raises ``ValueError`` naming the
+instrument that misses and by how much ("did not converge"), not a domain error from an
+overshooting step.
+
 The 1M, 3M and 6M buckets have no instrument: shifting them moves nothing and their risk is
 zero (the KBD has no OFZ that short; its short end is MOEX's extrapolation). The 1Y
-instrument carries the short end.
+instrument carries the short end. A scenario may only leave them at zero or move them with
+the 1Y bucket (``_risk_common._check_scenario_shifts``); other values are refused.
 
 Every risk engine reads the shocked curve through ``_risk_common._shock_curve``; the solved
 overlay is cached per (base curve, shift vector), so positions on one curve share it.
@@ -40,7 +51,9 @@ PAR_YEARS = (1, 2, 3, 5, 7, 10, 15, 20)
 PAR_FIRST_BUCKET = 3
 _BP = 1e-4
 _NEWTON_TOLERANCE = 1e-13  # decimal par yield (1e-9 bp)
-_NEWTON_ITERATIONS = 30
+_NEWTON_ITERATIONS = 100
+_ARMIJO = 1e-4
+_MIN_STEP = 2.0**-40
 _MEMO_SIZE = 4096
 
 
@@ -119,24 +132,74 @@ def par_overlay_shifts(base: DiscountCurve, shifts: tuple[float, ...]) -> tuple[
         + np.asarray(shifts[PAR_FIRST_BUCKET:], dtype=float) * _BP
     )
     x = zero.copy()
-    for _ in range(_NEWTON_ITERATIONS):
-        values, rows = [], []
-        for instrument in instruments:
-            par, grad, _ = instrument.derivatives(x)
-            values.append(par)
-            rows.append(grad)
-        residual = np.array(values) - target
-        if np.max(np.abs(residual)) < _NEWTON_TOLERANCE:
-            break
-        x = x - np.linalg.solve(np.array(rows), residual)
-    else:
-        raise ValueError("par-yield shock did not converge")
+    state = _evaluate(instruments, x, target)
+    if state is None:
+        raise ValueError("par-yield shock is outside the supported numerical domain")
+    residual, jacobian = state
+    iterations = 0
+    while np.max(np.abs(residual)) >= _NEWTON_TOLERANCE:
+        if iterations == _NEWTON_ITERATIONS:
+            raise ValueError(_miss(residual, "par-yield shock did not converge"))
+        iterations += 1
+        x, residual, jacobian = _damped_step(instruments, x, residual, jacobian, target)
     if not np.all(np.isfinite(x)):
         raise ValueError("par-yield shock is outside the supported numerical domain")
     result = (float(x[0]),) * PAR_FIRST_BUCKET + tuple(float(v) for v in x)
     if len(memo) < _MEMO_SIZE:
         memo[shifts] = result
     return result
+
+
+def _evaluate(
+    instruments: tuple[_Instrument, ...], x: np.ndarray, target: np.ndarray
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """Repricing residual (decimal par yield) and its Jacobian at ``x``; None outside the
+    domain (a shocked annual yield at or below -100 % at a coupon date, or a non-finite value)."""
+    values, rows = [], []
+    try:
+        with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+            for instrument in instruments:
+                par, grad, _ = instrument.derivatives(x)
+                values.append(par)
+                rows.append(grad)
+    except ValueError:
+        return None
+    residual, jacobian = np.array(values) - target, np.array(rows)
+    if not (np.all(np.isfinite(residual)) and np.all(np.isfinite(jacobian))):
+        return None
+    return residual, jacobian
+
+
+def _damped_step(
+    instruments: tuple[_Instrument, ...],
+    x: np.ndarray,
+    residual: np.ndarray,
+    jacobian: np.ndarray,
+    target: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """One Newton step, halved until it stays in the domain and cuts the residual norm
+    (Armijo). A realistic shock takes every full step, so its iterates are plain Newton's."""
+    step = np.linalg.solve(jacobian, residual)
+    norm = float(np.linalg.norm(residual))
+    scale = 1.0
+    while scale >= _MIN_STEP:
+        trial = x - scale * step
+        state = _evaluate(instruments, trial, target)
+        if state is not None and (
+            np.max(np.abs(state[0])) < _NEWTON_TOLERANCE
+            or float(np.linalg.norm(state[0])) <= (1.0 - _ARMIJO * scale) * norm
+        ):
+            return trial, state[0], state[1]
+        scale *= 0.5
+    raise ValueError(_miss(residual, "par-yield shock did not converge (no step cuts the error)"))
+
+
+def _miss(residual: np.ndarray, message: str) -> str:
+    worst = int(np.argmax(np.abs(residual)))
+    return (
+        f"{message}: the {PAR_YEARS[worst]}Y instrument is {residual[worst] / _BP:+.4g} bp off "
+        "its shocked par yield (the shocked par curve may be beyond the overlay's reach)"
+    )
 
 
 def par_jacobians(base: DiscountCurve) -> tuple[np.ndarray, tuple[np.ndarray, ...]]:

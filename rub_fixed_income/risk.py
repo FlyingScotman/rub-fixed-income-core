@@ -25,6 +25,7 @@ from ._risk_common import (
     ShockedCurveCache,
     _base_curve,
     _central_derivatives,
+    _check_scenario_shifts,
     _curve_basis,
     _curve_identity,
     _overlay_shifts,
@@ -737,11 +738,15 @@ class BondRiskEngine:
     def _scenario_projection(
         self, scenario: BondScenario, projection: tuple[float, ...] | None
     ) -> tuple[float, ...]:
+        """The projection shifts of a scenario, after checking each curve can apply its own."""
+        _check_scenario_shifts(self.request.curve, scenario.curve_shifts_bp)
         if not self.two_curve:
             if projection is not None:
                 raise ValueError("projection curve shifts need a separate projection curve")
             return _ZERO_SHOCK
-        return scenario.curve_shifts_bp if projection is None else _shifts(tuple(projection))
+        moves = scenario.curve_shifts_bp if projection is None else _shifts(tuple(projection))
+        _check_scenario_shifts(self.request.projection_curve, moves)
+        return moves
 
     def second_order(
         self, *, bump_bp: float = 1.0, method: Literal["bump", "analytic"] = "bump"

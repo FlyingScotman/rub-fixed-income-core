@@ -26,6 +26,7 @@ from ._risk_common import (
     ShockedCurveCache,
     _base_curve,
     _central_derivatives,
+    _check_scenario_shifts,
     _curve_basis,
     _curve_identity,
     _shifts,
@@ -531,6 +532,8 @@ class FxFuturesRiskEngine:
         """Exact variation margin, each factor group isolated, and their interaction."""
         rub, foreign = scenario.rub_curve_shifts_bp, scenario.foreign_curve_shifts_bp
         basis, spot = scenario.basis_shift_bp, scenario.fx_spot_shift_pct
+        _check_scenario_shifts(self.request.rub_curve, rub)
+        _check_scenario_shifts(self.request.foreign_curve, foreign)
         shocked = self._price((rub, foreign, basis, spot))
 
         def pnl(moves: _Moves, label: str) -> float:

@@ -35,6 +35,7 @@ from ._risk_common import (
     ShockedCurveCache,
     _base_curve,
     _central_derivatives,
+    _check_scenario_shifts,
     _curve_basis,
     _curve_identity,
     _shifts,
@@ -1593,6 +1594,7 @@ class CdsRiskEngine:
             scenario.spread_shift_bp,
             scenario.recovery_shift,
         )
+        _check_scenario_shifts(self.request.discount_curve, shifts)
         base = self.base_pv
 
         def pnl(moves: _Moves, label: str) -> float:
