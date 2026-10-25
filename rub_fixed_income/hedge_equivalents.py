@@ -213,19 +213,19 @@ def _futures_gradient(
     settlement, delivery = req.spot_settlement_date, req.contract.delivery_date
     index = engine._price(_NO_MOVE)[1]
     bond, spread = engine._bonds[index], engine.spreads[index]
-    bonds_on, funding_on = engine._bond_curve, engine._funding_curve
+    bond_base, funding_base = engine._bond_curve, engine._funding_curve
     basis = engine.basis_bp * _BP
-    dirty = engine._dirty(bond, bonds_on, spread)
+    dirty = engine._dirty(bond, bond_base, spread)
     d_dirty = np.zeros(nodes.size)
     if bond_curve:
         a_s = _log_df(curve, nodes, settlement)
-        df_s = bonds_on.discount_factor(settlement)
+        df_s = bond_base.discount_factor(settlement)
         for paid, amount, time in bond.flows:
-            value = amount * bonds_on.discount_factor(paid) / df_s * math.exp(-spread * time)
+            value = amount * bond_base.discount_factor(paid) / df_s * math.exp(-spread * time)
             d_dirty += value * (_log_df(curve, nodes, paid) - a_s)
 
     def growth(start: date) -> float:
-        ratio = funding_on.discount_factor(start) / funding_on.discount_factor(delivery)
+        ratio = funding_base.discount_factor(start) / funding_base.discount_factor(delivery)
         return ratio * math.exp(basis * DayCount.ACT_365_FIXED.year_fraction(start, delivery))
 
     d_forward = growth(settlement) * d_dirty
@@ -234,7 +234,7 @@ def _futures_gradient(
         d_forward += dirty * growth(settlement) * (_log_df(curve, nodes, settlement) - a_d)
         for paid, amount in bond.carry_coupons:
             d_forward -= amount * growth(paid) * (_log_df(curve, nodes, paid) - a_d)
-    forward = engine._forward_dirty(bond, dirty, funding_on, basis)
+    forward = engine._forward_dirty(bond, dirty, funding_base, basis)
     lot = req.contract.bonds_per_lot
     if not np.isclose(
         lot * (forward - bond.accrued_delivery) / bond.conversion_factor,
