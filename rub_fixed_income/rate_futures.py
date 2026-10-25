@@ -20,7 +20,8 @@ Contract terms come from the MOEX specifications (see ``docs/rate-futures.md``):
 
 Variation margin is daily and undiscounted (as in ``fx_futures``). Prices before expiry
 are expectations under a deterministic projection curve: RUONIA overnight forwards from a
-discount curve, or a :class:`KeyRateForwardCurve`. A calibrated basis (bp added to every
+discount curve, or a :class:`KeyRateForwardCurve` (or its KRS quotes, a
+:class:`KeyRateCurveRequest`: quote-basis risk). A calibrated basis (bp added to every
 projected rate) reprices a market settlement price and is frozen under curve shocks.
 
 :meth:`RateFuturesRiskEngine.horizon` carries a position to a horizon on the two curve
@@ -60,7 +61,7 @@ from .dates import BusinessCalendar
 from .discount import CurveBootstrapRequest, DiscountCurve, DiscountFactorCurve
 from .errors import InvalidTerms, MissingFixing, MissingMarketData
 from .factors import FactorRisk, HessianEntry, ir_factor
-from .key_rate import KeyRateForwardCurve
+from .key_rate import KeyRateCurveRequest, KeyRateForwardCurve
 from .risk import BucketRisk
 
 __all__ = [
@@ -508,7 +509,16 @@ def key_rate_index_value(
 
 # --- risk engine ---------------------------------------------------------------------------
 
-ProjectionCurve = DiscountCurve | CurveBootstrapRequest | KeyRateForwardCurve
+ProjectionCurve = DiscountCurve | CurveBootstrapRequest | KeyRateForwardCurve | KeyRateCurveRequest
+
+
+def _key_rate_curve(curve: ProjectionCurve) -> KeyRateForwardCurve | None:
+    """The key-rate curve priced on (KRS quotes: their mid curve), or None."""
+    if isinstance(curve, KeyRateCurveRequest):
+        return curve.curve()
+    return curve if isinstance(curve, KeyRateForwardCurve) else None
+
+
 _Moves = tuple[tuple[float, ...], float]
 _NO_MOVE: _Moves = (_ZERO_SHOCK, 0.0)
 
@@ -520,7 +530,8 @@ class RateFuturesRiskRequest:
     RUONIA contracts need a discount-curve projection (``DiscountCurve`` or an OIS
     ``CurveBootstrapRequest``) and ``fixings`` dated the curve date; the index contract
     also needs ``index_anchor``, a published index value on or before the curve date.
-    The key-rate contract needs a :class:`KeyRateForwardCurve`. Supply exactly one of
+    The key-rate contract needs a :class:`KeyRateForwardCurve` or its KRS quotes
+    (:class:`KeyRateCurveRequest`, risk in the quotes). Supply exactly one of
     ``futures_price`` (a market settlement price, calibrates the basis) and ``basis_bp``.
     """
 
@@ -540,8 +551,10 @@ class RateFuturesRiskRequest:
         ):
             raise TypeError("contract must be a MOEX rate futures contract")
         if isinstance(contract, KeyRateFuturesContract):
-            if not isinstance(curve, KeyRateForwardCurve):
+            if not isinstance(curve, (KeyRateForwardCurve, KeyRateCurveRequest)):
                 raise InvalidTerms("key-rate futures project on a KeyRateForwardCurve")
+            if isinstance(curve, KeyRateCurveRequest):
+                curve = curve.curve()
             if self.fixings is not None or self.index_anchor is not None:
                 raise InvalidTerms("key-rate futures take no RUONIA fixings")
             if contract.effective_date < curve.curve_date:
@@ -712,7 +725,8 @@ class RateFuturesRiskEngine:
     shocked exactly as for bonds (zero-rate overlay, or quote shift and rebootstrap for
     an OIS request). A :class:`KeyRateForwardCurve` takes the bucket shift interpolated
     at the effective date's ACT/ACT ISDA time from the curve date, as in ``swaps``; a
-    rate already decided (before ``current_rate_end``) does not move.
+    :class:`KeyRateCurveRequest` is recalibrated to its shifted KRS quotes. A rate
+    already decided (before ``current_rate_end``) does not move.
     """
 
     request: RateFuturesRiskRequest
@@ -737,7 +751,7 @@ class RateFuturesRiskEngine:
             self,
             "_curve",
             None
-            if isinstance(curve, KeyRateForwardCurve)
+            if isinstance(curve, (KeyRateForwardCurve, KeyRateCurveRequest))
             else _base_curve(curve, self.curve_cache),
         )
         object.__setattr__(self, "_plan", self._build_plan())
@@ -832,6 +846,8 @@ class RateFuturesRiskEngine:
         curve_id: object = (
             canonical_sha256(curve)
             if isinstance(curve, KeyRateForwardCurve)
+            else curve.identity
+            if isinstance(curve, KeyRateCurveRequest)
             else _curve_identity(curve)
         )
         return canonical_sha256(
@@ -856,6 +872,8 @@ class RateFuturesRiskEngine:
         curve = self.request.projection_curve
         if isinstance(curve, KeyRateForwardCurve):
             return "key_rate_forward"
+        if isinstance(curve, KeyRateCurveRequest):
+            return "key_rate_quote"
         return _curve_basis(curve)
 
     @property
@@ -898,8 +916,11 @@ class RateFuturesRiskEngine:
         contract = req.contract
         if isinstance(contract, KeyRateFuturesContract):
             curve = req.projection_curve
-            assert isinstance(curve, KeyRateForwardCurve)
             effective = contract.effective_date
+            if isinstance(curve, KeyRateCurveRequest):
+                rate = curve.shocked(shifts).rate_at(effective) + basis
+                return finite_money(rate * 100.0, "key-rate futures price")
+            assert isinstance(curve, KeyRateForwardCurve)
             rate = curve.rate_at(effective) + basis
             if effective >= curve.current_rate_end:  # a decided rate does not move
                 time = DayCount.ACT_ACT_ISDA.year_fraction(curve.curve_date, effective)
@@ -908,7 +929,7 @@ class RateFuturesRiskEngine:
         plan = self._plan
         source = req.projection_curve
         assert plan is not None and self._curve is not None
-        assert not isinstance(source, KeyRateForwardCurve)
+        assert not isinstance(source, (KeyRateForwardCurve, KeyRateCurveRequest))
         view: DiscountFactorCurve = _shock_curve(source, self._curve, shifts, self.curve_cache)
         dfs = {day: view.discount_factor(day) for day in plan.dates}
         # Projected RUONIA_T = (DF(T) / DF(T_next) - 1) / tau(T, T_next) + basis.
@@ -1050,7 +1071,7 @@ class RateFuturesRiskEngine:
         contract = req.contract
         settled = contract.last_trading_day <= horizon
         if isinstance(contract, KeyRateFuturesContract):
-            today = req.projection_curve
+            today = _key_rate_curve(req.projection_curve)
             assert isinstance(today, KeyRateForwardCurve)
             assert isinstance(view, KeyRateForwardCurve)
             effective = contract.effective_date
@@ -1091,10 +1112,10 @@ class RateFuturesRiskEngine:
         valuation = req.valuation_date
         if not isinstance(horizon_date, date) or horizon_date <= valuation:
             raise InvalidTerms("horizon date must be after the valuation date")
-        curve = req.projection_curve
+        curve = _key_rate_curve(req.projection_curve)
         forward: DiscountFactorCurve | KeyRateForwardCurve
         rolled: DiscountFactorCurve | KeyRateForwardCurve
-        if isinstance(curve, KeyRateForwardCurve):
+        if curve is not None:
             forward, rolled = curve, roll_key_rate_curve(curve, horizon_date)
         else:
             assert self._curve is not None

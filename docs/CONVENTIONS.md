@@ -459,7 +459,8 @@ from a registered spec); see [swaps](swaps.md).
 - **Signs.** Payer pays fixed. DV01 = central difference per curve role, positive for a
   payer; `krd_years = -dv01 / notional * 1e4`. Key-rate projection shifts move the
   forward key rate after the current-rate interval by the bucket hats at each day's
-  ACT/ACT ISDA time.
+  ACT/ACT ISDA time; on KRS quotes (`KeyRateCurveRequest`) they move each mid quote by
+  the hats at its maturity and the curve is recalibrated.
 
 | Spec | Swap convention |
 | --- | --- |

@@ -94,8 +94,9 @@ calendar rejects dates outside its range.
     curve with one set of factors (`discount_and_projection`).
   - **RUONIA**, a `DiscountCurve` or `CurveBootstrapRequest`: a separate
     projection curve, with its own factors.
-  - **Key rate**: a `KeyRateForwardCurve` is required (`key_rate_forward`
-    basis).
+  - **Key rate**: a `KeyRateForwardCurve` (`key_rate_forward` basis) or KRS
+    quotes, a `KeyRateCurveRequest` (`key_rate_quote` basis: shift the quotes,
+    then recalibrate), is required.
 - `fixings` is a [`FixingHistory`](floating.md) of the swap's index, used read-only.
   It is required as soon as a remaining float period has started. A RUONIA gap,
   or no fixing on or before a needed day, raises `MissingMarketData`. Fixings
@@ -165,8 +166,16 @@ across engines on the same OIS quotes.
   (ACT/ACT ISDA, the spec's time basis).
 - The key rate in force until `current_rate_end` (the next policy meeting) is
   treated as set and does not move.
-- The key-rate projection is linear in its shifts. Its buckets therefore sum
-  exactly to the parallel shift, and its own Hessian block is exactly zero.
+- On KRS quotes (`KeyRateCurveRequest`) a bucket shift moves each mid quote by
+  `sum_k w_k(t_i) * s_k` at its maturity's time `t_i` from the valuation date, as an
+  OIS quote, and the mid curve is recalibrated on the calibration's discount curve
+  (`KeyRateCurveRequest.shocked`, the solve and checks of
+  `build_key_rate_forward_curve`). Bid, ask and the decided rate do not move.
+  Buckets beyond the last quote's hat move nothing.
+- The key-rate projection is linear in its shifts (the KRS calibration is linear in
+  its quotes). Its buckets therefore sum exactly to the parallel shift, and its own
+  Hessian block is exactly zero. A parallel quote shift of `s` moves a par KRS of a
+  quoted tenor by `N * annuity * s`.
 - **The two curves are separate factors.** A discount shock does not recalibrate
   the key-rate forward curve, and a projection shock does not move discounting.
 
@@ -265,8 +274,9 @@ informational.
 
 - **Lookback, lockout and observation shift** are not modelled (the v2 spec has
   none).
-- **Key-rate quote-basis risk**: shift the KRS quotes and recalibrate, with the
-  discount curve coupled. Today the risk is in shifts of the forward key rate.
+- **Key-rate quote-basis risk with the discount curve coupled**: KRS quotes are
+  shifted and recalibrated (`KeyRateCurveRequest`), but on the calibration's own
+  discount curve, which a discount-curve shock does not move.
 - **Other terms**: explicit confirmation schedules (instead of
   convention-generated ones), stubs other than the roll's natural one,
   amortizing notionals, compounded spreads, caps and floors.

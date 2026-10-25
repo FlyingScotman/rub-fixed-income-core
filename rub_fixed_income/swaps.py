@@ -16,7 +16,8 @@ from a discount curve and a projection curve:
   calendar-day average of the key rate over the period times the float accrual
   factor, as in :mod:`rub_fixed_income.key_rate`. Days before the valuation date
   take the key rate in force from the history; later days come from a
-  :class:`~rub_fixed_income.key_rate.KeyRateForwardCurve`.
+  :class:`~rub_fixed_income.key_rate.KeyRateForwardCurve`, or one calibrated from KRS
+  quotes (:class:`~rub_fixed_income.key_rate.KeyRateCurveRequest`, quote-basis risk).
 
 The valuation date is the curves' date. Flows paid on or before it are settled
 and excluded. Amounts are signed RUB for the position: a payer pays fixed and
@@ -65,7 +66,7 @@ from .discount import CurveBootstrapRequest, DiscountCurve, DiscountFactorCurve
 from .errors import InvalidTerms, MissingMarketData, UnsupportedProduct
 from .factors import FactorRisk, HessianEntry, ir_factor
 from .floating import FixingHistory
-from .key_rate import KeyRateForwardCurve
+from .key_rate import KeyRateCurveRequest, KeyRateForwardCurve
 from .risk import BucketRisk
 from .tenors import parse_tenor, resolve_tenor
 
@@ -105,7 +106,7 @@ ScheduleRoll = Literal["forward", "backward", "legacy-annual-forward"]
 SwapLeg = Literal["fixed", "float"]
 FlowSource = Literal["fixed", "known", "partially_projected", "projected"]
 CurveRole = Literal["discount", "projection", "discount_and_projection"]
-ProjectionCurve = DiscountCurve | CurveBootstrapRequest | KeyRateForwardCurve
+ProjectionCurve = DiscountCurve | CurveBootstrapRequest | KeyRateForwardCurve | KeyRateCurveRequest
 FloatCompounding = Literal["rate_day_count", "nfa_act"]
 
 _KEY_RATE_SPEC = "rub_key_rate_swap_v1"
@@ -472,7 +473,8 @@ class SwapRiskRequest:
     basis by type, as in ``BondRiskRequest``: a ``DiscountCurve`` takes zero-rate
     overlays, a ``CurveBootstrapRequest`` quote shifts and a rebootstrap. A
     ``KeyRateForwardCurve`` (key-rate swaps) takes bucket shifts of the forward key
-    rate after its current-rate interval. ``projection_curve=None`` projects RUONIA
+    rate after its current-rate interval, a ``KeyRateCurveRequest`` bucket shifts of its
+    KRS quotes and a recalibration. ``projection_curve=None`` projects RUONIA
     on the discount curve (single curve, one set of factors). ``fixings`` is
     required once a remaining period has started; its valuation date is the curves'.
     """
@@ -492,8 +494,12 @@ class SwapRiskRequest:
             raise TypeError("discount_curve must be DiscountCurve or CurveBootstrapRequest")
         projection = self.projection_curve
         index = self.swap.convention.index
-        if index == "key_rate" and not isinstance(projection, KeyRateForwardCurve):
-            raise InvalidTerms("a key-rate swap is projected on a KeyRateForwardCurve")
+        if index == "key_rate" and not isinstance(
+            projection, (KeyRateForwardCurve, KeyRateCurveRequest)
+        ):
+            raise InvalidTerms(
+                "a key-rate swap is projected on a KeyRateForwardCurve or KRS quotes"
+            )
         if index == "ruonia" and not (
             projection is None or isinstance(projection, (DiscountCurve, CurveBootstrapRequest))
         ):
@@ -847,6 +853,7 @@ class SwapRiskEngine:
     base_pv: float = field(init=False)
     _discount: DiscountCurve = field(init=False, repr=False)
     _projection: DiscountCurve | KeyRateForwardCurve | None = field(init=False, repr=False)
+    _quotes: KeyRateCurveRequest | None = field(init=False, repr=False)
     _fixed: tuple[tuple[SwapPeriod, float, float], ...] = field(init=False, repr=False)
     _float: tuple[_FloatFlow, ...] = field(init=False, repr=False)
     _dates: tuple[date, ...] = field(init=False, repr=False)
@@ -866,8 +873,12 @@ class SwapRiskEngine:
         valuation = req.valuation_date
         object.__setattr__(self, "_discount", _base_curve(req.discount_curve, self.curve_cache))
         projection = req.projection_curve
+        quotes = projection if isinstance(projection, KeyRateCurveRequest) else None
+        object.__setattr__(self, "_quotes", quotes)
         if isinstance(projection, (DiscountCurve, CurveBootstrapRequest)):
             object.__setattr__(self, "_projection", _base_curve(projection, self.curve_cache))
+        elif quotes is not None:
+            object.__setattr__(self, "_projection", quotes.curve())
         else:
             object.__setattr__(self, "_projection", projection)
         schedule = swap_schedule(swap, req.calendar)
@@ -923,6 +934,8 @@ class SwapRiskEngine:
             return None
         if isinstance(projection, KeyRateForwardCurve):
             return canonical_sha256(projection)
+        if isinstance(projection, KeyRateCurveRequest):
+            return projection.identity
         return _curve_identity(projection)
 
     @property
@@ -936,6 +949,8 @@ class SwapRiskEngine:
             return "single_curve"
         if isinstance(projection, KeyRateForwardCurve):
             return "key_rate_forward"
+        if isinstance(projection, KeyRateCurveRequest):
+            return "key_rate_quote"
         return _curve_basis(projection)
 
     @property
@@ -1021,7 +1036,11 @@ class SwapRiskEngine:
                     f"{period.accrual_end.isoformat()}"
                 )
             average = curve.arithmetic_average(start, period.accrual_end)
-            weights = _key_rate_shift_weights(curve, start, period.accrual_end)
+            weights = (
+                _key_rate_shift_weights(curve, start, period.accrual_end)
+                if self._quotes is None
+                else self._quotes.shift_weights(start, period.accrual_end)
+            )
         return _FloatFlow(
             period, 1.0, known_sum, known_days, start, spread_amount, accrued, average, weights
         )
@@ -1034,7 +1053,7 @@ class SwapRiskEngine:
     def _projection_view(self, shifts: _Vector) -> DiscountFactorCurve | None:
         """The shocked RUONIA projection curve of a two-curve swap; None for key-rate swaps."""
         source = self.request.projection_curve
-        if isinstance(source, KeyRateForwardCurve):
+        if isinstance(source, (KeyRateForwardCurve, KeyRateCurveRequest)):
             return None
         base = cast(DiscountCurve, self._projection)
         return _shock_curve(cast(RiskCurve, source), base, shifts, self.curve_cache)
@@ -1061,7 +1080,8 @@ class SwapRiskEngine:
 
         A shift ``s_k`` (bp) of bucket k moves the average by ``1e-4 * sum_k s_k * W_k``
         over the averaging days, ``W_k`` the bucket weights summed over the projected
-        days after the current-rate interval.
+        days after the current-rate interval; on KRS quotes, the forward moves per bp of
+        the bucket's quote shift summed likewise (the calibration is linear in quotes).
         """
         sign = self.request.swap.fixed_sign
         if self.request.swap.convention.index != "key_rate":
@@ -1091,6 +1111,8 @@ class SwapRiskEngine:
         if self._key_rate_slope is not None:
             if not any(shifts):
                 return self._key_rate_amounts
+            if self._quotes is not None:
+                self._quotes.shocked(shifts)  # the recalibration's domain and fit checks
             moved = np.asarray(self._key_rate_amounts) + self._key_rate_slope @ np.asarray(shifts)
             return tuple(float(value) for value in moved)
         sign = self.request.swap.fixed_sign

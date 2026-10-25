@@ -108,6 +108,20 @@ FX book and non-RUB bonds; 0.36.0 is that work plus 0.34.0 and never-called perp
   (`prepare_local_bond_risk`) and call `benchmark_equivalents`; the monitor picks the
   benchmarks (liquidity) and the desk may change them.
 
+**Next release** (issue #77, decision of 2026-10-23: curve risk in par quotes; the
+monitor side is FlyingScotman/trading-desk-monitor#171). Nothing changes until the
+monitor opts in. To take the key-rate curve's risk in KRS quotes:
+
+- put the KRS calibration inputs in the snapshot instead of the built curve:
+  `CurveEntry(key_rate_curve_id, "rub_key_rate_swap_v1", KeyRateCurveRequest(
+  KeyRateCurveBuildRequest(trade_date, current_rate, next_policy_effective_date, quotes,
+  tom_discount_curve, calendar), business_date, rate_in_force))` — the same inputs the
+  backend passes to `build_key_rate_forward_curve` and `rebase_key_rate_curve` today;
+- `ValuationPolicy(quote_curve_risk=True)`. `IR|<key-rate curve>|<bucket>` is then risk
+  to the KRS mid quotes (rows flagged `quote_curve`); PV and carry are unchanged. Without
+  the flag the same snapshot values exactly as the built curve. The job ID changes with
+  the flag: mark the change of factor unit in the run history.
+
 ## Deprecations in 0.12.0 and what consumers should move to
 
 Nothing is removed before 1.0. Each call below now emits a `DeprecationWarning` (hidden by

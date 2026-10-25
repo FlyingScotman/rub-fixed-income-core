@@ -166,7 +166,7 @@ Seasoned RUONIA OIS and key-rate swaps; see [swaps](swaps.md).
 | `SwapConvention(index, averaging, fixed_leg, float_leg, rate_day_count, business_day_convention, spot_lag_days, payment_lag_days, spec_id=None)`, `SwapLegSchedule(frequency_months, roll, day_count, single_period_up_to_months=None)` | Every convention explicit. `index` `ruonia` (compounded) or `key_rate` (arithmetic); `roll` `forward`, `backward` or `legacy-annual-forward`. `.identifier`. |
 | `swap_convention(spec_id)` | Convention of `rub_key_rate_swap_v1` or `rub_ruonia_ois_legacy_v1`; other specs raise `UnknownCurveSpec` / `UnsupportedProduct`. |
 | `swap_schedule(swap, calendar) -> SwapSchedule(fixed, floating)` | `SwapPeriod(accrual_start, accrual_end, payment_date, accrual_factor)` per leg. |
-| `SwapRiskRequest(swap, calendar, discount_curve, projection_curve=None, fixings=None)` | Valuation date = discount curve date. Discount: `DiscountCurve` or `CurveBootstrapRequest`; projection: `None` (single curve), `DiscountCurve` / `CurveBootstrapRequest` (RUONIA) or `KeyRateForwardCurve` (key rate); `fixings` a `FixingHistory` of the index, required once a period has started. |
+| `SwapRiskRequest(swap, calendar, discount_curve, projection_curve=None, fixings=None)` | Valuation date = discount curve date. Discount: `DiscountCurve` or `CurveBootstrapRequest`; projection: `None` (single curve), `DiscountCurve` / `CurveBootstrapRequest` (RUONIA) or `KeyRateForwardCurve` / `KeyRateCurveRequest` (key rate: forward or KRS-quote risk); `fixings` a `FixingHistory` of the index, required once a period has started. |
 | `SwapRiskEngine(request, curve_cache=ShockedCurveCache())` | `.valuation() -> SwapValuation` (PV, legs, accrued, clean PV, par rate, annuity, `SwapCashflow`s), `.risk(bump_bp=1, difference="central") -> SwapRiskResult` (`SwapCurveRisk` per curve role with `BucketRisk`s, KRD per notional), `.reprice(SwapScenario) -> SwapScenarioResult`, `.second_order(bump_bp=1) -> SwapSecondOrderRisk` (11 or 22 factors), `.horizon(date) -> SwapHorizonValuation`. |
 | `SwapScenario(discount_shifts_bp, projection_shifts_bp)`, `.parallel(discount_bp=0, projection_bp=0)` | Absolute bp bucket shifts per curve. |
 | `swap_factor_risk(risk, *, discount_curve_id, projection_curve_id=None, second_order=None) -> FactorRisk` | Desk factors `IR\|<curve_id>\|<bucket>`; one ID for a single curve, two distinct IDs otherwise; central only. |
@@ -187,7 +187,7 @@ Money is signed RUB of daily variation margin (not discounted).
 | `RuoniaFixings(valuation_date, fixings, calendar, snapshot_id, unpublished_dates=frozenset())`, `RuoniaIndexValue(index_date, value)` | Point-in-time RUONIA (decimal); undeclared gaps raise `MissingFixing`, declared ones carry the previous fixing. |
 | `ruonia_average_final_price(contract, fixings)`, `ruonia_index_value(anchor, fixings, target)`, `ruonia_index_final_price(contract, anchor, fixings)`, `key_rate_index_value(day, key_rate_history, scheduled_meetings, calendar)`, `cbr_ruonia_year_fraction(start, end)` | Final settlement and index reproduction per the specifications and methodologies. |
 | `rate_futures_variation_margin(contract, previous_price, price, quantity=1)` | Variation margin per the specification (RUON rounds each leg to kopecks). |
-| `RateFuturesRiskRequest(contract, projection_curve, fixings=None, index_anchor=None, futures_price=None, basis_bp=None, quantity=1)` | RUONIA contracts: `DiscountCurve` / `CurveBootstrapRequest` + fixings (+ anchor); KEYRATE: `KeyRateForwardCurve`. Exactly one of `futures_price` / `basis_bp`. |
+| `RateFuturesRiskRequest(contract, projection_curve, fixings=None, index_anchor=None, futures_price=None, basis_bp=None, quantity=1)` | RUONIA contracts: `DiscountCurve` / `CurveBootstrapRequest` + fixings (+ anchor); KEYRATE: `KeyRateForwardCurve` or `KeyRateCurveRequest` (KRS-quote risk). Exactly one of `futures_price` / `basis_bp`. |
 | `RateFuturesRiskEngine(request, curve_cache=ShockedCurveCache())` | `.base_price`, `.theoretical_price`, `.basis_bp`, `.risk(bump_bp=1, difference=...) -> RateFuturesRiskResult`, `.reprice(RateFuturesScenario) -> RateFuturesScenarioResult`, `.second_order() -> RateFuturesSecondOrderRisk` (12 factors), `.for_quantity(q)`. |
 | `RateFuturesScenario(curve_shifts_bp, basis_shift_bp)`, `.parallel(shift_bp, basis_shift_bp)` | Exact scenarios. |
 | `OfzFuturesContract(contract_id, last_trading_day, delivery_date, bonds_per_lot=10)` | `.delivery_price_pct(F, CF, face)` = `F / N * CF / face * 100`. |
@@ -510,6 +510,20 @@ Russian). Every new field is omitted at its default.
 | `BondRiskEngine.second_order(*, bump_bp=1.0, method="bump" \| "analytic")`, `ANALYTIC_SECOND_ORDER_MODEL_VERSION` | `analytic`: the exact gradient and Hessian of a fixed-cashflow bond on a `DiscountCurve` (else `InvalidTerms` with the reason); on `annual_par` through the par Jacobian with the instruments' curvature. Same factors as `bump`. |
 | `ValuationPolicy(..., second_order_method="bump" \| "analytic")` | `value_portfolio` takes the closed form for every bond that has one; others are bumped. |
 | `benchmark_equivalents(benchmarks, positions) -> BenchmarkHedge`; `BenchmarkHedge(curve_date, equivalents, total_risk_rub_per_bp, condition_number, warnings)`, `BenchmarkEquivalent(instrument_id, maturity, maturity_years, yield_dv01_rub, risk_rub_per_bp, hedge_quantity)`, `BENCHMARK_EQUIVALENTS_MODEL_VERSION` | The hedge view: risk per benchmark bond's own yield and the offsetting quantities. `benchmarks` are `(instrument_id, BondRiskEngine)` (for example `prepare_local_bond_risk(...).engine`), positions fixed-cashflow bond engines on the same curve. A warning when `cond(J) > 50`. |
+
+## Curve risk in par quotes: key-rate and FX curves (issue #77)
+
+The owner's decision of 2026-10-23: the risk of every curve in its par quotes, as RUONIA
+OIS (`CurveBootstrapRequest`) and the KBD (`rub_ofz_kbd_v3`). Off by default: every new
+field is omitted at its default, so earlier policies, snapshots, job IDs and results keep
+their bytes.
+
+| Name | Description |
+| --- | --- |
+| `KeyRateCurveRequest(build, business_date, rate_in_force)`; `.curve()`, `.shocked(shifts)`, `.shift_weights(start, end)`, `.identity`, `.curve_date` | KRS quotes (`KeyRateCurveBuildRequest`) as the risk source of a key-rate projection curve. `curve()` is the mid calibration re-dated to `business_date` (`rebase_key_rate_curve`). A bucket shift moves each mid quote by the bucket hats at its maturity (ACT/ACT ISDA time from `business_date`, as an OIS quote) and recalibrates on the same discount curve (`shocked`, the solve of `build_key_rate_forward_curve` with its checks); bid, ask, the calibration's discount curve and the decided rate do not move. Linear in the quotes. Curve basis `key_rate_quote`. |
+| `SwapRiskRequest(..., projection_curve=KeyRateCurveRequest)`, `RateFuturesRiskRequest(KeyRateFuturesContract, KeyRateCurveRequest, ...)` | Key-rate swaps and KEYRATE futures with risk, scenarios and Hessian in the KRS quotes; valuation and carry on `curve()`. |
+| `CurveEntry(curve_id, "rub_key_rate_swap_v1", KeyRateCurveRequest)` | KRS quotes in the snapshot, `business_date` equal to the snapshot's (else `INVALID_TERMS`). |
+| `ValuationPolicy(..., quote_curve_risk=False)` | `True`: a curve the snapshot holds as quotes is risked in them (KRS quotes: model flag `quote_curve`). `False`: KRS quotes are built once and their mid curve takes forward-rate bucket shifts, the same numbers as the built curve in the snapshot. |
 
 ## Desk-monitor additions (0.33.0)
 

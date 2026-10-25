@@ -19,7 +19,7 @@ or floats.
 | `compatibility.py` | Function-style API used by most consumers: `solve_nominal_annual_yield`, `bond_duration`, `price_cashflows`, `solve_z_spread`, `solve_continuous_z_spread`, `clean_price_pct_to_dirty_amount`. |
 | `analytics.py` | Snapshot-based deep interface: `analyze_bond` (V1, frozen conventions) and `analyze_bond_v2` (explicit conventions recorded in the result); canonical JSON/SHA-256 and result-hash verification; `accrued_interest_rub`. |
 | `trade_grid.py` | Validated PCHIP price→metric grids with identity checks and exact fallback. |
-| `key_rate.py` | MOEX IRS KEYRATE swap pricing and the identified pillar-forward key-rate curve build. |
+| `key_rate.py` | MOEX IRS KEYRATE swap pricing, the identified pillar-forward key-rate curve build and KRS quotes as a risk source (`KeyRateCurveRequest`). |
 | `risk.py` | Bond DV01/KRD, spread risk, scenarios, Hessian, JTD; shared curve shocking (`ShockedCurveCache`). |
 | `fx_futures.py` | FX futures against RUB: covered-parity price, two-curve rate risk, basis, FX delta, scenarios, Hessian. |
 | `_risk_common.py` | Private internals shared by `risk` and `fx_futures`: bucket weights, curve snapshotting and shocking, `ShockedCurveCache`, central derivatives, curve identity (0.12.0). |

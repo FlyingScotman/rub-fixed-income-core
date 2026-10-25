@@ -271,6 +271,14 @@ class ValuationPolicy:
     (:meth:`BondRiskEngine.second_order`): the same factors, equal to the bumped Hessian up
     to its O(bump^2) error, the Hessian part about six times faster. Floaters, perpetual
     tails, bonds on OIS quotes and every other product are still bumped.
+
+    ``quote_curve_risk=True`` (omitted at its default ``False``) takes the risk of a curve
+    the snapshot holds as par quotes in those quotes, as for RUONIA OIS quotes: a key-rate
+    projection curve given as KRS quotes (``KeyRateCurveRequest`` under
+    ``rub_key_rate_swap_v1``) is recalibrated to quotes shifted by each bucket's hat at their
+    maturity, so ``IR|<curve>|<bucket>`` of key-rate swaps and KEYRATE futures is risk to the
+    KRS quotes. Without it such quotes are built once and their mid curve takes
+    forward-rate bucket shifts, as a caller-built curve.
     """
 
     discount_curve_id: str
@@ -300,6 +308,7 @@ class ValuationPolicy:
     second_order_method: Literal["bump", "analytic"] = field(
         default="bump", metadata=OMIT_IF_DEFAULT
     )
+    quote_curve_risk: bool = field(default=False, metadata=OMIT_IF_DEFAULT)
 
     def __post_init__(self) -> None:
         pairs = tuple(sorted(self.exercise_assumptions, key=lambda p: p[0]))
@@ -378,6 +387,7 @@ class ValuationPolicy:
             "require_known_coupons",
             "spread_buckets",
             "fx_points_held_risk",
+            "quote_curve_risk",
         ):
             if not isinstance(getattr(self, flag), bool):
                 raise TypeError(f"{flag} must be boolean")
@@ -1198,6 +1208,7 @@ def _product_context(
         bonds,
         fx_curve_fallbacks=policy.fx_curve_fallbacks,
         fx_points_held_risk=policy.fx_points_held_risk,
+        quote_curve_risk=policy.quote_curve_risk,
     )
 
 

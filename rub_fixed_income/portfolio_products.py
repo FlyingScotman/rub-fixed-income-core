@@ -115,7 +115,7 @@ from .fx_futures import (
     FxFuturesScenario,
 )
 from .key_rate import MODEL_VERSION as KEY_RATE_CURVE_MODEL_VERSION
-from .key_rate import KeyRateForwardCurve
+from .key_rate import KeyRateCurveRequest, KeyRateForwardCurve
 from .ofz_futures import (
     OFZ_FUTURES_RISK_MODEL_VERSION,
     DeliverableAnalysis,
@@ -696,6 +696,7 @@ class ProductContext:
     engines: dict[str, object] = field(default_factory=dict)
     fx_curve_fallbacks: tuple[tuple[str, str], ...] = ()
     fx_points_held_risk: bool = False
+    quote_curve_risk: bool = False
     implied_curves: dict[str, DiscountCurve | CoreRejection] = field(default_factory=dict)
 
     @property
@@ -829,17 +830,27 @@ class ProductContext:
     def fx_fixing(self, currency: str, source: str, fixing_date: date) -> FxFixing | None:
         return self.snapshot.fx_fixing(currency, source, fixing_date)
 
-    def key_rate_curve(self, curve_id: str) -> KeyRateForwardCurve:
+    def key_rate_curve(self, curve_id: str) -> KeyRateForwardCurve | KeyRateCurveRequest:
         """A key-rate swap projection curve (``rub_key_rate_swap_v1``) dated the business date.
 
         A curve calibrated on TOM-dated quotes is re-dated by the backend with
-        ``key_rate.rebase_key_rate_curve``; core does not move a curve in time here.
+        ``key_rate.rebase_key_rate_curve``; core does not move a curve in time here. KRS
+        quotes (:class:`KeyRateCurveRequest`, re-dated by its ``business_date``) are the
+        risk source with ``quote_curve_risk``; otherwise their mid curve is (forward risk).
         """
         entry = self.snapshot.curve(curve_id)
         spec = get_curve_spec(entry.spec_id)
         source = entry.curve
         if spec.kind is not CurveKind.KEY_RATE_SWAP:
             raise InvalidTerms(f"curve {curve_id} ({spec.spec_id}) cannot project a key-rate swap")
+        if isinstance(source, KeyRateCurveRequest):
+            if source.business_date != self.business_date:
+                raise InvalidTerms(
+                    f"KRS quotes {curve_id} are dated {source.business_date.isoformat()}, not "
+                    "the snapshot business date"
+                )
+            self.used_curves[curve_id] = (spec.spec_id, KEY_RATE_CURVE_MODEL_VERSION)
+            return source if self.quote_curve_risk else source.curve()
         if not (
             isinstance(source, KeyRateForwardCurve)
             and source.model_version == KEY_RATE_CURVE_MODEL_VERSION
@@ -973,7 +984,9 @@ def _swap_engine(
     discount_id = instrument.discount_curve_id
     discount = ctx.discount_curve(discount_id, "RUB")
     projection_id = instrument.projection_curve_id
-    projection: DiscountCurve | CurveBootstrapRequest | KeyRateForwardCurve | None = None
+    projection: (
+        DiscountCurve | CurveBootstrapRequest | KeyRateForwardCurve | KeyRateCurveRequest | None
+    ) = None
     if projection_id is not None:
         if swap.convention.index == "key_rate":
             projection = ctx.key_rate_curve(projection_id)
@@ -1052,6 +1065,8 @@ def value_swap(position: Position, instrument: object, ctx: ProductContext) -> P
     flags = ["two_curve" if projection_id is not None else "single_curve"]
     if swap.convention.index == "key_rate":
         flags.append("key_rate_projection")
+    if isinstance(engine.request.projection_curve, KeyRateCurveRequest):
+        flags.append("quote_curve")
     if fixings is not None:
         flags.append("known_fixings")
     model = _model(
@@ -1904,6 +1919,8 @@ def value_rate_future(
     flags.append("implied_basis" if request.futures_price is not None else "fully_fixed")
     if kind == "key_rate":
         flags.append("key_rate_projection")
+        if isinstance(request.projection_curve, KeyRateCurveRequest):
+            flags.append("quote_curve")
     else:
         flags.append("known_fixings")
     model = _model(
