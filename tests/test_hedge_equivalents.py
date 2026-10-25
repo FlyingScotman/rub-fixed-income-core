@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import timedelta
 
 import pytest
@@ -98,16 +99,24 @@ def test_a_bond_between_two_benchmarks_maps_to_them_and_the_hedge_works() -> Non
     assert all(abs(e.risk_rub_per_bp) < 1e-6 * abs(parallel) for e in hedged.equivalents)
 
 
-def test_close_benchmarks_stay_well_conditioned_and_bad_inputs_are_refused(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    # Nodes sit at the benchmarks' own maturities, so J is nearly triangular: even 5.5 and
-    # 5.6 years apart the system is well conditioned.
-    close = (*BENCHMARKS, ("B5b", bond(5.6, 0.15, 985.0)))
-    result = benchmark_equivalents(close, [bond(6, 0.10, 860.0)])
-    assert result.condition_number < 10 and result.warnings == ()
-    monkeypatch.setattr("rub_fixed_income.hedge_equivalents.CONDITION_WARNING", 1.0)
-    assert "too close" in benchmark_equivalents(close, []).warnings[0]
+def shifted(engine: BondRiskEngine, days: int) -> BondRiskEngine:
+    """The same bond with every payment ``days`` later."""
+    flows = tuple(
+        BondCashflow(f.payment_date + timedelta(days=days), f.amount)
+        for f in engine.request.cashflows
+    )
+    return BondRiskEngine(replace(engine.request, cashflows=flows))
+
+
+def test_close_benchmarks_stay_well_conditioned_and_bad_inputs_are_refused() -> None:
+    # Nodes sit at the benchmarks' own maturities, so J is nearly triangular: even a day
+    # apart the system is well conditioned and the hedges do not blow up.
+    for days in (1, 7, 30):
+        close = (*BENCHMARKS, ("B5b", shifted(bond(5.5, 0.15, 985.0), days)))
+        result = benchmark_equivalents(close, [bond(6, 0.10, 860.0)])
+        assert result.condition_number < 10 and result.warnings == ()
+        gross = sum(abs(e.risk_rub_per_bp) for e in result.equivalents)
+        assert gross < 1.3 * abs(result.total_risk_rub_per_bp)
     with pytest.raises(InvalidTerms, match="must differ"):
         benchmark_equivalents((*BENCHMARKS, ("B7b", bond(7, 0.10, 900.0))), [])
     with pytest.raises(InvalidTerms, match="same curve"):
@@ -117,3 +126,63 @@ def test_close_benchmarks_stay_well_conditioned_and_bad_inputs_are_refused(
         benchmark_equivalents(BENCHMARKS, [BondRiskEngine(kbd_floater_request())])
     with pytest.raises(InvalidTerms, match="at least one"):
         benchmark_equivalents((), [])
+
+
+def test_benchmark_quantity_is_ignored_even_at_zero() -> None:
+    held = [bond(6, 0.10, 860.0, quantity=1e6)]
+    reference = benchmark_equivalents(BENCHMARKS, held)
+    for quantity in (0.0, -5.0, 1e9):
+        scaled = tuple((name, bond(*TERMS[name], quantity=quantity)) for name, _ in BENCHMARKS)
+        result = benchmark_equivalents(scaled, held)
+        for a, b in zip(result.equivalents, reference.equivalents, strict=True):
+            assert a.risk_rub_per_bp == pytest.approx(b.risk_rub_per_bp, rel=1e-12, abs=1e-12)
+            assert a.yield_dv01_rub == b.yield_dv01_rub
+
+
+def zero_bond(years: float, quantity: float = 1.0) -> BondRiskEngine:
+    maturity = add_months(DATE, round(years * 12))
+    return BondRiskEngine(
+        BondRiskRequest(
+            (BondCashflow(maturity, 1000.0),),
+            DATE + timedelta(days=1),
+            KBD,
+            ZSpreadConvention(),
+            "ofz",
+            dirty_price_rub=1000.0 * 1.16**-years,
+            quantity=quantity,
+        )
+    )
+
+
+def test_positions_outside_the_benchmarks_are_flagged() -> None:
+    # Before the first benchmark the overlay is flat: a 1Y bill is all on the 2Y.
+    short = benchmark_equivalents(BENCHMARKS, [bond(6, 0.10, 860.0), zero_bond(1)])
+    first = BENCHMARKS[0][1].request.cashflows[-1].payment_date
+    assert short.warnings == (
+        f"positions 1 mature before the first benchmark B2 ({first}): their risk is carried by it",
+    )
+    # Past the last benchmark too: a 20Y bond's tail is carried by the 14Y benchmark.
+    long = benchmark_equivalents(BENCHMARKS, [bond(20, 0.12, 750.0), bond(6, 0.10, 860.0)])
+    assert len(long.warnings) == 1 and long.warnings[0].startswith("positions 0 pay after")
+    assert "B15" in long.warnings[0]
+    # A coupon bond between benchmarks maps at about its own risk; nothing to flag.
+    inside = benchmark_equivalents(BENCHMARKS, [bond(9, 0.11, 830.0), bond(3, 0.1, 960.0)])
+    assert inside.warnings == ()
+
+
+def test_hedges_that_amplify_the_risk_are_flagged() -> None:
+    """Coupon-heavy benchmarks hedge a zero with large opposite-sign neighbours."""
+    rich = (
+        ("L10", bond(10, 0.25, 1300.0)),
+        ("L11", bond(11, 0.25, 1310.0)),
+        ("L12", bond(12, 0.25, 1320.0)),
+    )
+    result = benchmark_equivalents(rich, [zero_bond(11, quantity=1e4)])
+    by_id = {e.instrument_id: e.risk_rub_per_bp for e in result.equivalents}
+    assert by_id["L10"] > 0 > by_id["L11"]
+    assert abs(by_id["L11"]) > 3 * abs(result.total_risk_rub_per_bp)
+    assert (
+        len(result.warnings) == 1 and "amplify the positions' risk 5.9 times" in result.warnings[0]
+    )
+    # The condition number stays small: it does not see this.
+    assert result.condition_number < 10

@@ -44,9 +44,12 @@ __all__ = [
 ]
 
 BENCHMARK_EQUIVALENTS_MODEL_VERSION = "benchmark-equivalents-annual-overlay-v1"
-CONDITION_WARNING = 50.0
-"""Condition number of ``J`` above which the result warns: benchmarks too close together
-make neighbouring hedges large and of opposite sign."""
+AMPLIFICATION_WARNING = 3.0
+"""Gross benchmark risk over the positions' gross node risk (``sum |r_b| / sum |g_j|``, both
+RUB/bp) above which the result warns that the hedges are large and of opposite sign. A
+coupon bond between benchmarks maps at 1.0-1.3, a long zero next to a 13 % coupon benchmark
+at 3.8, an 11Y zero against 25 % coupon benchmarks at 5.9; benchmarks a day apart stay at
+1.2-1.7 (cond(J) about 3, which is why ``condition_number`` is reported but not used)."""
 _BP = 1e-4
 
 
@@ -81,7 +84,7 @@ def _hats(time: float, nodes: np.ndarray) -> np.ndarray:
 
 
 def _node_gradient(engine: BondRiskEngine, nodes: np.ndarray) -> np.ndarray:
-    """d PV / d x_j (RUB per bp, signed by quantity) for the annual-zero overlay at ``nodes``."""
+    """d P / d x_j (RUB per bond per bp) for the annual-zero overlay at ``nodes``."""
     req = engine.request
     curve = engine._curve
     settlement = req.settlement_date
@@ -104,7 +107,7 @@ def _node_gradient(engine: BondRiskEngine, nodes: np.ndarray) -> np.ndarray:
         tau = convention.day_count.year_fraction(settlement, payment)
         _, p_l, *_ = flow_partials(amount, forward, tau, spread, convention)
         gradient += p_l * (log_df(payment) - a_s)
-    return gradient * req.quantity
+    return gradient
 
 
 def _own_yield_dv01(engine: BondRiskEngine) -> float:
@@ -127,6 +130,36 @@ def _own_yield_dv01(engine: BondRiskEngine) -> float:
     return float(np.sum(-times * amounts * (1.0 + y) ** (-times - 1.0))) * _BP
 
 
+def _range_warnings(
+    positions: Sequence[BondRiskEngine],
+    first: tuple[float, date, str, BondRiskEngine],
+    last: tuple[float, date, str, BondRiskEngine],
+) -> list[str]:
+    """Positions maturing before the first benchmark or paying after the last."""
+    early, late = [], []
+    for index, engine in enumerate(positions):
+        settlement = engine.request.settlement_date
+        payments = [p for p, a in engine._fixed_flows() if p > settlement and a != 0.0]
+        if not payments:
+            continue
+        if max(payments) < first[1]:
+            early.append(str(index))
+        if max(payments) > last[1]:
+            late.append(str(index))
+    warnings = []
+    if early:
+        warnings.append(
+            f"positions {', '.join(early)} mature before the first benchmark {first[2]} "
+            f"({first[1].isoformat()}): their risk is carried by it"
+        )
+    if late:
+        warnings.append(
+            f"positions {', '.join(late)} pay after the last benchmark {last[2]} "
+            f"({last[1].isoformat()}): their risk past it is carried by it"
+        )
+    return warnings
+
+
 def benchmark_equivalents(
     benchmarks: Sequence[tuple[str, BondRiskEngine]],
     positions: Sequence[BondRiskEngine],
@@ -137,6 +170,11 @@ def benchmark_equivalents(
     Every engine must be a fixed-cashflow bond on the same ``DiscountCurve``
     (:class:`InvalidTerms` otherwise, naming the first that is not); benchmark maturities must
     differ. The positions' spreads, like the benchmarks', are held.
+
+    ``warnings`` name the positions (by index in ``positions``) that mature before the first
+    benchmark or pay after the last (that risk is carried by the end benchmark, the overlay
+    being flat beyond it), and hedges that amplify the positions' risk more than
+    ``AMPLIFICATION_WARNING`` times.
     """
     if not benchmarks:
         raise InvalidTerms("at least one benchmark is required")
@@ -163,17 +201,20 @@ def benchmark_equivalents(
     if len({r[2] for r in rows}) != len(rows):
         raise InvalidTerms("duplicate benchmark instrument")
     dv01 = np.array([_own_yield_dv01(r[3]) for r in rows])
-    per_bond = np.array([_node_gradient(r[3], times) / r[3].request.quantity for r in rows])
+    per_bond = np.array([_node_gradient(r[3], times) for r in rows])
     jacobian = per_bond / dv01[:, None]
     condition = float(np.linalg.cond(jacobian))
     exposure = np.zeros(times.size)
     for engine in positions:
-        exposure += _node_gradient(engine, times)
+        exposure += _node_gradient(engine, times) * engine.request.quantity
     risk = np.linalg.solve(jacobian.T, exposure)
-    warnings = []
-    if condition > CONDITION_WARNING:
+    warnings = _range_warnings(positions, rows[0], rows[-1])
+    gross = float(np.sum(np.abs(exposure)))
+    amplification = float(np.sum(np.abs(risk))) / gross if gross > 0.0 else 0.0
+    if amplification > AMPLIFICATION_WARNING:
         warnings.append(
-            f"condition number {condition:.0f}: benchmarks too close together, hedges unstable"
+            f"hedges amplify the positions' risk {amplification:.1f} times: large neighbouring "
+            "hedges of opposite sign"
         )
     equivalents = tuple(
         BenchmarkEquivalent(
