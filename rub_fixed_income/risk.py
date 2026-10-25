@@ -610,7 +610,7 @@ class BondRiskEngine:
         self,
         *,
         bump_bp: float = 1.0,
-        difference: Literal["forward", "central"] = "forward",
+        difference: Literal["forward", "central"] | None = None,
         method: Literal["bump", "analytic"] = "bump",
     ) -> BondRiskResult:
         """Signed RUB/bp. Default is exact +1bp P&L; central is a derivative estimate.
@@ -624,11 +624,13 @@ class BondRiskEngine:
         ``method="analytic"`` (0.38.0) gives the exact first derivatives in closed form for
         a fixed-cashflow bond on a ``DiscountCurve`` (as ``second_order(method="analytic")``,
         without the Hessian; otherwise :class:`InvalidTerms`): the limit of the central
-        difference, so it needs ``difference="central"`` and equals it up to its O(bump^2)
-        error. ``parallel_dv01`` is then the bucket sum (the bucket weights sum to one) and
-        ``bump_bp`` is only recorded. Model ``ANALYTIC_RISK_MODEL_VERSION``.
+        difference, which it equals up to its O(bump^2) error. ``difference`` is then central
+        when omitted; ``"forward"`` is refused. ``parallel_dv01`` is the bucket sum (the
+        bucket weights sum to one) and ``bump_bp`` is only recorded. Model ``ANALYTIC_RISK_MODEL_VERSION``.
         """
         bump = positive_money(bump_bp, "risk bump bp")
+        if difference is None:
+            difference = "central" if method == "analytic" else "forward"
         if difference not in ("forward", "central"):
             raise ValueError("difference must be forward or central")
         if method not in ("bump", "analytic"):

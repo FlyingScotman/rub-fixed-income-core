@@ -195,8 +195,11 @@ def test_closed_form_risk_equals_the_central_bumps(
 
 def test_closed_form_risk_needs_central_and_a_closed_form() -> None:
     engine = bond("annual_par")
+    # Omitted, the difference is central for the closed form (forward for the bumps).
+    assert engine.risk(method="analytic") == engine.risk(difference="central", method="analytic")
+    assert engine.risk().difference == "forward"
     with pytest.raises(ValueError, match="difference='central'"):
-        engine.risk(method="analytic")
+        engine.risk(difference="forward", method="analytic")
     with pytest.raises(ValueError, match="bump or analytic"):
         engine.risk(difference="central", method="taylor")  # type: ignore[arg-type]
     with pytest.raises(InvalidTerms, match="floating coupons"):
