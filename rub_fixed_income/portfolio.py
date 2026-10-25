@@ -79,6 +79,7 @@ from .inflation import IndexedPrincipalLeg
 from .kbd import KBD_MODEL_VERSION, ZcycParameters, g_spread_bp, kbd_discount_curve
 from .linkers import linker_accrued, linker_nominal, real_cashflows
 from .local_risk import (
+    CurveRiskBasis,
     FixedRubBondInput,
     PreparedLocalBondRisk,
     RiskRunContext,
@@ -1595,10 +1596,7 @@ def _value_position(
     )
     nominal_rub = nominal * fx if foreign else nominal
     accrued_rub = accrued * fx if foreign else accrued
-    basis = cast(
-        Literal["continuous_zero", "annual_zero", "annual_par", "ois_quote", "par_yield_quote"],
-        _curve_basis(built.source),
-    )
+    basis = cast(CurveRiskBasis, _curve_basis(built.source))
     projection_id: str | None = None
     yield_flows: Sequence[BondCashflow] = flows
     if isinstance(instrument.coupon_leg, FloatingCouponLeg):
@@ -1664,7 +1662,7 @@ def _value_position(
         ofz = OfzBasisRiskEngine(engine, ofz_job.resolve())
         factor_risk = _ofz_basis_factor_risk(ofz, risk, policy, ofz_job.ids)
         ofz_job.engines[position.position_id] = ofz
-        basis = cast(Literal["annual_par"], OFZ_BASIS_CURVE_BASIS)
+        basis = OFZ_BASIS_CURVE_BASIS
     else:
         second = _bond_second_order(engine, policy)
         factor_risk = bond_factor_risk(risk, curve_id, second, projection_curve_id=projection_id)
