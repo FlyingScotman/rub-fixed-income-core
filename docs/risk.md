@@ -47,6 +47,7 @@ The input type selects the basis, which is recorded in every result:
 | `DiscountCurve` with `convention.zero_shock="annual"` (0.34.0) | `annual_zero` | Shift the effective annual zero yield: `DF'(t) = (DF(t)^(-1/t) + s(t) / 10000)^(-t)` |
 | `DiscountCurve` with `convention.zero_shock="annual_par"` (0.37.0) | `annual_par` | Move the par yield of one annual-coupon instrument per bucket from 1Y to 20Y+ by the bucket's shift and solve the annual-zero overlay (hats on 1Y–20Y, flat below 1Y) that reprices all eight; 1M–6M have no instrument and no risk |
 | `CurveBootstrapRequest` | `ois_quote` | Interpolate the shift to each original OIS quote's maturity, add it to the decimal par rate, then bootstrap again using the same conventions |
+| `ParYieldCurveRequest` (0.38.0, issue #77) | `par_yield_quote` | The same for the par yields of a USD / EUR proxy: the shift at each quote's maturity (spec day count from the curve date) added to the par yield, then `bootstrap_par_yield_curve` again |
 
 The zero overlay evaluates the original curve at each required date, preserving
 its interpolation and extrapolation; it does not replace the original curve by

@@ -29,16 +29,20 @@ convention (every quote reprices to about 1e-12).
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from itertools import pairwise
+from typing import ClassVar
 
 from ._money import finite_money
+from ._quote_curves import QuoteCurve
+from ._risk_common import _shift_at
 from ._solver import illinois
+from .canonical import canonical_sha256
 from .conventions import CurveConvention
 from .curve_specs import PAR_YIELD_PROXY_MODEL_VERSION, CurveKind, CurveSpec, get_curve_spec
 from .dates import add_months
-from .discount import DiscountCurve
+from .discount import DiscountCurve, DiscountFactorCurve
 from .errors import InvalidTerms
 from .tenors import add_tenor, parse_tenor
 
@@ -73,8 +77,16 @@ class ParYieldQuote:
 
 
 @dataclass(frozen=True)
-class ParYieldCurveRequest:
-    """Par-yield quotes of one proxy spec (kind ``PAR_YIELD_PROXY``) on ``curve_date``."""
+class ParYieldCurveRequest(QuoteCurve):
+    """Par-yield quotes of one proxy spec (kind ``PAR_YIELD_PROXY``) on ``curve_date``.
+
+    Engines take it in place of the built curve for risk in the par yields (basis
+    ``par_yield_quote``, issue #77): a bucket shift moves each quote by the bucket hats at
+    its maturity's curve time (the spec's day count from ``curve_date``), as an OIS quote,
+    and :func:`bootstrap_par_yield_curve` rebuilds the curve.
+    """
+
+    quote_basis: ClassVar[str] = "par_yield_quote"
 
     spec_id: str
     curve_date: date
@@ -107,6 +119,32 @@ class ParYieldCurveRequest:
                 key=lambda pair: pair[0],
             )
         )
+
+    def shocked(self, shifts: tuple[float, ...]) -> ParYieldCurveRequest:
+        """The quotes moved by bucket ``shifts`` (bp) at each maturity's curve time."""
+        if not any(shifts):
+            return self
+        day_count, start = self.spec.time_day_count, self.curve_date
+        return replace(
+            self,
+            quotes=tuple(
+                ParYieldQuote(
+                    q.tenor,
+                    q.par_yield
+                    + _shift_at(day_count.year_fraction(start, add_tenor(start, q.tenor)), shifts)
+                    * 1e-4,
+                )
+                for q in self.quotes
+            ),
+        )
+
+    def _quote_build(
+        self, shifts: tuple[float, ...], rub: DiscountFactorCurve | None
+    ) -> DiscountCurve:
+        return bootstrap_par_yield_curve(self.shocked(shifts))
+
+    def _quote_identity(self) -> object:
+        return canonical_sha256(self)
 
 
 def _frequency(spec: CurveSpec) -> int:

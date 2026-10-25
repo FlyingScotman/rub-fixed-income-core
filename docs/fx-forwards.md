@@ -54,6 +54,11 @@ checks that the two modules agree.
   - Each curve is a `DiscountCurve` (`continuous_zero` risk basis) or a
     `CurveBootstrapRequest` (`ois_quote` basis, rebootstrapped under shocks), as for
     bonds and futures.
+  - The foreign curve may also be XCCY par quotes (`XccyCurveBootstrapRequest`,
+    `xccy_quote` basis, issue #77): the CNY curve is rebuilt under every shock on the
+    shocked RUB curve (discounting and projecting RUONIA), as in `XccyRiskEngine`.
+    Foreign buckets move each quote by the bucket hats at its end date; RUB buckets hold
+    the quotes. `FxCrossRiskRequest` takes it for either currency.
 
 ## Risk: `engine.risk(bump_bp=1, difference="forward" | "central")`
 

@@ -110,7 +110,12 @@ FX book and non-RUB bonds; 0.36.0 is that work plus 0.34.0 and never-called perp
   (`prepare_local_bond_risk`) and call `benchmark_equivalents`; the monitor picks the
   benchmarks (liquidity) and the desk may change them.
 
-**From 0.38.0** (FlyingScotman/rub-fixed-income-core#76):
+**From 0.38.0** (FlyingScotman/rub-fixed-income-core#75, #76, #77). Review fixes and the
+faster RUONIA rebuild need nothing from the monitor beyond the pin, except one rule:
+on a par-yield curve (`rub_ofz_kbd_v3`) a scenario's 1M–6M shifts must be zero or equal
+to its 1Y shift (else `InvalidTerms`): set the KBD's short buckets to zero before the call.
+
+Closed form and hedge view (#76):
 
 - `ValuationPolicy(risk_method="analytic")` for the closed-form first order of fixed bonds
   (with `second_order_method="analytic"` every bond with a closed form skips the bumps);
@@ -119,6 +124,29 @@ FX book and non-RUB bonds; 0.36.0 is that work plus 0.34.0 and never-called perp
   same KBD curve object or an equal one) and OFZ futures engines as positions; a warning
   names those whose other curve (RUONIA discount, funding) is held: show that risk beside
   the benchmark hedges.
+
+Curve risk in par quotes (#77, decision of 2026-10-23; the monitor side is
+FlyingScotman/trading-desk-monitor#171). Nothing changes until the monitor opts in. To take the key-rate curve's risk in KRS quotes:
+
+- put the KRS calibration inputs in the snapshot instead of the built curve:
+  `CurveEntry(key_rate_curve_id, "rub_key_rate_swap_v1", KeyRateCurveRequest(
+  KeyRateCurveBuildRequest(trade_date, current_rate, next_policy_effective_date, quotes,
+  tom_discount_curve, calendar), business_date, rate_in_force))` — the same inputs the
+  backend passes to `build_key_rate_forward_curve` and `rebase_key_rate_curve` today;
+- `ValuationPolicy(quote_curve_risk=True)`. `IR|<key-rate curve>|<bucket>` is then risk
+  to the KRS mid quotes (rows flagged `quote_curve`); PV and carry are unchanged. Without
+  the flag the same snapshot values exactly as the built curve. The job ID changes with
+  the flag: mark the change of factor unit in the run history;
+- with the flag, FX forwards, FX swaps, crosses and FX futures may name the CNY XCCY
+  quotes (`XccyCurveBootstrapRequest` under `cny_ruonia_xccy_v1`, the entry XCCY swaps
+  already read) as their foreign curve instead of the built CNY curve: their CNY buckets
+  are then risk to the XCCY quotes, in the same unit as the XCCY swaps';
+- USD / EUR proxies: put the hub's par yields in the snapshot as
+  `CurveEntry(curve_id, "usd_ust_par_proxy_v1", ParYieldCurveRequest(spec_id,
+  business_date, quotes))` (the inputs of `bootstrap_par_yield_curve`) instead of the built
+  curve. Without the flag it values exactly as the built curve; with it every position on
+  the proxy (bonds, CDS, FX fallbacks) has `IR|<proxy>|<bucket>` in par yields
+  (`curve_basis = "par_yield_quote"`).
 
 ## Deprecations in 0.12.0 and what consumers should move to
 

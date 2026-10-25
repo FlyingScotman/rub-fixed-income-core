@@ -55,7 +55,7 @@ its JTD; otherwise the credit curve's stated recovery is used (never a default).
 | `index_fixings` | `IndexFixingEntry(fixing_id, IndexFixings)` | foreign overnight index fixings of a floating XCCY foreign leg, dated the business date |
 | `ruonia_fixings` | `RuoniaFixingsEntry(fixing_id, RuoniaFixings)` | RUONIA with the declared unpublished days (rate futures); an undeclared gap rejects |
 | `ruonia_index` | `RuoniaIndexValue(index_date, value)` | published RUONIA index values; the index future grows the latest one |
-| `curves` | `CurveEntry` with a `KeyRateForwardCurve` under `rub_key_rate_swap_v1`, an `XccyCurveBootstrapRequest` under `cny_ruonia_xccy_v1`, or (0.36.0) an `FxImpliedCurveRequest(currency, curve_date, rub_curve_id, quotes, convention=None)` under `<ccy>_fx_implied_v1` | key-rate projection of swaps and KEYRATE futures; the CNY curve from XCCY par quotes (quote-basis risk); a foreign curve implied from FX swap points / outrights (RUB per one unit), built once per job on the snapshot `FxSpot` and the named RUB curve |
+| `curves` | `CurveEntry` with a `KeyRateForwardCurve` or its KRS quotes (`KeyRateCurveRequest`, issue #77) under `rub_key_rate_swap_v1`, an `XccyCurveBootstrapRequest` under `cny_ruonia_xccy_v1`, or (0.36.0) an `FxImpliedCurveRequest(currency, curve_date, rub_curve_id, quotes, convention=None)` under `<ccy>_fx_implied_v1` | key-rate projection of swaps and KEYRATE futures; the CNY curve from XCCY par quotes (quote-basis risk); a foreign curve implied from FX swap points / outrights (RUB per one unit), built once per job on the snapshot `FxSpot` and the named RUB curve |
 
 Fixing IDs are unique across `fixings`, `index_fixings` and `ruonia_fixings`. Existing
 snapshots keep their bytes and hashes; `to_dict` / `from_dict` round-trip the new
@@ -69,7 +69,9 @@ entries.
 exist for **every** currency other than RUB (`get_curve_spec("chf_discount_factors_v1")`,
 `fx_implied_spec_id("KZT")`), so a CHF, GBP, JPY or KZT forward needs no release. An
 `XccyCurveBootstrapRequest` is rebuilt only by cross-currency swaps, whose spot must equal
-the snapshot `FxSpot`. A par-yield proxy (`usd_ust_par_proxy_v1`) is accepted only as a
+the snapshot `FxSpot`; with `ValuationPolicy.quote_curve_risk` (0.38.0, issue #77) FX forwards,
+FX swaps, crosses and FX futures naming it rebuild it too, on their RUB curve (flag
+`quote_curve`), instead of `INVALID_TERMS`. A par-yield proxy (`usd_ust_par_proxy_v1`) is accepted only as a
 fallback (`ValuationPolicy.fx_curve_fallbacks`, BACKLOG #131): tried in order when the
 named curve is absent from the snapshot, with its own (calibrated) `FxBasis`; the row
 names the replaced curve in `curve_fallback_from` and `CurveUse.proxy` flags it.
@@ -96,7 +98,25 @@ and requires the key rate in force on the business date to equal the curve's cur
 rate (a decision effective on TOM itself cannot be represented that way and is
 rejected). Bucket shifts are then read at times from the business date. A key-rate curve
 not dated the business date is `INVALID_TERMS`; core never moves a curve in time
-silently.
+silently. KRS quotes (`KeyRateCurveRequest(build, business_date, rate_in_force)`, the
+TOM calibration inputs) re-date their mid curve the same way and must name the snapshot
+business date.
+
+**Curve risk in par quotes (0.38.0, issue #77).** `ValuationPolicy.quote_curve_risk=True`
+(omitted at its default) risks a curve the snapshot holds as quotes in those quotes, as
+RUONIA OIS quotes always are: `IR|<key-rate curve>|<bucket>` of key-rate swaps and
+KEYRATE futures is then the risk to the KRS mid quotes, each moved by the bucket hats at
+its maturity, the curve recalibrated (model flag `quote_curve`); scenarios on the curve
+move the quotes too. Without the flag KRS quotes are built once and their mid curve takes
+forward-rate shifts, exactly as the built curve would. Carry is on the mid curve either
+way. FX forwards, FX swaps, crosses and FX futures on XCCY par quotes
+(`XccyCurveBootstrapRequest`) rebuild the CNY curve under every shock on their shocked
+RUB curve, as cross-currency swaps do: `IR|<cny curve>|<bucket>` is risk to the XCCY
+quotes and the RUB buckets hold them. Carry is on the curve built from the quotes. A USD / EUR par-yield
+proxy may be held as its quotes (`ParYieldCurveRequest` under its `*_par_proxy_v1`
+spec): built once, or with the flag the risk source of every position on it (bonds,
+CDS, FX products reaching it as a fallback, XCCY swaps), rows `curve_basis =
+"par_yield_quote"`, so bonds and FX products on one proxy share one factor unit.
 
 ## Result contract v3 (`PortfolioRiskResultV3`)
 
@@ -164,7 +184,7 @@ version; `portfolio_result_from_json` reads both (v2 into `PortfolioRiskResult`,
 | `fx_cross` | an FX forward or swap between two foreign currencies |
 | `key_rate_projection` | projected on a key-rate forward curve |
 | `covered_parity` | FX forward, FX swap, XCCY or FX future valued by covered parity |
-| `quote_curve` | the foreign curve is rebuilt from XCCY par quotes under shocks |
+| `quote_curve` | a curve is rebuilt from its par quotes under shocks: the foreign curve from XCCY quotes (XCCY swaps; FX forwards, swaps, crosses and futures with `quote_curve_risk`), the key-rate curve from KRS quotes (`quote_curve_risk`) |
 | `hazard_bootstrap` | CDS on a hazard curve bootstrapped from quotes |
 | `daily_margined` | a future; PV is the pending variation margin |
 | `implied_basis` / `fully_fixed` | the futures basis is calibrated to the snapshot price / the rate period is fully fixed and the fixings determine the price |
@@ -284,4 +304,9 @@ engines dominate; the portfolio layer adds no repricing.
   futures share).
 - RUSFAR projection curves: a RUSFAR repo projects on a curve under a RUONIA OIS spec;
   no RUSFAR spec is registered.
-- Persisting XCCY and CDS shocked curves across jobs (BACKLOG #70, #76).
+- Persisting XCCY and CDS shocked curves across jobs (BACKLOG #70, #76); likewise the
+  rebuilt KRS, XCCY (FX products) and par-yield proxy curves of `quote_curve_risk`, which
+  are memoised on the request object within a process only.
+- Quote risk of a curve implied from FX swaps (`FxImpliedCurveRequest`): it is built once
+  per job and shifted on its zero rates, with or without `quote_curve_risk`. The KRS
+  calibration's own (TOM) discount curve is not shocked with the discount factors.

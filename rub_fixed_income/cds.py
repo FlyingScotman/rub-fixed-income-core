@@ -29,6 +29,7 @@ from typing import Literal, cast
 
 from ._curve_views import forward_curve, roll_curve
 from ._money import finite_money, non_negative_money, positive_money
+from ._quote_curves import QuoteCurve
 from ._risk_common import (
     _ZERO_SHOCK,
     RISK_BUCKETS,
@@ -1240,14 +1241,15 @@ class CdsRiskRequest:
     """A contract, its valuation date, discount curve input and credit quotes.
 
     The discount input selects the rate risk basis as for bonds (``DiscountCurve`` =
-    zero-rate overlay, ``CurveBootstrapRequest`` = OIS quote bump and rebootstrap);
+    zero-rate overlay, ``CurveBootstrapRequest`` = OIS quote bump and rebootstrap, a
+    par-yield proxy request = par-yield quote bump and rebuild);
     both must be dated on ``valuation_date``. The credit curve is always the quotes,
     so every shock holds quoted spreads (or upfronts) fixed and rebootstraps hazard.
     """
 
     contract: CdsContract
     valuation_date: date
-    discount_curve: DiscountCurve | CurveBootstrapRequest
+    discount_curve: DiscountCurve | CurveBootstrapRequest | QuoteCurve
     credit_curve: CdsCurveRequest
 
     def __post_init__(self) -> None:
@@ -1255,8 +1257,13 @@ class CdsRiskRequest:
             raise TypeError("contract must be a CdsContract")
         if not isinstance(self.credit_curve, CdsCurveRequest):
             raise TypeError("credit_curve must be a CdsCurveRequest")
-        if not isinstance(self.discount_curve, (DiscountCurve, CurveBootstrapRequest)):
-            raise TypeError("discount_curve must be DiscountCurve or CurveBootstrapRequest")
+        curve = self.discount_curve
+        if not isinstance(curve, (DiscountCurve, CurveBootstrapRequest, QuoteCurve)) or (
+            isinstance(curve, QuoteCurve) and curve.needs_rub
+        ):
+            raise TypeError(
+                "discount_curve must be DiscountCurve, CurveBootstrapRequest or par yields"
+            )
         if self.discount_curve.curve_date != self.valuation_date:
             raise InvalidTerms("the discount curve must be dated on the valuation date")
         if self.credit_curve.valuation_date != self.valuation_date:

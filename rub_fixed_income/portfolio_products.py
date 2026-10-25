@@ -32,7 +32,7 @@ import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import date
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 from ._curve_views import FxHorizon
 from ._money import finite_money
@@ -49,7 +49,7 @@ from .cds import (
     CdsSide,
     cds_factor_risk,
 )
-from .curve_specs import PAR_YIELD_PROXY_MODEL_VERSION, CurveKind, get_curve_spec
+from .curve_specs import PAR_YIELD_PROXY_MODEL_VERSION, CurveKind, CurveSpec, get_curve_spec
 from .dates import BusinessCalendar
 from .discount import CurveBootstrapRequest, DiscountCurve
 from .domain import (
@@ -115,7 +115,7 @@ from .fx_futures import (
     FxFuturesScenario,
 )
 from .key_rate import MODEL_VERSION as KEY_RATE_CURVE_MODEL_VERSION
-from .key_rate import KeyRateForwardCurve
+from .key_rate import KeyRateCurveRequest, KeyRateForwardCurve
 from .ofz_futures import (
     OFZ_FUTURES_RISK_MODEL_VERSION,
     DeliverableAnalysis,
@@ -137,6 +137,7 @@ from .portfolio_instruments import (
     SwapInstrument,
     XccyInstrument,
 )
+from .proxy_curves import ParYieldCurveRequest
 from .rate_futures import (
     RATE_FUTURES_RISK_MODEL_VERSION,
     KeyRateFuturesContract,
@@ -696,6 +697,7 @@ class ProductContext:
     engines: dict[str, object] = field(default_factory=dict)
     fx_curve_fallbacks: tuple[tuple[str, str], ...] = ()
     fx_points_held_risk: bool = False
+    quote_curve_risk: bool = False
     implied_curves: dict[str, DiscountCurve | CoreRejection] = field(default_factory=dict)
 
     @property
@@ -704,6 +706,18 @@ class ProductContext:
 
     def discount_curve(self, curve_id: str, currency: str) -> DiscountCurve | CurveBootstrapRequest:
         """A nominal discount curve of ``currency`` dated the business date."""
+        curve = self.quoted_discount_curve(curve_id, currency)
+        if isinstance(curve, ParYieldCurveRequest):
+            raise InvalidTerms(
+                f"curve {curve_id} holds par-yield quotes (quote_curve_risk); it discounts "
+                "bonds, CDS and FX products only"
+            )
+        return curve
+
+    def quoted_discount_curve(
+        self, curve_id: str, currency: str
+    ) -> DiscountCurve | CurveBootstrapRequest | ParYieldCurveRequest:
+        """:meth:`discount_curve`, or par-yield proxy quotes with ``quote_curve_risk``."""
         built = self.bond_curve(curve_id)
         if built.real:
             raise InvalidTerms(f"curve {curve_id} is a real curve; it discounts only linkers")
@@ -711,11 +725,11 @@ class ProductContext:
             raise InvalidTerms(f"curve {curve_id} is a {built.currency} curve, not {currency}")
         if built.curve.curve_date != self.business_date:
             raise InvalidTerms(f"curve {curve_id} is not dated the snapshot business date")
-        return built.curve
+        return built.source
 
     def foreign_fx_curve(
         self, curve_id: str, currency: str, *, allow_proxy: bool = False
-    ) -> DiscountCurve:
+    ) -> DiscountCurve | XccyCurveBootstrapRequest | ParYieldCurveRequest:
         """The foreign curve of an FX product: discount factors of ``currency``.
 
         Caller-built factors (``<ccy>_discount_factors_v1``, any currency), a curve
@@ -723,7 +737,8 @@ class ProductContext:
         :class:`FxImpliedCurveRequest` built here once per job on the snapshot FX spot
         and the named RUB curve; also accepted under the discount-factor spec as
         before) or a built XCCY curve (``cny_ruonia_xccy_v1``); dated the business date.
-        A par-yield proxy only with ``allow_proxy`` (reached as a fallback, #131).
+        A par-yield proxy only with ``allow_proxy`` (reached as a fallback, #131). XCCY
+        par quotes only with ``quote_curve_risk``: the engine rebuilds them (#77).
         """
         entry = self.snapshot.curve(curve_id)
         spec = get_curve_spec(entry.spec_id)
@@ -737,12 +752,20 @@ class ProductContext:
         }.get(spec.kind)
         if spec.kind is CurveKind.PAR_YIELD_PROXY and allow_proxy:
             models = (PAR_YIELD_PROXY_MODEL_VERSION,)
+            if isinstance(source, ParYieldCurveRequest):
+                # Built (or, with quote_curve_risk, passed on) as the bonds read it.
+                built = self.quoted_discount_curve(curve_id, currency)
+                return cast(DiscountCurve | ParYieldCurveRequest, built)
         if models is None:
             raise InvalidTerms(f"curve {curve_id} ({spec.spec_id}) is not a foreign discount curve")
         if isinstance(source, XccyCurveBootstrapRequest):
-            raise InvalidTerms(
-                f"curve {curve_id} holds XCCY quotes; only cross-currency swaps rebuild it"
-            )
+            if not self.quote_curve_risk:
+                raise InvalidTerms(
+                    f"curve {curve_id} holds XCCY quotes; only cross-currency swaps rebuild it"
+                )
+            spot, _ = self.fx_spot(currency)
+            _check_xccy_quotes(self, curve_id, spec, source, currency, spot)
+            return source
         if isinstance(source, FxImpliedCurveRequest):
             if spec.kind is not CurveKind.FX_IMPLIED:
                 raise InvalidTerms(f"curve {curve_id}: FX swap quotes belong to an fx_implied spec")
@@ -785,7 +808,9 @@ class ProductContext:
             raise outcome
         return outcome
 
-    def fx_curve(self, curve_id: str, currency: str) -> tuple[str, DiscountCurve, str | None]:
+    def fx_curve(
+        self, curve_id: str, currency: str
+    ) -> tuple[str, DiscountCurve | XccyCurveBootstrapRequest | ParYieldCurveRequest, str | None]:
         """``(curve ID used, curve, curve it replaces)`` of an FX product's foreign curve.
 
         ``fx_curve_fallbacks`` (``ValuationPolicy``, #131) are tried in order only when
@@ -829,17 +854,27 @@ class ProductContext:
     def fx_fixing(self, currency: str, source: str, fixing_date: date) -> FxFixing | None:
         return self.snapshot.fx_fixing(currency, source, fixing_date)
 
-    def key_rate_curve(self, curve_id: str) -> KeyRateForwardCurve:
+    def key_rate_curve(self, curve_id: str) -> KeyRateForwardCurve | KeyRateCurveRequest:
         """A key-rate swap projection curve (``rub_key_rate_swap_v1``) dated the business date.
 
         A curve calibrated on TOM-dated quotes is re-dated by the backend with
-        ``key_rate.rebase_key_rate_curve``; core does not move a curve in time here.
+        ``key_rate.rebase_key_rate_curve``; core does not move a curve in time here. KRS
+        quotes (:class:`KeyRateCurveRequest`, re-dated by its ``business_date``) are the
+        risk source with ``quote_curve_risk``; otherwise their mid curve is (forward risk).
         """
         entry = self.snapshot.curve(curve_id)
         spec = get_curve_spec(entry.spec_id)
         source = entry.curve
         if spec.kind is not CurveKind.KEY_RATE_SWAP:
             raise InvalidTerms(f"curve {curve_id} ({spec.spec_id}) cannot project a key-rate swap")
+        if isinstance(source, KeyRateCurveRequest):
+            if source.business_date != self.business_date:
+                raise InvalidTerms(
+                    f"KRS quotes {curve_id} are dated {source.business_date.isoformat()}, not "
+                    "the snapshot business date"
+                )
+            self.used_curves[curve_id] = (spec.spec_id, KEY_RATE_CURVE_MODEL_VERSION)
+            return source if self.quote_curve_risk else source.curve()
         if not (
             isinstance(source, KeyRateForwardCurve)
             and source.model_version == KEY_RATE_CURVE_MODEL_VERSION
@@ -973,7 +1008,9 @@ def _swap_engine(
     discount_id = instrument.discount_curve_id
     discount = ctx.discount_curve(discount_id, "RUB")
     projection_id = instrument.projection_curve_id
-    projection: DiscountCurve | CurveBootstrapRequest | KeyRateForwardCurve | None = None
+    projection: (
+        DiscountCurve | CurveBootstrapRequest | KeyRateForwardCurve | KeyRateCurveRequest | None
+    ) = None
     if projection_id is not None:
         if swap.convention.index == "key_rate":
             projection = ctx.key_rate_curve(projection_id)
@@ -1052,6 +1089,8 @@ def value_swap(position: Position, instrument: object, ctx: ProductContext) -> P
     flags = ["two_curve" if projection_id is not None else "single_curve"]
     if swap.convention.index == "key_rate":
         flags.append("key_rate_projection")
+    if isinstance(engine.request.projection_curve, KeyRateCurveRequest):
+        flags.append("quote_curve")
     if fixings is not None:
         flags.append("known_fixings")
     model = _model(
@@ -1172,6 +1211,8 @@ def _fx_forward_engine(
     )
     if fallback_from is not None:
         flags = tuple(sorted({*flags, "curve_fallback"}))
+    if isinstance(foreign, XccyCurveBootstrapRequest):
+        flags = tuple(sorted({*flags, "quote_curve"}))
     return _FxForwardSetup(engine, spot, settlement, basis, foreign_id, fallback_from, flags)
 
 
@@ -1418,6 +1459,9 @@ def value_fx_cross(position: Position, instrument: object, ctx: ProductContext) 
     flags = ["covered_parity", "fx_cross"]
     if any(f is not None for f in setup.fallbacks):
         flags.append("curve_fallback")
+    curves = (engine.request.base_curve, engine.request.quote_curve)
+    if any(isinstance(c, XccyCurveBootstrapRequest) for c in curves):
+        flags.append("quote_curve")
     model = _model(
         position,
         instrument.instrument_id,
@@ -1433,8 +1477,8 @@ def value_fx_cross(position: Position, instrument: object, ctx: ProductContext) 
 
 def _xccy_foreign_discount(
     ctx: ProductContext, curve_id: str, currency: str, spot: FxSpot
-) -> tuple[str, DiscountCurve | XccyCurveBootstrapRequest, str | None]:
-    """``(curve ID used, foreign discount curve or XCCY quotes, curve it replaces)``."""
+) -> tuple[str, DiscountCurve | XccyCurveBootstrapRequest | ParYieldCurveRequest, str | None]:
+    """``(curve ID used, foreign discount curve or its quotes, curve it replaces)``."""
     try:
         entry = ctx.snapshot.curve(curve_id)
     except MissingMarketData:
@@ -1442,7 +1486,20 @@ def _xccy_foreign_discount(
     source = entry.curve
     if not isinstance(source, XccyCurveBootstrapRequest):
         return ctx.fx_curve(curve_id, currency)
-    spec = get_curve_spec(entry.spec_id)
+    _check_xccy_quotes(ctx, curve_id, get_curve_spec(entry.spec_id), source, currency, spot)
+    return curve_id, source, None
+
+
+def _check_xccy_quotes(
+    ctx: ProductContext,
+    curve_id: str,
+    spec: CurveSpec,
+    source: XccyCurveBootstrapRequest,
+    currency: str,
+    spot: FxSpot,
+) -> None:
+    """XCCY quotes of ``currency`` under their spec, dated the business date, on the
+    snapshot spot; records the curve as used."""
     if spec.kind is not CurveKind.XCCY_BOOTSTRAP or spec.currency != currency:
         raise InvalidTerms(f"curve {curve_id} does not match spec {spec.spec_id}")
     if source.currency != currency:
@@ -1454,7 +1511,6 @@ def _xccy_foreign_discount(
     if source.convention.spec_id not in (None, spec.spec_id):
         raise InvalidTerms(f"curve {curve_id} quotes are of spec {source.convention.spec_id}")
     ctx.used_curves[curve_id] = (spec.spec_id, spec.model_version)
-    return curve_id, source, None
 
 
 def _xccy_engine(
@@ -1598,7 +1654,7 @@ def _cds_engine(
     contract = instrument.contract
     currency = contract.currency
     _check_position(position, currency)
-    discount = ctx.discount_curve(instrument.discount_curve_id, currency)
+    discount = ctx.quoted_discount_curve(instrument.discount_curve_id, currency)
     fx = ctx.fx_rate(currency)
     credit = ctx.credit_request(contract.reference_entity, currency)
     if credit.convention.hazard_day_count != contract.convention.hazard_day_count:
@@ -1776,6 +1832,8 @@ def value_fx_future(position: Position, instrument: object, ctx: ProductContext)
     flags = ["covered_parity", "daily_margined", "implied_basis"]
     if fallback_from is not None:
         flags.append("curve_fallback")
+    if isinstance(engine.request.foreign_curve, XccyCurveBootstrapRequest):
+        flags.append("quote_curve")
     model = _model(
         position,
         instrument.instrument_id,
@@ -1904,6 +1962,8 @@ def value_rate_future(
     flags.append("implied_basis" if request.futures_price is not None else "fully_fixed")
     if kind == "key_rate":
         flags.append("key_rate_projection")
+        if isinstance(request.projection_curve, KeyRateCurveRequest):
+            flags.append("quote_curve")
     else:
         flags.append("known_fixings")
     model = _model(
