@@ -55,6 +55,7 @@ from rub_fixed_income import (
     PrincipalLeg,
     ProductType,
     Redemption,
+    RiskRunContext,
     ShockedCurveCache,
     SwapInstrument,
     ValuationPolicy,
@@ -604,6 +605,8 @@ def test_value_portfolio_reports_kbd_bonds_as_ruonia_plus_basis(analytic: bool) 
             assert new_h[(rename[f], rename[g])] == value
     totals = {t.factor for t in opted.factor_totals}
     assert "IR|RUB_OIS|15Y" in totals and not any(f.startswith("IR|RUB_OFZ_KBD|") for f in totals)
+    # A consumer may carry the row's basis into a local run context.
+    RiskRunContext("run", "i", "m", "s", "c", OFZ_BASIS_CURVE_BASIS)
 
 
 def test_bonds_on_other_curves_are_unchanged() -> None:

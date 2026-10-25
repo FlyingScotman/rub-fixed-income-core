@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Literal
+from typing import Literal, get_args
 
 from ._money import non_negative_money, positive_money
 from ._quote_curves import QuoteCurve
@@ -28,7 +28,12 @@ from .risk import (
 )
 
 CurveRiskBasis = Literal[
-    "continuous_zero", "annual_zero", "annual_par", "ois_quote", "par_yield_quote"
+    "continuous_zero",
+    "annual_zero",
+    "annual_par",
+    "ois_quote",
+    "par_yield_quote",
+    "ruonia_ois_quote+kbd_par_basis",
 ]
 
 
@@ -52,16 +57,10 @@ class RiskRunContext:
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{name} must be a nonempty string")
-        if self.curve_basis not in (
-            "continuous_zero",
-            "annual_zero",
-            "annual_par",
-            "ois_quote",
-            "par_yield_quote",
-        ):
+        if self.curve_basis not in get_args(CurveRiskBasis):
             raise ValueError(
-                "curve_basis must be continuous_zero, annual_zero, annual_par, ois_quote "
-                "or par_yield_quote"
+                "curve_basis must be continuous_zero, annual_zero, annual_par, ois_quote, "
+                "par_yield_quote or ruonia_ois_quote+kbd_par_basis"
             )
 
 

@@ -80,6 +80,9 @@ results and pinned hashes are unchanged.
   bucket by bucket), kept for comparison and for curves without quotes to rebootstrap.
 - `portfolio.py`: three pre-existing over-long lines reformatted (`ruff format`); no
   behaviour change.
+- `local_risk.CurveRiskBasis` and `RiskRunContext` accept `ruonia_ois_quote+kbd_par_basis`
+  (`OFZ_BASIS_CURVE_BASIS`, now `Final`), so a row's `curve_basis` in these coordinates can
+  be carried into a local run context; the value is no longer hidden from type checks.
 
 ### Not covered
 

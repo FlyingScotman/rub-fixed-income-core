@@ -55,7 +55,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
-from typing import Literal, cast
+from typing import Final, Literal, cast
 
 import numpy as np
 
@@ -111,7 +111,7 @@ _SECOND_ORDER_MODELS = {
     "bump": "rub-ofz-ruonia-basis-second-order-v1",
     "analytic": "rub-ofz-ruonia-basis-second-order-analytic-v1",
 }
-OFZ_BASIS_CURVE_BASIS = "ruonia_ois_quote+kbd_par_basis"
+OFZ_BASIS_CURVE_BASIS: Final = "ruonia_ois_quote+kbd_par_basis"
 """``curve_basis`` of results in these coordinates (RUONIA OIS quotes plus v3 par basis)."""
 
 _BP = 1e-4
