@@ -174,8 +174,17 @@ its default None (earlier policies, job IDs and results keep their bytes):
   `kbd_curve_id` itself is `INVALID_TERMS` for these bonds: the KBD is not their factor;
 - `horizon_portfolio` (carry, rolldown) does not use factors and is unchanged.
 
-Cost (`benchmarks/portfolio_bench.py --cases kbd3,ofzbasis,ofzbasis-bump`): see the
-changelog entry.
+Cost (`benchmarks/portfolio_bench.py --positions 2000 --cases kbd3,ofzbasis,ofzbasis-bump`,
+ms per position, a shared machine):
+
+| mode | v3 KBD, closed form (`kbd3`) | RUONIA + basis, closed form | RUONIA + basis, bumped |
+| --- | ---: | ---: | ---: |
+| first order | 2.43 | 3.65 | 4.47 |
+| with Hessian | 3.97 | 7.26 | 26.62 |
+| with Hessian and 5 scenarios | 3.53 | 7.50 | 24.41 |
+
+Use the closed form (`risk_method` and `second_order_method` `"analytic"`): the bumped
+23 × 23 Hessian is about 1 060 repricings per bond.
 
 ## Open questions
 
