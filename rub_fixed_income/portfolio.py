@@ -69,6 +69,7 @@ from .factors import (
     bond_factor_risk,
     fx_translated_factor_risk,
     linker_factor_risk,
+    ofz_basis_factor_risk,
 )
 from .floating import FixingIndex
 from .fx_forwards import FxImpliedCurveRequest
@@ -83,6 +84,7 @@ from .local_risk import (
     RiskRunContext,
     prepare_local_bond_risk,
 )
+from .ofz_basis import OFZ_BASIS_CURVE_BASIS, OfzBasisCurve, OfzBasisIds, OfzBasisRiskEngine
 from .perpetual import PerpetualTail, perpetual_yield
 from .portfolio_instruments import PortfolioInstrument
 from .portfolio_products import (
@@ -302,6 +304,20 @@ class ValuationPolicy:
     under every shock, as cross-currency swaps rebuild it. A USD / EUR proxy held as par
     yields (``ParYieldCurveRequest``) is the risk source of every position on it
     (``curve_basis = "par_yield_quote"``); without the flag it is built once.
+
+    ``ofz_basis`` (issue #83, omitted at its default None) reports bonds discounted on the KBD
+    in RUONIA + basis coordinates (:class:`OfzBasisIds`: the KBD, a ``rub_ofz_kbd_v3`` curve; the
+    RUONIA OIS curve, held as quotes; the basis ID). Their factors are ``IR|<ois>|*`` (RUONIA,
+    the OIS curve's own, so they add up with OIS swaps), ``IR|<basis>|*`` (the KBD's v3 par risk
+    with RUONIA held) and ``CS``, instead of ``IR|<kbd>|*`` (``ofz_basis.OfzBasisRiskEngine``,
+    ``docs/ofz-basis.md``); the row's ``curve_basis`` reads ``OFZ_BASIS_CURVE_BASIS``. Fixed
+    cash flows take the closed form where ``risk_method`` / ``second_order_method`` ask for it;
+    perpetual tails and floaters on the KBD (or projected off the same RUONIA quotes) are
+    bumped. A KBD that is not on par factors, an OIS curve given as built discount factors and a
+    floater projected off any other curve are ``INVALID_TERMS`` for those bonds. Scenarios move
+    RUONIA by the OIS curve's shift (named, else the shock's) and the basis by
+    ``curve_shifts_bp`` of the basis ID (held when not named); naming the KBD itself is
+    refused for these bonds. Every other position is valued as without it.
     """
 
     discount_curve_id: str
@@ -333,8 +349,11 @@ class ValuationPolicy:
     )
     risk_method: Literal["bump", "analytic"] = field(default="bump", metadata=OMIT_IF_DEFAULT)
     quote_curve_risk: bool = field(default=False, metadata=OMIT_IF_DEFAULT)
+    ofz_basis: OfzBasisIds | None = field(default=None, metadata=OMIT_IF_DEFAULT)
 
     def __post_init__(self) -> None:
+        if self.ofz_basis is not None and not isinstance(self.ofz_basis, OfzBasisIds):
+            raise TypeError("ofz_basis must be OfzBasisIds or None")
         pairs = tuple(sorted(self.exercise_assumptions, key=lambda p: p[0]))
         for instrument_id, assumption in pairs:
             if not isinstance(instrument_id, str) or not instrument_id:
@@ -837,6 +856,31 @@ class _BuiltCurve:
         return self.curve if self.quotes is None else self.quotes
 
 
+@dataclass
+class _OfzBasisJob:
+    """The RUONIA + basis view of one job (``ValuationPolicy.ofz_basis``), built on first use,
+    and the engine of every bond reported in it (for scenarios)."""
+
+    ids: OfzBasisIds
+    curve: Callable[[str], _BuiltCurve]
+    view: OfzBasisCurve | CoreRejection | None = None
+    engines: dict[str, OfzBasisRiskEngine] = field(default_factory=dict)
+
+    def resolve(self) -> OfzBasisCurve:
+        if self.view is None:
+            try:
+                kbd = self.curve(self.ids.kbd_curve_id).curve
+                ois = self.curve(self.ids.ois_curve_id).curve
+                self.view = OfzBasisCurve(
+                    cast(DiscountCurve, kbd), cast(CurveBootstrapRequest, ois)
+                )
+            except CoreRejection as exc:
+                self.view = exc
+        if isinstance(self.view, CoreRejection):
+            raise self.view
+        return self.view
+
+
 def _build_curve(entry: CurveEntry, business_date: date, quote_risk: bool = False) -> _BuiltCurve:
     """The curve of ``entry`` as the engines read it. Par-yield proxy quotes are built
     here, or with ``quote_risk`` (``ValuationPolicy.quote_curve_risk``) passed on as the
@@ -848,7 +892,8 @@ def _build_curve(entry: CurveEntry, business_date: date, quote_risk: bool = Fals
             if source.trade_date != business_date:
                 raise InvalidTerms("KBD parameters are not for the snapshot business date")
             built = kbd_discount_curve(
-                source, zero_shock=cast(Literal["continuous", "annual", "annual_par"], spec.zero_shock)
+                source,
+                zero_shock=cast(Literal["continuous", "annual", "annual_par"], spec.zero_shock),
             )
             return _BuiltCurve(entry, built, source, KBD_MODEL_VERSION, spec.currency)
         if (
@@ -1023,6 +1068,7 @@ def value_portfolio(
         snapshot, policy, job_id, cache, built, projections, used_calendars, used_fx, bonds_by_id
     )
     curve, projection = context.bond_curve, context.projection
+    ofz_job = None if policy.ofz_basis is None else _OfzBasisJob(policy.ofz_basis, curve)
 
     for position in positions:
         reason = stopped()
@@ -1067,6 +1113,7 @@ def value_portfolio(
                 projection,
                 used_cpi,
                 None if exercised is None else exercised.perpetual_tail,
+                ofz_job,
             )
         except CoreRejection as exc:
             rejections.append(
@@ -1117,6 +1164,7 @@ def value_portfolio(
             frozenset(real_curve_positions),
             bond_curves,
             outcomes,
+            ofz_job,
         )
         for scenario in scenarios
     ]
@@ -1437,6 +1485,8 @@ def _bond_model(
         flags.append("to_confirmed_put")
     if engine.request.perpetual_tail is not None:
         flags.append("perpetual_tail")
+    if valuation.curve_basis == OFZ_BASIS_CURVE_BASIS:
+        flags.append("ruonia_basis")
     return PositionModel(
         valuation.position_id,
         valuation.instrument_id,
@@ -1460,6 +1510,7 @@ def _value_position(
     projection: Callable[[str, FixingIndex], _BuiltCurve],
     used_cpi: dict[str, CpiUse] | None = None,
     perpetual_tail: PerpetualTail | None = None,
+    ofz_job: _OfzBasisJob | None = None,
 ) -> tuple[PositionValuation, BondRiskEngine]:
     """Value one bond position.
 
@@ -1476,6 +1527,9 @@ def _value_position(
 
     A never-called perpetual (``perpetual_tail``) is valued to the put the policy's
     horizon picks, if any, and otherwise as its listed coupons plus the tail.
+
+    A bond discounted on the KBD of ``ofz_job`` (``ValuationPolicy.ofz_basis``) reports its
+    rate risk as RUONIA + basis; its engine is recorded in ``ofz_job.engines``.
     """
     linker = instruments.get(position.instrument_id)
     if linker is not None and linker.product is ProductType.INFLATION_LINKED_BOND:
@@ -1606,8 +1660,14 @@ def _value_position(
         )
         engine, adapter_id = prepared.engine, prepared.calculation_id
     risk = _bond_risk(engine, policy)
-    second = _bond_second_order(engine, policy)
-    factor_risk = bond_factor_risk(risk, curve_id, second, projection_curve_id=projection_id)
+    if ofz_job is not None and curve_id == ofz_job.ids.kbd_curve_id:
+        ofz = OfzBasisRiskEngine(engine, ofz_job.resolve())
+        factor_risk = _ofz_basis_factor_risk(ofz, risk, policy, ofz_job.ids)
+        ofz_job.engines[position.position_id] = ofz
+        basis = cast(Literal["annual_par"], OFZ_BASIS_CURVE_BASIS)
+    else:
+        second = _bond_second_order(engine, policy)
+        factor_risk = bond_factor_risk(risk, curve_id, second, projection_curve_id=projection_id)
     dirty = cast(float, engine.request.dirty_price_rub)
     dirty_ccy = (
         clean_price_pct_to_dirty_rub(quote.clean_price_pct, nominal, accrued) if foreign else dirty
@@ -1631,7 +1691,9 @@ def _value_position(
         g_spread = g_spread_bp(kbd, kbd_yield, kbd_tenor)
     margin = engine.discount_margin_bp() if floating and policy.discount_margin else None
     spread_buckets = (
-        engine.spread_bucket_risk(bump_bp=policy.bump_bp, risk=risk) if policy.spread_buckets else ()
+        engine.spread_bucket_risk(bump_bp=policy.bump_bp, risk=risk)
+        if policy.spread_buckets
+        else ()
     )
     jtd = (
         None
@@ -1687,6 +1749,28 @@ def _value_position(
     return valuation, engine
 
 
+def _ofz_basis_factor_risk(
+    ofz: OfzBasisRiskEngine, risk: BondRiskResult, policy: ValuationPolicy, ids: OfzBasisIds
+) -> FactorRisk:
+    """A KBD bond's factors in RUONIA + basis coordinates under ``policy``: closed form where it
+    has one and the policy asks; ``risk`` (its central KBD risk) is the basis block."""
+    analytic = ofz.supports_analytic() is None
+    first = ofz.risk(
+        bump_bp=policy.bump_bp,
+        method="analytic" if policy.risk_method == "analytic" and analytic else "bump",
+        kbd_risk=risk,
+    )
+    second = (
+        ofz.second_order(
+            bump_bp=policy.bump_bp,
+            method="analytic" if policy.second_order_method == "analytic" and analytic else "bump",
+        )
+        if policy.include_second_order
+        else None
+    )
+    return ofz_basis_factor_risk(first, ids.ois_curve_id, ids.basis_id, second)
+
+
 def _bond_discount_curve(
     policy: ValuationPolicy, instrument: Instrument, snapshot: MarketSnapshot
 ) -> tuple[str, str | None]:
@@ -1719,9 +1803,7 @@ def _perpetual_put(
     instrument: Instrument, policy: ValuationPolicy, settlement: date
 ) -> Offer | None:
     """The put a never-called perpetual is valued to under the policy's horizon, or None."""
-    if policy.horizon == "maturity" or not any(
-        o.kind is OfferKind.PUT for o in instrument.offers
-    ):
+    if policy.horizon == "maturity" or not any(o.kind is OfferKind.PUT for o in instrument.offers):
         return None
     try:
         return instrument.horizon(policy.horizon, settlement)[1]
@@ -1784,7 +1866,9 @@ def _check_known_coupons(instrument: Instrument, settlement: date, horizon: date
         if left.payment_date >= horizon:
             break
         if right.accrual_start > left.accrual_end:
-            raise MissingMarketData(f"{label} (no coupon for {left.accrual_end}..{right.accrual_start})")
+            raise MissingMarketData(
+                f"{label} (no coupon for {left.accrual_end}..{right.accrual_start})"
+            )
     last = periods[-1]
     if max(last.payment_date, last.accrual_end) < horizon:
         raise MissingMarketData(f"{label} (the last known coupon ends {last.accrual_end})")
@@ -2030,6 +2114,7 @@ def _run_scenario(
     real_curve_positions: frozenset[str] = frozenset(),
     bond_curves: Mapping[str, tuple[str, str | None]] | None = None,
     derivatives: Mapping[str, ProductOutcome] | None = None,
+    ofz_job: _OfzBasisJob | None = None,
 ) -> PortfolioScenarioResult:
     """Reprice every computed position under ``scenario``.
 
@@ -2037,6 +2122,8 @@ def _run_scenario(
     (inflation-linked bonds) are reported as ``UNSUPPORTED_PRODUCT`` rather than moved
     by a nominal shock, unless ``scenario.curve_shifts_bp`` names the real curve.
     Derivative positions reprice with their own engines (``ProductOutcome.reprice``).
+    Bonds reported as RUONIA + basis (``ofz_job``) move RUONIA by the OIS curve's shift and the
+    basis by its named shift (held otherwise); a named shift of their KBD is refused.
     """
     named = bool(scenario.curve_shifts_bp)
     rows: list[PositionScenarioPnl] = []
@@ -2092,6 +2179,11 @@ def _run_scenario(
                 )
             )
             continue
+        ofz = None if ofz_job is None else ofz_job.engines.get(position.position_id)
+        if ofz is not None:
+            assert ofz_job is not None
+            rows.append(_ofz_basis_scenario(scenario, position, ofz, ofz_job.ids, failed))
+            continue
         engine = prepared[position.position_id]
         currency = fx_currency.get(position.position_id)
         move = 0.0 if currency is None else scenario.fx_move_pct(currency)
@@ -2142,6 +2234,43 @@ def _run_scenario(
         covered,
         covered if coverage.status == "complete" else None,
     )
+
+
+def _ofz_basis_scenario(
+    scenario: PortfolioScenario,
+    position: Position,
+    ofz: OfzBasisRiskEngine,
+    ids: OfzBasisIds,
+    failed: list[Rejection],
+) -> PositionScenarioPnl:
+    """Scenario P&L of a bond reported as RUONIA + basis (``ValuationPolicy.ofz_basis``)."""
+    try:
+        if scenario.named_curve_shift(ids.kbd_curve_id) is not None:
+            raise InvalidTerms(
+                f"the policy reports bonds on {ids.kbd_curve_id} as RUONIA + basis: shift "
+                f"{ids.ois_curve_id} and {ids.basis_id} instead of {ids.kbd_curve_id}"
+            )
+        shock = scenario.bond_shock(ofz.engine.request.spread_kind)
+        basis = scenario.named_curve_shift(ids.basis_id)
+        pnl = ofz.reprice(
+            scenario.curve_shift(ids.ois_curve_id),
+            (0.0,) * 11 if basis is None else basis,
+            shock.spread_shift_bp,
+            scenario.curve_shift(ids.ois_curve_id, projection=True)
+            if ofz.engine.two_curve
+            else None,
+        ).total_pnl_rub
+    except CoreRejection as exc:
+        failed.append(
+            Rejection(position.position_id, position.instrument_id, exc.code, exc.message)
+        )
+        return PositionScenarioPnl(position.position_id, None, exc.code)
+    except (ValueError, ArithmeticError) as exc:
+        failed.append(
+            Rejection(position.position_id, position.instrument_id, CALCULATION_FAILED, str(exc))
+        )
+        return PositionScenarioPnl(position.position_id, None, CALCULATION_FAILED)
+    return PositionScenarioPnl(position.position_id, pnl, None)
 
 
 def portfolio_result_hash_projection(
