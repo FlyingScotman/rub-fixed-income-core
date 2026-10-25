@@ -7,7 +7,8 @@ its maturity and the curve is rebuilt, as an OIS ``CurveBootstrapRequest`` is
 rebootstrapped. ``_risk_common`` shocks requests that build alone; a request whose build
 reads the RUB curve (``needs_rub``: XCCY par swaps against RUONIA) is rebuilt by the FX
 engines on their shocked RUB curve, its quotes held under RUB shocks. Rebuilt curves are
-memoised on the request per RUB curve object and shift vectors.
+memoised on the request per RUB curve object and shift vectors: at most ``_QUOTE_CURVES``
+per RUB curve, for the last ``_RUB_GROUPS`` RUB curves (the oldest dropped first).
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ if TYPE_CHECKING:
 _Shifts = tuple[float, ...]
 _NO_SHIFT: _Shifts = (0.0,) * 11
 _QUOTE_CURVES = 4096
+_RUB_GROUPS = 4
 
 
 class QuoteCurve:
@@ -72,7 +74,10 @@ def quote_curve(
     group = groups.get(id(rub_source))
     if group is None or group[0] is not rub_source:
         group = (rub_source, {})
+        groups.pop(id(rub_source), None)
         groups[id(rub_source)] = group
+        while len(groups) > _RUB_GROUPS:
+            del groups[next(iter(groups))]
     curves = group[1]
     key = (tuple(rub_shifts), tuple(shifts))
     curve = curves.get(key)

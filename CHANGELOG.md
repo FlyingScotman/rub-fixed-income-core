@@ -30,7 +30,8 @@ job ID and pinned hash is bit-identical to 0.37.0.
   ~77 ms → ~5 ms per bootstrap; the legacy convention ~11 ms → ~1 ms.
 - `ShockedCurveCache` bootstraps each distinct shocked quote set once: shift vectors that
   leave the same quotes (a bucket past the last quote, alone or in a Hessian pair) share
-  the curve. Keys, `hits`/`misses`, `export` and `seed` are unchanged. An 11-bucket
+  the curve, within the same `max_entries`. Keys, `hits`/`misses`, `export` and `seed`
+  are unchanged. An 11-bucket
   Hessian on 17 MOEX RUONIA swaps: 201 bootstraps instead of 243.
 - Together, `value_portfolio` with the Hessian on 17 MOEX RUONIA quotes: 50 bonds
   ~19.5 s → ~1.4 s; the 2000-bond benchmark book 36.3 s → 15.3 s (now pricing-bound).
@@ -66,10 +67,11 @@ job ID and pinned hash is bit-identical to 0.37.0.
   position on it: key-rate swaps and KEYRATE futures on KRS quotes, FX forwards, swaps,
   crosses and futures naming XCCY quotes (`INVALID_TERMS` without the flag, as before),
   bonds, CDS and FX fallbacks on par-yield proxy quotes. Model flag `quote_curve` on the
-  derivative rows rebuilt from quotes.
+  derivative rows rebuilt from quotes (XCCY or par-yield proxy quotes, KRS quotes); bond
+  and CDS rows carry `curve_basis = "par_yield_quote"`.
 - Private module `_quote_curves` (`QuoteCurve`, the base of `XccyCurveBootstrapRequest`
   and `ParYieldCurveRequest`): rebuilt curves memoised on the request per RUB curve and
-  shift vectors; `_risk_common` shocks requests that build alone.
+  shift vectors (at most 4096 per RUB curve, for the last four RUB curves); `_risk_common` shocks requests that build alone.
 - `BondRiskEngine.risk(method="analytic")`: the exact first derivatives of a
   fixed-cashflow bond on a `DiscountCurve` (bucket DV01, KRD, parallel DV01, spread risk):
   the gradient pass of `second_order(method="analytic")` without the Hessian, `J^-T` on
@@ -101,8 +103,9 @@ job ID and pinned hash is bit-identical to 0.37.0.
   damped (a step is halved until the shocked annual yields at the instruments' coupon dates
   stay above -100 % and the residual norm falls, Armijo). Realistic shocks take every full
   step, so their results are bit-identical to 0.37.0 (checked on the 2022 and 2026 KBD for
-  2022-size and twice 2022-size shapes); a 20Y -1500 bp shock, which overshot to a domain
-  error, now converges. A shock beyond the overlay's reach (for example the 20Y+ par yield
+  2022-size and twice 2022-size shapes); where a large shock is damped (random shapes of
+  150–300 bp, 20Y -500 bp) the solution differs from 0.37.0 by at most 1e-8 bp; a 20Y
+  -1500 bp shock, which overshot to a domain error, now converges. A shock beyond the overlay's reach (for example the 20Y+ par yield
   more than about 180 bp above the 15Y on a 16 % curve, 75 bp after +1000 bp, or a
   +-500 bp saw-tooth) raises `ValueError` "par-yield shock did not converge" naming the
   instrument that misses and by how much, instead of "shocked annual yield must exceed
@@ -115,11 +118,11 @@ job ID and pinned hash is bit-identical to 0.37.0.
 ### Changed
 
 - Scenarios on an `annual_par` curve: the 1M, 3M and 6M shifts (no instrument there) must
-  each be zero or equal to the 1Y shift; any other value, which 0.37.0 dropped silently,
-  raises `InvalidTerms` naming the buckets. A parallel shift and any shift uniform from 1M
+  each be zero or equal to the 1Y shift (within 1e-9 bp); any other value, which 0.37.0
+  dropped silently, raises `InvalidTerms` naming the buckets. A parallel shift and any shift uniform from 1M
   to 1Y stay valid; risk bumps of the short buckets still read zero. Checked in the
   scenario paths of every engine (`BondRiskEngine.reprice` / `approximate`, repo, swaps,
-  CDS, XCCY, FX forwards and futures, OFZ and rate futures) for each curve they shift; in
+  CDS, XCCY, FX forwards, crosses and futures, OFZ and rate futures) for each curve they shift; in
   `value_portfolio` such a position fails that scenario (`CALCULATION_FAILED`, with the
   message). Other curves and specs are unchanged.
 - `benchmark_equivalents` warnings: `CONDITION_WARNING` (cond(J) > 50) is removed; it never

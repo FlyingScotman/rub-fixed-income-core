@@ -263,7 +263,9 @@ class ShockedCurveCache:
         curve = self._built.get(request)
         if curve is None:
             curve = bootstrap_discount_curve(request)
-            if len(self._built) < self.max_entries:
+            # Only while the main store still takes curves: every curve kept here is then
+            # also one of its ``max_entries``, so the two together hold no more than that.
+            if self._size < self.max_entries:
                 self._built[request] = curve
         return curve
 
@@ -373,6 +375,9 @@ def _overlay_shifts(base: DiscountCurve, shifts: tuple[float, ...]) -> tuple[flo
     return par_overlay_shifts(base, shifts)
 
 
+_SHORT_SHIFT_TOLERANCE_BP = 1e-9
+
+
 def _check_scenario_shifts(curve: object, shifts: tuple[float, ...]) -> None:
     """Refuse scenario shifts that a par-yield curve (``zero_shock="annual_par"``) would drop.
 
@@ -380,21 +385,23 @@ def _check_scenario_shifts(curve: object, shifts: tuple[float, ...]) -> None:
     and the zero overlay is flat below 1Y. A scenario may leave each of them at zero or move
     it with the 1Y bucket (a parallel shift, or any shift uniform from 1M to 1Y); another
     value would silently not move the curve, so it raises :class:`InvalidTerms` naming the
-    buckets. Other curves take any shifts. Risk bumps of the short buckets are not scenarios:
-    they still read zero risk.
+    buckets. Equal means within ``_SHORT_SHIFT_TOLERANCE_BP``, so a shift built by arithmetic
+    (an interpolated twist) passes. Other curves take any shifts. Risk bumps of the short
+    buckets are not scenarios: they still read zero risk.
     """
     if not isinstance(curve, DiscountCurve) or curve.convention.zero_shock != "annual_par":
         return
     one_year = shifts[PAR_FIRST_BUCKET]
     dropped = [
-        f"{bucket} {shift:+g}"
+        f"{bucket} {shift:+}"
         for bucket, shift in zip(RISK_BUCKETS[:PAR_FIRST_BUCKET], shifts)
-        if shift != 0.0 and shift != one_year
+        if abs(shift) > _SHORT_SHIFT_TOLERANCE_BP
+        and abs(shift - one_year) > _SHORT_SHIFT_TOLERANCE_BP
     ]
     if dropped:
         raise InvalidTerms(
             "a par-yield curve (annual_par) has no instrument below 1Y: its 1M-6M scenario "
-            f"shifts must be zero or equal to the 1Y shift ({one_year:+g} bp), got "
+            f"shifts must be zero or equal to the 1Y shift ({one_year:+} bp), got "
             f"{', '.join(dropped)} bp"
         )
 

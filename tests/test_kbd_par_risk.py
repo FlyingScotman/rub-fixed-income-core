@@ -334,12 +334,20 @@ def test_scenarios_may_move_the_short_buckets_only_with_1y() -> None:
         engine.reprice(front).total_pnl_rub
         == engine.reprice(BondScenario((0.0, 0.0, 0.0, 30.0) + (0.0,) * 7)).total_pnl_rub
     )
-    with pytest.raises(InvalidTerms, match=r"1M \+5 bp"):
+    with pytest.raises(InvalidTerms, match=r"1M \+5.0 bp"):
         engine.reprice(BondScenario((5.0,) + (0.0,) * 10))
     with pytest.raises(
-        InvalidTerms, match=r"equal to the 1Y shift \(\+15 bp\), got 3M \+10, 6M \+20"
+        InvalidTerms, match=r"equal to the 1Y shift \(\+15.0 bp\), got 3M \+10.0, 6M \+20.0"
     ):
         engine.approximate(BondScenario((15.0, 10.0, 20.0, 15.0) + (0.0,) * 7))
+    # Equal within 1e-9 bp: a shift built by arithmetic passes; the message shows every digit.
+    built = BondScenario((0.1 + 0.2, 0.0, 0.0, 0.3) + (0.0,) * 7)
+    assert (
+        engine.reprice(built).total_pnl_rub
+        == engine.reprice(BondScenario((0.0, 0.0, 0.0, 0.3) + (0.0,) * 7)).total_pnl_rub
+    )
+    with pytest.raises(InvalidTerms, match=r"\(\+0.3 bp\), got 1M \+0.300001 bp"):
+        engine.reprice(BondScenario((0.300001, 0.0, 0.0, 0.3) + (0.0,) * 7))
     # Risk bumps of the short buckets are not scenarios: they read zero.
     assert [b.dv01_rub for b in engine.risk(difference="central").buckets[:3]] == [0.0] * 3
     # Other curves take any shifts.
@@ -356,7 +364,7 @@ def test_a_portfolio_scenario_with_short_shifts_fails_the_v3_positions_only() ->
     bullet = next(p for p in failed.positions if p.position_id == "p-bullet")
     assert bullet.pnl_rub is None
     message = next(r.message for r in failed.coverage.rejections if r.position_id == "p-bullet")
-    assert "no instrument below 1Y" in message and "1M +50, 3M +40, 6M +30" in message
+    assert "no instrument below 1Y" in message and "1M +50.0, 3M +40.0, 6M +30.0" in message
     assert next(p for p in fine.positions if p.position_id == "p-bullet").pnl_rub is not None
 
 

@@ -34,7 +34,14 @@ from typing import Literal
 from ._curve_views import FxHorizon
 from ._money import finite_money, positive_money
 from ._quote_curves import QuoteCurve
-from ._risk_common import _ZERO_SHOCK, RISK_BUCKETS, ShockedCurveCache, _curve_identity, _shifts
+from ._risk_common import (
+    _ZERO_SHOCK,
+    RISK_BUCKETS,
+    ShockedCurveCache,
+    _check_scenario_shifts,
+    _curve_identity,
+    _shifts,
+)
 from .canonical import canonical_sha256
 from .conventions import DayCount
 from .discount import CurveBootstrapRequest, DiscountCurve
@@ -638,6 +645,12 @@ class FxCrossRiskEngine:
         )
         bb, qb = scenario.base_basis_shift_bp, scenario.quote_basis_shift_bp
         bs, qs = scenario.base_spot_shift_pct, scenario.quote_spot_shift_pct
+        for curve, moves in (
+            (self.request.rub_curve, rub),
+            (self.request.base_curve, base),
+            (self.request.quote_curve, quote),
+        ):
+            _check_scenario_shifts(curve, moves)
         z = _ZERO_SHOCK
         shocked = finite_money(self._pv((rub, base, quote, bb, qb, bs, qs)), "shocked PV")
 

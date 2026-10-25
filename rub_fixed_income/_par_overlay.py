@@ -15,8 +15,8 @@ curve, done as an overlay so the base curve (the published KBD) is untouched at 
 
 Newton is damped: a step is halved until every shocked annual yield at the coupon dates stays
 above -100 % and the norm of the repricing error falls (Armijo). Realistic shocks take every
-full step (2-9 iterations), so their results are those of plain Newton to the last bit. The
-overlay has a finite reach: raising a node can at most drive the discount factors past the
+full step (2-9 iterations), so their results are those of plain Newton to the last bit; a
+damped large shock lands within 1e-8 bp of where plain Newton would. The overlay has a finite reach: raising a node can at most drive the discount factors past the
 node before it to zero, so the 20Y+ par yield exceeds the 15Y one by less than
 ``par_15Y DF(15Y) / (1 - DF(15Y))`` (about 180 bp on a 16 % curve, 75 bp after +1000 bp),
 and likewise for the other nodes. A shock beyond the reach raises ``ValueError`` naming the

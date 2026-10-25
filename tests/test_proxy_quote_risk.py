@@ -221,6 +221,9 @@ def test_fx_fallback_to_par_yield_quotes_follows_the_flag() -> None:
     on_ir = on.fx_forwards[0].factor_risk.first_order_by_factor()
     assert off_ir["IR|USD_UST|1Y"] != on_ir["IR|USD_UST|1Y"]
     assert off_ir["IR|RUB_OIS|1Y"] == on_ir["IR|RUB_OIS|1Y"]
+    # The row says its USD buckets are now risk to the par yields.
+    flags = [{m.position_id: m.flags for m in r.position_models}["f"] for r in (off, on)]
+    assert "quote_curve" not in flags[0] and "quote_curve" in flags[1]
 
 
 def test_cds_on_par_yield_quotes_follows_the_flag() -> None:

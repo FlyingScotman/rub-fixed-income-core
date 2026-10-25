@@ -184,7 +184,7 @@ version; `portfolio_result_from_json` reads both (v2 into `PortfolioRiskResult`,
 | `fx_cross` | an FX forward or swap between two foreign currencies |
 | `key_rate_projection` | projected on a key-rate forward curve |
 | `covered_parity` | FX forward, FX swap, XCCY or FX future valued by covered parity |
-| `quote_curve` | a curve is rebuilt from its par quotes under shocks: the foreign curve from XCCY quotes (XCCY swaps; FX forwards, swaps, crosses and futures with `quote_curve_risk`), the key-rate curve from KRS quotes (`quote_curve_risk`) |
+| `quote_curve` | a curve is rebuilt from its par quotes under shocks: the foreign curve from XCCY quotes (XCCY swaps; FX forwards, swaps, crosses and futures with `quote_curve_risk`) or from par-yield proxy quotes (FX and XCCY rows on a proxy with `quote_curve_risk`, also as a fallback), the key-rate curve from KRS quotes (`quote_curve_risk`) |
 | `hazard_bootstrap` | CDS on a hazard curve bootstrapped from quotes |
 | `daily_margined` | a future; PV is the pending variation margin |
 | `implied_basis` / `fully_fixed` | the futures basis is calibrated to the snapshot price / the rate period is fully fixed and the fixings determine the price |

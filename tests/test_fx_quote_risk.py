@@ -47,6 +47,7 @@ from rub_fixed_income import (
     canonical_sha256,
     value_portfolio,
 )
+from rub_fixed_income._quote_curves import _RUB_GROUPS, quote_curve
 from rub_fixed_income._risk_common import RISK_BUCKETS, _shift_at, _shock_curve
 from rub_fixed_income.domain import AccountingCategory, FuturesQuote
 from rub_fixed_income.portfolio_instruments import PortfolioInstrument
@@ -254,3 +255,13 @@ def test_fx_cross_takes_xccy_quotes_as_its_cny_curve() -> None:
             for s in (1.0, -1.0)
         )
         assert row.dv01_rub == pytest.approx((up - down) / 2.0, rel=1e-9, abs=1e-6)
+
+
+def test_rebuilt_xccy_curves_are_kept_for_the_last_rub_curves_only() -> None:
+    request = xccy_quotes()
+    rubs = [node_curve(0.15 + 0.001 * k, -0.004) for k in range(_RUB_GROUPS + 2)]
+    for rub in rubs:
+        quote_curve(request, (0.0,) * 11, rub, rub)
+    groups = request.__dict__["_quote_curves"]
+    assert len(groups) == _RUB_GROUPS
+    assert [g[0] for g in groups.values()] == rubs[-_RUB_GROUPS:]

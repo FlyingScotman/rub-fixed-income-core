@@ -267,3 +267,13 @@ def test_layout_follows_the_calendar() -> None:
     )
     assert bootstrap_discount_curve(other).nodes != first.nodes
     assert_bitwise(other)
+
+
+def test_shared_bootstraps_stay_within_max_entries(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A curve kept for sharing is also one of the cache's entries: no more than the bound."""
+    base_request = v2_request(shapes(len(MOEX))["upward"])
+    cache = ShockedCurveCache(max_entries=2)
+    base = risk_common._base_curve(base_request, cache)
+    for k in range(4):
+        _shock_curve(base_request, base, tuple(5.0 if i == k else 0.0 for i in range(11)), cache)
+    assert len(cache) == 2 and len(cache._built) <= 2

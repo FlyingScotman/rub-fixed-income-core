@@ -607,6 +607,10 @@ ROW_FIELDS: dict[type, str] = {
 }
 """The ``PortfolioRiskResultV3`` field that holds each row type."""
 
+_QUOTE_SOURCES = (XccyCurveBootstrapRequest, ParYieldCurveRequest)
+"""Quote curves an FX or XCCY row may be rebuilt from (``quote_curve_risk``): flag
+``quote_curve``, its foreign buckets are then risk to those quotes."""
+
 
 @dataclass(frozen=True)
 class PositionModel:
@@ -1211,7 +1215,7 @@ def _fx_forward_engine(
     )
     if fallback_from is not None:
         flags = tuple(sorted({*flags, "curve_fallback"}))
-    if isinstance(foreign, XccyCurveBootstrapRequest):
+    if isinstance(foreign, _QUOTE_SOURCES):
         flags = tuple(sorted({*flags, "quote_curve"}))
     return _FxForwardSetup(engine, spot, settlement, basis, foreign_id, fallback_from, flags)
 
@@ -1460,7 +1464,7 @@ def value_fx_cross(position: Position, instrument: object, ctx: ProductContext) 
     if any(f is not None for f in setup.fallbacks):
         flags.append("curve_fallback")
     curves = (engine.request.base_curve, engine.request.quote_curve)
-    if any(isinstance(c, XccyCurveBootstrapRequest) for c in curves):
+    if any(isinstance(c, _QUOTE_SOURCES) for c in curves):
         flags.append("quote_curve")
     model = _model(
         position,
@@ -1630,7 +1634,7 @@ def value_xccy(position: Position, instrument: object, ctx: ProductContext) -> P
         return _money(engine.reprice(shock).total_pnl_rub * q, "XCCY scenario P&L")
 
     flags = ["covered_parity"]
-    if isinstance(foreign_d, XccyCurveBootstrapRequest):
+    if isinstance(foreign_d, _QUOTE_SOURCES):
         flags.append("quote_curve")
     if rub_p is not None or foreign_p is not None:
         flags.append("two_curve")
@@ -1832,7 +1836,7 @@ def value_fx_future(position: Position, instrument: object, ctx: ProductContext)
     flags = ["covered_parity", "daily_margined", "implied_basis"]
     if fallback_from is not None:
         flags.append("curve_fallback")
-    if isinstance(engine.request.foreign_curve, XccyCurveBootstrapRequest):
+    if isinstance(engine.request.foreign_curve, _QUOTE_SOURCES):
         flags.append("quote_curve")
     model = _model(
         position,
