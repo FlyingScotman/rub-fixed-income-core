@@ -44,6 +44,7 @@ from ._risk_common import (
     RISK_BUCKETS,
     ShockedCurveCache,
     _base_curve,
+    _check_scenario_shifts,
     _curve_basis,
     _curve_identity,
     _shock_curve,
@@ -1366,6 +1367,8 @@ class FxForwardRiskEngine:
             raise TypeError("scenario must be an FxFuturesScenario")
         rub, foreign = scenario.rub_curve_shifts_bp, scenario.foreign_curve_shifts_bp
         basis, spot = scenario.basis_shift_bp, scenario.fx_spot_shift_pct
+        _check_scenario_shifts(self.request.rub_curve, rub)
+        _check_scenario_shifts(self.request.foreign_curve, foreign)
         shocked = finite_money(self._pv((rub, foreign, basis, spot)), "shocked PV")
 
         def pnl(moves: _Moves, label: str) -> float:

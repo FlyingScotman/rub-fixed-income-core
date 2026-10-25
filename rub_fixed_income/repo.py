@@ -51,6 +51,7 @@ from ._risk_common import (
     ShockedCurveCache,
     _base_curve,
     _central_derivatives,
+    _check_scenario_shifts,
     _curve_basis,
     _curve_identity,
     _shifts,
@@ -1329,6 +1330,8 @@ class RepoRiskEngine:
         if not isinstance(scenario, RepoScenario):
             raise TypeError("scenario must be a RepoScenario")
         discount, projection = scenario.discount_shifts_bp, scenario.projection_shifts_bp
+        _check_scenario_shifts(self.request.discount_curve, discount)
+        _check_scenario_shifts(self.request.projection_curve, projection)
         shocked = self._pv(discount, projection)
         discount_pnl = self._pv(discount, _ZERO_SHOCK) - self.base_pv
         projection_pnl = self._pv(_ZERO_SHOCK, projection) - self.base_pv

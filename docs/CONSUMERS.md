@@ -100,7 +100,9 @@ FX book and non-RUB bonds; 0.36.0 is that work plus 0.34.0 and never-called perp
 
 - register the KBD under `rub_ofz_kbd_v3`: the `RUB OFZ` ladder in par quotes of the KBD,
   1M–6M merged into 1Y, the same unit and kind of factor as RUONIA OIS; `basis_view` then
-  gives the par–par basis. Results on `rub_ofz_kbd_v1` (continuous zero, about 15 % larger
+  gives the par–par basis (exact at the nodes 1Y–20Y+, close between them). Scenarios on a
+  `v3` curve: 1M–6M at zero or equal to 1Y (a parallel shift is fine), otherwise
+  `InvalidTerms`. Results on `rub_ofz_kbd_v1` (continuous zero, about 15 % larger
   DV01) and `v2` are not comparable bucket by bucket: mark the change in the run history;
 - `ValuationPolicy(second_order_method="analytic")` for the closed-form Hessian of fixed
   bonds (the par gamma needs it or the bumped one; never `J^-T H_zero J^-1` alone);

@@ -42,6 +42,7 @@ from ._risk_common import (
     RISK_BUCKETS,
     ShockedCurveCache,
     _base_curve,
+    _check_scenario_shifts,
     _curve_basis,
     _curve_identity,
     _shift_at,
@@ -1542,14 +1543,17 @@ class XccyRiskEngine:
 
     # --- curves ------------------------------------------------------------------
 
-    def curve_basis(self, role: XccyCurveRole) -> str:
+    def _role_source(self, role: XccyCurveRole) -> RubCurve | ForeignCurve | None:
         req = self.request
-        source = {
+        return {
             "rub_discount": req.rub_discount_curve,
             "rub_projection": req.rub_projection_curve,
             "foreign_discount": req.foreign_discount_curve,
             "foreign_projection": req.foreign_projection_curve,
         }[role]
+
+    def curve_basis(self, role: XccyCurveRole) -> str:
+        source = self._role_source(role)
         if source is None:
             raise InvalidTerms(f"this swap has no {role} curve")
         return _role_basis(source)
@@ -1784,6 +1788,8 @@ class XccyRiskEngine:
         if "foreign_projection" not in roles and scenario.foreign_projection_shifts_bp is not None:
             raise InvalidTerms("this swap has no foreign projection curve")
         full = tuple(vector(r) for r in roles)
+        for role, moves in zip(roles, full, strict=True):
+            _check_scenario_shifts(self._role_source(role), moves)
         rub_only = tuple(vector(r) if r.startswith("rub") else zero for r in roles)
         foreign_only = tuple(vector(r) if r.startswith("foreign") else zero for r in roles)
         none = self._zero()
