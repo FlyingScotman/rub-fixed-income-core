@@ -14,7 +14,9 @@ par-yield curve (``zero_shock="annual_par"``) maps the zero-space risk to its pa
     d2V/dq2 = J^-T (d2V/dx2 - sum_l (dV/dq)_l d2q_l/dx2) J^-1
 
 The second term is the curvature of the instruments themselves (implicit-function theorem):
-without it a book of par instruments would show a gamma it does not have.
+without it the bucket gamma is wrong, even that of a par instrument, whose own gamma is its
+annuity's, ``d2V/dq_l dq_k = -(1 + [k = l]) dA/dq_k`` (not zero: the coupon is fixed); the
+naive ``J^-T H J^-1`` overstates it 1.6-7.6 times on the 2Y-15Y instruments.
 """
 
 from __future__ import annotations

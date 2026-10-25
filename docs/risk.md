@@ -88,11 +88,21 @@ an overlay of its effective annual zero yield, solved by Newton, reprices the ei
 instruments at their shifted yields, so the published KBD is unchanged at zero shock and
 the shock is local (a bump at tenor T leaves the overlay before T unchanged, up to the
 leap day of a maturity just past its pillar). The KBD has no OFZ shorter than about a
-year: its 1M–6M buckets are merged into 1Y (no instrument, zero risk, a shift there moves
-nothing). A par bond at a pillar has risk in its own bucket only; the bucket sum is the
-parallel risk; RUONIA (par quotes) and the KBD (par quotes) are then the same kind of
+year: its 1M–6M buckets are merged into 1Y (no instrument, zero risk, a risk bump there
+moves nothing). A par bond at a pillar has risk in its own bucket only; the bucket sum is
+the parallel risk; RUONIA (par quotes) and the KBD (par quotes) are then the same kind of
 factor in the same unit at the same tenors, so `basis_view` gives the par–par basis
-(swap spread) exactly. The solved overlay is cached per (curve, shift vector) and shared
+(swap spread) exactly at the nodes 1Y–20Y+. Between nodes the two curves spread a bucket
+shift differently (a 4Y KBD par yield takes 0.49/0.51 of the 3Y/5Y shifts, a 4Y OIS quote
+0.50/0.50; at 13Y 0.37/0.64 against 0.40/0.60), so there the basis is close to, not
+exactly, a par–par spread. A scenario on the KBD may leave 1M–6M at zero or move them with
+1Y (a parallel shift does); other values there are refused (`InvalidTerms`), as they would
+move nothing. Newton is damped (step halving on the repricing error, inside the domain);
+realistic shocks take full steps. The overlay has a finite reach: raising a node can at
+most drive the discount factors past the previous node to zero, so the 20Y+ par yield can
+exceed the 15Y one by less than `par(15Y)·DF(15Y)/(1 − DF(15Y))` (about 180 bp on a 16 %
+curve, 75 bp after +1000 bp); a shock beyond it raises "did not converge" naming the
+instrument and its miss. The solved overlay is cached per (curve, shift vector) and shared
 by every position on the curve: risk costs what `annual_zero` risk costs. Why and the
 evidence on 2024–2026 hub data: [proposals/ofz-curve-risk-factors.md](proposals/ofz-curve-risk-factors.md).
 
@@ -115,9 +125,14 @@ positions)` shows the positions' rate risk against benchmark bonds the caller ch
 annual-zero overlay with nodes at the benchmarks' maturities, each benchmark's factor the
 overlay that moves its own effective annual yield by 1 bp and the others' by nothing. The
 result gives the risk per benchmark (RUB per bp of its yield), its yield DV01, the hedge
-quantity `-risk / DV01` and the condition number. A bond between two benchmarks maps to
-them; on 2025–2026 this beat hedging on the 11 fixed-tenor buckets by 25–37 % of residual
-daily P&L on 2.5–7.5 years. Fixed-cashflow bonds on one `DiscountCurve` only.
+quantity `-risk / DV01` and the condition number. Warnings flag positions that mature
+before the first benchmark or pay after the last (the overlay is flat beyond the end
+benchmarks, which carry that risk) and hedges whose gross risk exceeds the positions' gross
+node risk more than 3 times (large opposite-sign neighbours, for example coupon-heavy
+benchmarks around a zero). Close benchmarks are harmless: the nodes sit at their
+maturities, `J` is nearly triangular and its condition number stays near 3 even a day
+apart. A bond between two benchmarks maps to them; on 2025–2026 this beat hedging on the
+11 fixed-tenor buckets by 25–37 % of residual daily P&L on 2.5–7.5 years. Fixed-cashflow bonds on one `DiscountCurve` only.
 
 ## Risk definitions
 
