@@ -20,14 +20,7 @@ from typing import Literal
 
 from ._curve_views import FxHorizon, fx_horizon, roll_curve
 from ._money import finite_money, positive_money
-from ._quote_curves import (
-    QuoteCurve,
-    foreign_base,
-    foreign_basis,
-    foreign_identity,
-    foreign_view,
-    snapshot_foreign,
-)
+from ._quote_curves import QuoteCurve, quote_curve
 from ._risk_common import (
     _ZERO_SHOCK,
     RISK_BUCKETS,
@@ -112,7 +105,7 @@ class FxFuturesRiskRequest:
     spot_rate: float
     spot_value_date: date
     rub_curve: DiscountCurve | CurveBootstrapRequest
-    foreign_curve: DiscountCurve | CurveBootstrapRequest | QuoteCurve
+    foreign_curve: ForeignCurve
     futures_price: float | None = None
     basis_bp: float | None = None
     basis_day_count: DayCount = DayCount.ACT_365_FIXED
@@ -144,7 +137,7 @@ class FxFuturesRiskRequest:
             object.__setattr__(self, "basis_bp", finite_money(self.basis_bp, "basis bp"))
         object.__setattr__(self, "quantity", finite_money(self.quantity, "quantity"))
         object.__setattr__(self, "rub_curve", _snapshot_curve(self.rub_curve))
-        object.__setattr__(self, "foreign_curve", snapshot_foreign(self.foreign_curve))
+        object.__setattr__(self, "foreign_curve", _snapshot_curve(self.foreign_curve))
 
 
 @dataclass(frozen=True)
@@ -341,6 +334,37 @@ def _parity_growth(
     )
 
 
+ForeignCurve = DiscountCurve | CurveBootstrapRequest | QuoteCurve
+
+
+def _foreign_base(
+    source: ForeignCurve,
+    rub_source: DiscountCurve | CurveBootstrapRequest,
+    rub: DiscountCurve,
+    cache: ShockedCurveCache,
+) -> DiscountCurve:
+    """The base foreign curve; quotes whose build reads the RUB curve (XCCY) on ``rub``."""
+    if isinstance(source, QuoteCurve) and source.needs_rub:
+        return quote_curve(source, _ZERO_SHOCK, rub_source, rub)
+    return _base_curve(source, cache)
+
+
+def _foreign_view(
+    source: ForeignCurve,
+    base: DiscountCurve,
+    shifts: tuple[float, ...],
+    rub_source: DiscountCurve | CurveBootstrapRequest,
+    rub: DiscountFactorCurve,
+    rub_shifts: tuple[float, ...],
+    cache: ShockedCurveCache,
+) -> DiscountFactorCurve:
+    """The foreign curve under ``shifts``; XCCY quotes rebuilt on the shocked RUB curve
+    ``rub`` (``rub_source`` under ``rub_shifts``) with the quotes held."""
+    if isinstance(source, QuoteCurve) and source.needs_rub:
+        return quote_curve(source, shifts, rub_source, rub, rub_shifts)
+    return _shock_curve(source, base, shifts, cache)
+
+
 _Moves = tuple[tuple[float, ...], tuple[float, ...], float, float]
 _NO_MOVE: _Moves = (_ZERO_SHOCK, _ZERO_SHOCK, 0.0, 0.0)
 
@@ -373,7 +397,7 @@ class FxFuturesRiskEngine:
         object.__setattr__(
             self,
             "_foreign_curve",
-            foreign_base(req.foreign_curve, req.rub_curve, self._rub_curve, self.curve_cache),
+            _foreign_base(req.foreign_curve, req.rub_curve, self._rub_curve, self.curve_cache),
         )
         carry = positive_money(
             req.basis_day_count.year_fraction(req.spot_value_date, req.contract.delivery_date),
@@ -408,7 +432,7 @@ class FxFuturesRiskEngine:
                     "rub_curve_basis": self.rub_curve_basis,
                     "rub_curve": _curve_identity(req.rub_curve),
                     "foreign_curve_basis": self.foreign_curve_basis,
-                    "foreign_curve": foreign_identity(req.foreign_curve),
+                    "foreign_curve": _curve_identity(req.foreign_curve),
                     "input_futures_price": req.futures_price,
                     "input_basis_bp": req.basis_bp,
                     "calibrated_basis_bp": basis,
@@ -424,7 +448,7 @@ class FxFuturesRiskEngine:
 
     @property
     def foreign_curve_basis(self) -> str:
-        return foreign_basis(self.request.foreign_curve)
+        return _curve_basis(self.request.foreign_curve)
 
     @property
     def _scale(self) -> float:
@@ -439,7 +463,7 @@ class FxFuturesRiskEngine:
             rub: DiscountFactorCurve = _shock_curve(
                 req.rub_curve, self._rub_curve, rub_shifts, self.curve_cache
             )
-            foreign = foreign_view(
+            foreign = _foreign_view(
                 req.foreign_curve,
                 self._foreign_curve,
                 foreign_shifts,

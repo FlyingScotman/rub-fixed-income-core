@@ -39,14 +39,7 @@ from typing import Literal
 
 from ._curve_views import FxHorizon
 from ._money import finite_money, positive_money
-from ._quote_curves import (
-    QuoteCurve,
-    foreign_base,
-    foreign_basis,
-    foreign_identity,
-    foreign_view,
-    snapshot_foreign,
-)
+from ._quote_curves import QuoteCurve
 from ._risk_common import (
     _ZERO_SHOCK,
     RISK_BUCKETS,
@@ -68,7 +61,14 @@ from .discount import (
 )
 from .errors import InvalidTerms
 from .factors import FactorRisk, _upper, fx_basis_factor, fx_factor, ir_factor
-from .fx_futures import FxFuturesScenario, _horizon_rule, _horizon_views, _HorizonView
+from .fx_futures import (
+    FxFuturesScenario,
+    _foreign_base,
+    _foreign_view,
+    _horizon_rule,
+    _horizon_views,
+    _HorizonView,
+)
 from .tenors import parse_tenor, resolve_tenor
 
 __all__ = [
@@ -885,7 +885,7 @@ class FxForwardRiskRequest:
         object.__setattr__(self, "spot_rate", positive_money(self.spot_rate, "spot rate"))
         object.__setattr__(self, "basis_bp", finite_money(self.basis_bp, "basis bp"))
         object.__setattr__(self, "rub_curve", _snapshot_curve(self.rub_curve))
-        object.__setattr__(self, "foreign_curve", snapshot_foreign(self.foreign_curve))
+        object.__setattr__(self, "foreign_curve", _snapshot_curve(self.foreign_curve))
 
 
 @dataclass(frozen=True)
@@ -1114,7 +1114,7 @@ class FxForwardRiskEngine:
         object.__setattr__(
             self,
             "_foreign_curve",
-            foreign_base(req.foreign_curve, req.rub_curve, self._rub_curve, self.curve_cache),
+            _foreign_base(req.foreign_curve, req.rub_curve, self._rub_curve, self.curve_cache),
         )
         instrument = req.instrument
         legs = tuple(
@@ -1145,7 +1145,7 @@ class FxForwardRiskEngine:
                     "rub_curve_basis": self.rub_curve_basis,
                     "rub_curve": _curve_identity(req.rub_curve),
                     "foreign_curve_basis": self.foreign_curve_basis,
-                    "foreign_curve": foreign_identity(req.foreign_curve),
+                    "foreign_curve": _curve_identity(req.foreign_curve),
                     "basis_bp": req.basis_bp,
                     "basis_day_count": req.basis_day_count.value,
                 }
@@ -1158,14 +1158,14 @@ class FxForwardRiskEngine:
 
     @property
     def foreign_curve_basis(self) -> str:
-        return foreign_basis(self.request.foreign_curve)
+        return _curve_basis(self.request.foreign_curve)
 
     def _curves(
         self, rub_shifts: tuple[float, ...], foreign_shifts: tuple[float, ...]
     ) -> tuple[DiscountFactorCurve, DiscountFactorCurve]:
         req = self.request
         rub = _shock_curve(req.rub_curve, self._rub_curve, rub_shifts, self.curve_cache)
-        foreign = foreign_view(
+        foreign = _foreign_view(
             req.foreign_curve,
             self._foreign_curve,
             foreign_shifts,

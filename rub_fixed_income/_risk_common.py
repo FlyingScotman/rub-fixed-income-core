@@ -15,6 +15,7 @@ from typing import cast
 
 from ._money import finite_money, non_negative_money, positive_money
 from ._par_overlay import par_overlay_shifts
+from ._quote_curves import QuoteCurve, quote_curve
 from .canonical import _Canonical, _precanonical, canonical_sha256
 from .conventions import CurveConvention
 from .dates import BusinessCalendar
@@ -301,13 +302,16 @@ def _snapshot_convention(convention: CurveConvention) -> CurveConvention:
 RiskCurve = DiscountCurve | CurveBootstrapRequest
 
 
-def _snapshot_curve(curve: RiskCurve) -> RiskCurve:
+def _snapshot_curve(curve: RiskCurve | QuoteCurve) -> RiskCurve | QuoteCurve:
     """Validate and copy a risk curve input so caller mutations cannot reach it.
 
     A curve whose containers are already immutable tuples is snapshotted once and the
     snapshot reused, so every position on it shares one curve object and the caches
-    kept on it (identity, zero-shock terms). A snapshot is its own snapshot.
+    kept on it (identity, zero-shock terms). A snapshot is its own snapshot. Quote
+    requests (``QuoteCurve``) are validated immutable values and kept as they are.
     """
+    if isinstance(curve, QuoteCurve):
+        return curve
     cached = curve.__dict__.get("_risk_snapshot")
     if cached is not None:
         return cast(RiskCurve, cached)
@@ -340,9 +344,11 @@ def _copy_curve(curve: RiskCurve) -> RiskCurve:
 _CURVE_BASES = {"continuous": "continuous_zero", "annual": "annual_zero", "annual_par": "annual_par"}
 
 
-def _curve_basis(curve: RiskCurve) -> str:
+def _curve_basis(curve: RiskCurve | QuoteCurve) -> str:
     if isinstance(curve, CurveBootstrapRequest):
         return "ois_quote"
+    if isinstance(curve, QuoteCurve):
+        return curve.quote_basis
     return _CURVE_BASES[curve.convention.zero_shock]
 
 
@@ -354,19 +360,22 @@ def _overlay_shifts(base: DiscountCurve, shifts: tuple[float, ...]) -> tuple[flo
     return par_overlay_shifts(base, shifts)
 
 
-def _base_curve(source: RiskCurve, cache: ShockedCurveCache) -> DiscountCurve:
+def _base_curve(source: RiskCurve | QuoteCurve, cache: ShockedCurveCache) -> DiscountCurve:
     if isinstance(source, CurveBootstrapRequest):
         return cache.bootstrap(source, _ZERO_SHOCK, lambda: bootstrap_discount_curve(source))
+    if isinstance(source, QuoteCurve):
+        return quote_curve(source, _ZERO_SHOCK)
     return source
 
 
 def _shock_curve(
-    source: RiskCurve,
+    source: RiskCurve | QuoteCurve,
     base: DiscountCurve,
     shifts: tuple[float, ...],
     cache: ShockedCurveCache,
 ) -> DiscountFactorCurve:
-    """Zero-rate overlay for a DiscountCurve, quote shift and rebootstrap for OIS.
+    """Zero-rate overlay for a DiscountCurve, quote shift and rebootstrap for OIS and for
+    a quote request that builds alone (``QuoteCurve``).
 
     A par-yield DiscountCurve (``zero_shock="annual_par"``) gets the annual-zero overlay that
     reprices its par instruments at the shocked yields; the view keeps the solved zero shifts
@@ -380,6 +389,8 @@ def _shock_curve(
             return bootstrap_discount_curve(_shocked_request(source, shifts))
 
         return cache.bootstrap(source, shifts, build)
+    if isinstance(source, QuoteCurve):
+        return quote_curve(source, shifts)
     # One shared view per (base curve, shifts): positions on the same curve then reuse
     # its memoised discount factors. Bounded; beyond the bound views are not kept.
     views = base.__dict__.get("_zero_shock_views")
@@ -434,12 +445,16 @@ def _central_derivatives(
     return tuple(gradient), tuple(tuple(row) for row in hessian)
 
 
-def _curve_identity(curve: DiscountCurve | CurveBootstrapRequest) -> _Canonical:
+def _curve_identity(curve: DiscountCurve | CurveBootstrapRequest | QuoteCurve) -> _Canonical:
     # Converted once per curve object and reused by every position's identity hash;
     # the canonical bytes are those of the plain payload.
     cached = curve.__dict__.get("_identity_canonical")
     if cached is not None:
         return cast(_Canonical, cached)
+    if isinstance(curve, QuoteCurve):
+        quoted = _precanonical(curve._quote_identity())
+        object.__setattr__(curve, "_identity_canonical", quoted)
+        return quoted
     payload: dict[str, object] = {
         "curve_date": curve.curve_date,
         "convention": curve.convention.identifier,

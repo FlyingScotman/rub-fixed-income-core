@@ -119,6 +119,7 @@ from .portfolio_products import (
     horizon_adapter_for,
     jtd_totals,
 )
+from .proxy_curves import ParYieldCurveRequest, bootstrap_par_yield_curve
 from .risk import (
     BondRiskEngine,
     BondRiskRequest,
@@ -281,7 +282,9 @@ class ValuationPolicy:
     forward-rate bucket shifts, as a caller-built curve. With it FX forwards, FX swaps,
     crosses and FX futures may also name XCCY par quotes (``XccyCurveBootstrapRequest``,
     otherwise ``INVALID_TERMS``) as their foreign curve: rebuilt on their shocked RUB
-    curve under every shock, as cross-currency swaps rebuild it.
+    curve under every shock, as cross-currency swaps rebuild it. A USD / EUR proxy held as
+    par yields (``ParYieldCurveRequest``) is the risk source of every position on it
+    (``curve_basis = "par_yield_quote"``); without the flag it is built once.
     """
 
     discount_curve_id: str
@@ -805,9 +808,19 @@ class _BuiltCurve:
     currency: str
     # A real (CPI-adjusted) curve: discounts only inflation-linked bonds (package 9a).
     real: bool = False
+    # Par-yield proxy quotes the engines rebuild under shocks (quote_curve_risk, #77).
+    quotes: ParYieldCurveRequest | None = None
+
+    @property
+    def source(self) -> DiscountCurve | CurveBootstrapRequest | ParYieldCurveRequest:
+        """What a discounting engine takes: the quotes when they are the risk source."""
+        return self.curve if self.quotes is None else self.quotes
 
 
-def _build_curve(entry: CurveEntry, business_date: date) -> _BuiltCurve:
+def _build_curve(entry: CurveEntry, business_date: date, quote_risk: bool = False) -> _BuiltCurve:
+    """The curve of ``entry`` as the engines read it. Par-yield proxy quotes are built
+    here, or with ``quote_risk`` (``ValuationPolicy.quote_curve_risk``) passed on as the
+    risk source, rebuilt from shifted quotes under every shock (#77)."""
     spec = get_curve_spec(entry.spec_id)
     source = entry.curve
     if spec.kind is CurveKind.KBD_PARAMETRIC:
@@ -870,6 +883,16 @@ def _build_curve(entry: CurveEntry, business_date: date) -> _BuiltCurve:
                 f"curve {entry.curve_id} holds FX swap quotes; a bond needs the built curve "
                 "(implied_foreign_curve) under the spec"
             )
+        if isinstance(source, ParYieldCurveRequest):
+            if source.spec_id != spec.spec_id:
+                raise InvalidTerms(f"curve {entry.curve_id} quotes are of spec {source.spec_id}")
+            if source.curve_date != business_date:
+                raise InvalidTerms(
+                    f"curve {entry.curve_id} is not dated the snapshot business date"
+                )
+            quotes = source if quote_risk else None
+            built = bootstrap_par_yield_curve(source)
+            return _BuiltCurve(entry, built, None, spec.model_version, spec.currency, False, quotes)
         if (
             isinstance(source, DiscountCurve)
             and source.model_version == spec.model_version
@@ -1184,7 +1207,9 @@ def _product_context(
     def curve(curve_id: str) -> _BuiltCurve:
         if curve_id not in built:
             try:
-                built[curve_id] = _build_curve(snapshot.curve(curve_id), snapshot.business_date)
+                built[curve_id] = _build_curve(
+                    snapshot.curve(curve_id), snapshot.business_date, policy.quote_curve_risk
+                )
             except CoreRejection as exc:
                 built[curve_id] = exc
         outcome = built[curve_id]
@@ -1496,7 +1521,10 @@ def _value_position(
     )
     nominal_rub = nominal * fx if foreign else nominal
     accrued_rub = accrued * fx if foreign else accrued
-    basis = cast(Literal["continuous_zero", "annual_zero", "annual_par", "ois_quote"], _curve_basis(built.curve))
+    basis = cast(
+        Literal["continuous_zero", "annual_zero", "annual_par", "ois_quote", "par_yield_quote"],
+        _curve_basis(built.source),
+    )
     projection_id: str | None = None
     yield_flows: Sequence[BondCashflow] = flows
     if isinstance(instrument.coupon_leg, FloatingCouponLeg):
@@ -1549,7 +1577,7 @@ def _value_position(
                 clean_price_pct=quote.clean_price_pct,
                 accrued_interest_rub=accrued_rub,
                 quantity=position.quantity,
-                curve=built.curve,
+                curve=built.source,
                 spread_convention=policy.spread_convention,
                 spread_kind=spread_kind,
                 perpetual_tail=None if tail is None else tail.scaled(fx) if foreign else tail,
@@ -1775,7 +1803,7 @@ def _floating_engine(
         BondRiskRequest(
             cashflows=tuple(BondCashflow(f.payment_date, f.amount) for f in flows),
             settlement_date=settlement,
-            curve=built.curve,
+            curve=built.source,
             spread_convention=policy.spread_convention,
             spread_kind=policy.spread_kind_for(instrument.instrument_id),
             dirty_price_rub=clean_price_pct_to_dirty_rub(quote.clean_price_pct, nominal, accrued),
@@ -2349,7 +2377,9 @@ def _horizon_position(
     curve_id = policy.curve_for(instrument.instrument_id)
     if curve_id not in built:
         try:
-            built[curve_id] = _build_curve(snapshot.curve(curve_id), snapshot.business_date)
+            built[curve_id] = _build_curve(
+                snapshot.curve(curve_id), snapshot.business_date, policy.quote_curve_risk
+            )
         except CoreRejection as exc:
             built[curve_id] = exc
     outcome = built[curve_id]

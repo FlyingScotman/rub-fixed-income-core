@@ -1095,7 +1095,7 @@ class XccyCurveCache:
 
 
 RubCurve = DiscountCurve | CurveBootstrapRequest
-ForeignCurve = DiscountCurve | XccyCurveBootstrapRequest
+ForeignCurve = DiscountCurve | XccyCurveBootstrapRequest | QuoteCurve
 
 
 @dataclass(frozen=True)
@@ -1141,7 +1141,7 @@ class XccyRiskRequest:
         if self.rub_discount_curve is None:
             raise TypeError("rub_discount_curve is required")
         foreign = self.foreign_discount_curve
-        if not isinstance(foreign, (DiscountCurve, XccyCurveBootstrapRequest)):
+        if not isinstance(foreign, (DiscountCurve, QuoteCurve)):
             raise TypeError(
                 "foreign_discount_curve must be DiscountCurve or XccyCurveBootstrapRequest"
             )
@@ -1428,7 +1428,7 @@ def _fixings_identity(fixings: Fixings | None) -> _Canonical | None:
 
 
 def _foreign_identity(curve: ForeignCurve) -> _Canonical:
-    if isinstance(curve, DiscountCurve):
+    if not isinstance(curve, XccyCurveBootstrapRequest):
         return _curve_identity(curve)
     cached = curve.__dict__.get("_xccy_identity")
     if cached is None:
@@ -1599,8 +1599,9 @@ class XccyRiskEngine:
         req = self.request
         source = req.foreign_discount_curve
         own = self._shift(shifts, "foreign_discount")
-        if isinstance(source, DiscountCurve):
-            return _shock_curve(source, source, own, self.curve_cache)
+        if not isinstance(source, XccyCurveBootstrapRequest):  # built, or par-yield quotes
+            base = _base_curve(source, self.curve_cache)
+            return _shock_curve(source, base, own, self.curve_cache)
         rub_d = self._shift(shifts, "rub_discount")
         rub_p = self._shift(shifts, "rub_projection")
         sources = (source, req.rub_discount_curve, req.rub_projection_curve)

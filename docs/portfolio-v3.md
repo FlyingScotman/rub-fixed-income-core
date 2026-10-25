@@ -112,7 +112,11 @@ forward-rate shifts, exactly as the built curve would. Carry is on the mid curve
 way. FX forwards, FX swaps, crosses and FX futures on XCCY par quotes
 (`XccyCurveBootstrapRequest`) rebuild the CNY curve under every shock on their shocked
 RUB curve, as cross-currency swaps do: `IR|<cny curve>|<bucket>` is risk to the XCCY
-quotes and the RUB buckets hold them. Carry is on the curve built from the quotes.
+quotes and the RUB buckets hold them. Carry is on the curve built from the quotes. A USD / EUR par-yield
+proxy may be held as its quotes (`ParYieldCurveRequest` under its `*_par_proxy_v1`
+spec): built once, or with the flag the risk source of every position on it (bonds,
+CDS, FX products reaching it as a fallback, XCCY swaps), rows `curve_basis =
+"par_yield_quote"`, so bonds and FX products on one proxy share one factor unit.
 
 ## Result contract v3 (`PortfolioRiskResultV3`)
 
@@ -300,4 +304,9 @@ engines dominate; the portfolio layer adds no repricing.
   futures share).
 - RUSFAR projection curves: a RUSFAR repo projects on a curve under a RUONIA OIS spec;
   no RUSFAR spec is registered.
-- Persisting XCCY and CDS shocked curves across jobs (BACKLOG #70, #76).
+- Persisting XCCY and CDS shocked curves across jobs (BACKLOG #70, #76); likewise the
+  rebuilt KRS, XCCY (FX products) and par-yield proxy curves of `quote_curve_risk`, which
+  are memoised on the request object within a process only.
+- Quote risk of a curve implied from FX swaps (`FxImpliedCurveRequest`): it is built once
+  per job and shifted on its zero rates, with or without `quote_curve_risk`. The KRS
+  calibration's own (TOM) discount curve is not shocked with the discount factors.

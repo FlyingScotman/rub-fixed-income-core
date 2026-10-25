@@ -15,6 +15,7 @@ from datetime import date
 from typing import Literal, cast
 
 from ._money import finite_money, non_negative_money, positive_money
+from ._quote_curves import QuoteCurve
 from ._risk_common import (
     _ZERO_SHOCK,
     RISK_BUCKETS,
@@ -92,7 +93,8 @@ class BondRiskRequest:
     """Amounts are RUB per bond; quantity is signed bonds, price is dirty RUB/bond.
 
     Supply exactly one of spread_bp and dirty_price_rub. A DiscountCurve selects
-    continuous-zero risk; a CurveBootstrapRequest selects par-OIS quote risk.
+    continuous-zero risk; a CurveBootstrapRequest selects par-OIS quote risk; a par-yield
+    proxy request (``proxy_curves.ParYieldCurveRequest``) par-yield quote risk.
     Payments on/before settlement are excluded. Put/amortization schedules must
     already contain the contractual redemption and no post-horizon payments.
 
@@ -114,7 +116,7 @@ class BondRiskRequest:
 
     cashflows: tuple[BondCashflow, ...]
     settlement_date: date
-    curve: DiscountCurve | CurveBootstrapRequest
+    curve: DiscountCurve | CurveBootstrapRequest | QuoteCurve
     spread_convention: ZSpreadConvention
     spread_kind: Literal["credit", "ofz"]
     spread_bp: float | None = None
@@ -137,8 +139,10 @@ class BondRiskRequest:
                 raise ValueError("floating fixing history must be dated at the curve date")
         if self.spread_kind not in ("credit", "ofz"):
             raise ValueError("spread_kind must be credit or ofz")
-        if not isinstance(self.curve, (DiscountCurve, CurveBootstrapRequest)):
-            raise TypeError("curve must be DiscountCurve or CurveBootstrapRequest")
+        if not isinstance(self.curve, (DiscountCurve, CurveBootstrapRequest, QuoteCurve)) or (
+            isinstance(self.curve, QuoteCurve) and self.curve.needs_rub
+        ):
+            raise TypeError("curve must be DiscountCurve, CurveBootstrapRequest or par yields")
         if not isinstance(self.spread_convention, ZSpreadConvention):
             raise TypeError("an explicit ZSpreadConvention is required")
         if self.settlement_date < self.curve.curve_date:

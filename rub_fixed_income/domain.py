@@ -39,6 +39,7 @@ from .fx_forwards import FxImpliedCurveRequest
 from .inflation import CpiSeries, IndexedCouponLeg, IndexedPrincipalLeg
 from .kbd import ZcycParameters, kbd_discount_curve
 from .key_rate import KeyRateCurveRequest, KeyRateForwardCurve
+from .proxy_curves import ParYieldCurveRequest
 from .rate_futures import RuoniaFixings, RuoniaIndexValue
 from .xccy import IndexFixings, XccyCurveBootstrapRequest
 
@@ -712,7 +713,9 @@ class CurveEntry:
     ``cny_ruonia_xccy_v1`` (the CNY curve from XCCY par quotes), and (0.36.0) an
     :class:`~rub_fixed_income.fx_forwards.FxImpliedCurveRequest` under a
     ``<ccy>_fx_implied_v1`` spec (FX swap points, built on the snapshot FX spot). Bonds
-    reject all three.
+    reject all three. A par-yield proxy spec also takes its quotes, a
+    :class:`~rub_fixed_income.proxy_curves.ParYieldCurveRequest`: built once per call, or
+    the risk source of every engine on it with ``ValuationPolicy.quote_curve_risk``.
     """
 
     curve_id: str
@@ -725,6 +728,7 @@ class CurveEntry:
         | KeyRateCurveRequest
         | XccyCurveBootstrapRequest
         | FxImpliedCurveRequest
+        | ParYieldCurveRequest
     )
 
     def __post_init__(self) -> None:

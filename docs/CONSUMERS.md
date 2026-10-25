@@ -124,7 +124,13 @@ monitor opts in. To take the key-rate curve's risk in KRS quotes:
 - with the flag, FX forwards, FX swaps, crosses and FX futures may name the CNY XCCY
   quotes (`XccyCurveBootstrapRequest` under `cny_ruonia_xccy_v1`, the entry XCCY swaps
   already read) as their foreign curve instead of the built CNY curve: their CNY buckets
-  are then risk to the XCCY quotes, in the same unit as the XCCY swaps'.
+  are then risk to the XCCY quotes, in the same unit as the XCCY swaps';
+- USD / EUR proxies: put the hub's par yields in the snapshot as
+  `CurveEntry(curve_id, "usd_ust_par_proxy_v1", ParYieldCurveRequest(spec_id,
+  business_date, quotes))` (the inputs of `bootstrap_par_yield_curve`) instead of the built
+  curve. Without the flag it values exactly as the built curve; with it every position on
+  the proxy (bonds, CDS, FX fallbacks) has `IR|<proxy>|<bucket>` in par yields
+  (`curve_basis = "par_yield_quote"`).
 
 ## Deprecations in 0.12.0 and what consumers should move to
 

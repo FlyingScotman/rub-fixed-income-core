@@ -32,7 +32,7 @@ import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import date
-from typing import TYPE_CHECKING, Literal, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 from ._curve_views import FxHorizon
 from ._money import finite_money
@@ -137,6 +137,7 @@ from .portfolio_instruments import (
     SwapInstrument,
     XccyInstrument,
 )
+from .proxy_curves import ParYieldCurveRequest
 from .rate_futures import (
     RATE_FUTURES_RISK_MODEL_VERSION,
     KeyRateFuturesContract,
@@ -705,6 +706,18 @@ class ProductContext:
 
     def discount_curve(self, curve_id: str, currency: str) -> DiscountCurve | CurveBootstrapRequest:
         """A nominal discount curve of ``currency`` dated the business date."""
+        curve = self.quoted_discount_curve(curve_id, currency)
+        if isinstance(curve, ParYieldCurveRequest):
+            raise InvalidTerms(
+                f"curve {curve_id} holds par-yield quotes (quote_curve_risk); it discounts "
+                "bonds, CDS and FX products only"
+            )
+        return curve
+
+    def quoted_discount_curve(
+        self, curve_id: str, currency: str
+    ) -> DiscountCurve | CurveBootstrapRequest | ParYieldCurveRequest:
+        """:meth:`discount_curve`, or par-yield proxy quotes with ``quote_curve_risk``."""
         built = self.bond_curve(curve_id)
         if built.real:
             raise InvalidTerms(f"curve {curve_id} is a real curve; it discounts only linkers")
@@ -712,11 +725,11 @@ class ProductContext:
             raise InvalidTerms(f"curve {curve_id} is a {built.currency} curve, not {currency}")
         if built.curve.curve_date != self.business_date:
             raise InvalidTerms(f"curve {curve_id} is not dated the snapshot business date")
-        return built.curve
+        return built.source
 
     def foreign_fx_curve(
         self, curve_id: str, currency: str, *, allow_proxy: bool = False
-    ) -> DiscountCurve | XccyCurveBootstrapRequest:
+    ) -> DiscountCurve | XccyCurveBootstrapRequest | ParYieldCurveRequest:
         """The foreign curve of an FX product: discount factors of ``currency``.
 
         Caller-built factors (``<ccy>_discount_factors_v1``, any currency), a curve
@@ -739,6 +752,10 @@ class ProductContext:
         }.get(spec.kind)
         if spec.kind is CurveKind.PAR_YIELD_PROXY and allow_proxy:
             models = (PAR_YIELD_PROXY_MODEL_VERSION,)
+            if isinstance(source, ParYieldCurveRequest):
+                # Built (or, with quote_curve_risk, passed on) as the bonds read it.
+                built = self.quoted_discount_curve(curve_id, currency)
+                return cast(DiscountCurve | ParYieldCurveRequest, built)
         if models is None:
             raise InvalidTerms(f"curve {curve_id} ({spec.spec_id}) is not a foreign discount curve")
         if isinstance(source, XccyCurveBootstrapRequest):
@@ -793,7 +810,7 @@ class ProductContext:
 
     def fx_curve(
         self, curve_id: str, currency: str
-    ) -> tuple[str, DiscountCurve | XccyCurveBootstrapRequest, str | None]:
+    ) -> tuple[str, DiscountCurve | XccyCurveBootstrapRequest | ParYieldCurveRequest, str | None]:
         """``(curve ID used, curve, curve it replaces)`` of an FX product's foreign curve.
 
         ``fx_curve_fallbacks`` (``ValuationPolicy``, #131) are tried in order only when
@@ -1460,8 +1477,8 @@ def value_fx_cross(position: Position, instrument: object, ctx: ProductContext) 
 
 def _xccy_foreign_discount(
     ctx: ProductContext, curve_id: str, currency: str, spot: FxSpot
-) -> tuple[str, DiscountCurve | XccyCurveBootstrapRequest, str | None]:
-    """``(curve ID used, foreign discount curve or XCCY quotes, curve it replaces)``."""
+) -> tuple[str, DiscountCurve | XccyCurveBootstrapRequest | ParYieldCurveRequest, str | None]:
+    """``(curve ID used, foreign discount curve or its quotes, curve it replaces)``."""
     try:
         entry = ctx.snapshot.curve(curve_id)
     except MissingMarketData:
@@ -1637,7 +1654,7 @@ def _cds_engine(
     contract = instrument.contract
     currency = contract.currency
     _check_position(position, currency)
-    discount = ctx.discount_curve(instrument.discount_curve_id, currency)
+    discount = ctx.quoted_discount_curve(instrument.discount_curve_id, currency)
     fx = ctx.fx_rate(currency)
     credit = ctx.credit_request(contract.reference_entity, currency)
     if credit.convention.hazard_day_count != contract.convention.hazard_day_count:
