@@ -27,6 +27,7 @@ from typing import Literal
 
 from .errors import InvalidTerms
 from .fx_futures import FxFuturesRiskResult, FxFuturesSecondOrderRisk
+from .ofz_basis import OfzBasisRiskResult
 from .risk import RISK_BUCKETS, BondRiskResult, BondSecondOrderRisk, TwoCurveBondRiskResult
 
 __all__ = [
@@ -41,6 +42,7 @@ __all__ = [
     "fx_translated_factor_risk",
     "ir_factor",
     "linker_factor_risk",
+    "ofz_basis_factor_risk",
     "real_factor",
 ]
 
@@ -263,8 +265,53 @@ def linker_factor_risk(
     )
 
 
+def ofz_basis_factor_risk(
+    risk: OfzBasisRiskResult,
+    ois_curve_id: str,
+    basis_id: str,
+    second_order: BondSecondOrderRisk | None = None,
+) -> FactorRisk:
+    """Desk factors of a bond on the KBD in RUONIA + basis coordinates (``ofz_basis``, #83).
+
+    ``IR|<ois_curve_id>|*`` (RUONIA quote buckets: the OIS curve's own factors), then
+    ``IR|<basis_id>|*`` (the basis, = the KBD's v3 par buckets with RUONIA held) and ``CS``.
+    With ``second_order`` (the 23 x 23 of :meth:`OfzBasisRiskEngine.second_order`) the first
+    order is its gradient (DEC08); otherwise ``risk``'s central buckets.
+    """
+    if ois_curve_id == basis_id:
+        raise InvalidTerms("the OIS curve and the basis need distinct IDs")
+    factors = (
+        *(ir_factor(ois_curve_id, b) for b in RISK_BUCKETS),
+        *(ir_factor(basis_id, b) for b in RISK_BUCKETS),
+        CS_FACTOR,
+    )
+    if second_order is not None:
+        if second_order.base_id != risk.base_id:
+            raise InvalidTerms("risk and second-order results describe different calibrations")
+        if len(second_order.factors) != len(factors):
+            raise InvalidTerms("unexpected second-order factor set")
+        return FactorRisk(
+            factors,
+            second_order.gradient_rub_per_bp,
+            _upper(second_order.hessian_rub_per_bp2),
+            "central",
+            second_order.bump_bp,
+            True,
+        )
+    spread = risk.cs01_rub if risk.cs01_rub != 0.0 else risk.ofz_spr01_rub
+    first = (*(b.dv01_rub for b in (*risk.ruonia_buckets, *risk.basis_buckets)), spread)
+    return FactorRisk(factors, first, (), "central", risk.bump_bp, False)
+
+
 def basis_view(risk: FactorRisk, base_curve_id: str, curve_id: str, basis_id: str) -> FactorRisk:
     """The same risk on ``(base, basis = curve - base)`` instead of ``(base, curve)``.
+
+    **An approximation for OFZ (variant P).** Applied to a KBD position it makes RUONIA risk
+    identical to basis risk bucket by bucket: a RUONIA bucket is assumed to move the KBD by the
+    same par shift. Since issue #83 both are computed (``ofz_basis``, ``ValuationPolicy.ofz_basis``:
+    variant Z with the ZX tail, ``docs/ofz-basis.md``); there RUONIA and basis risk differ by
+    curve shape, bucket design and the long end (a few % of DV01 per bucket on 22.10.2026). Keep
+    this view to compare against, or for curves that have no quotes to rebootstrap.
 
     With both curves bucketed alike and shocked in the same unit (for the KBD against
     RUONIA OIS: ``rub_ofz_kbd_v3`` par quotes and par OIS quotes; ``rub_ofz_kbd_v2``

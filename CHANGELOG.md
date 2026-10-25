@@ -1,5 +1,93 @@
 # Changelog
 
+## Unreleased
+
+### OFZ risk as RUONIA plus a basis, both computed (#83)
+
+The owner's decision of 2026-10-25 (FlyingScotman/rub-fixed-income-core#83; the monitor side
+is FlyingScotman/trading-desk-monitor#213): an OFZ's RUONIA risk and its basis risk must be
+computed, not identical. Until now the «RUONIA + basis» view was `basis_view`, a linear
+change of coordinates that makes RUONIA risk ≡ basis risk ≡ KBD v3 par risk bucket by bucket
+(variant P). A research run on hub data of 2026-10-22 chose variant Z with the ZX tail
+(`docs/ofz-basis.md`; the table in `docs/proposals/ofz-curve-risk-factors.md` §11). Opt-in:
+the new policy field is omitted at its default, so earlier policies, snapshots, job IDs,
+results and pinned hashes are unchanged.
+
+- **The scheme (variant Z).** The basis is a spread in effective annual zero yields. The
+  KBD's annual zero under RUONIA shifts `s` and basis shifts `q` is
+  `base(t) + overlay_v3(q)(t) + [Z_s(t) − Z_0(t)]`: the v3 par overlay solved on the base KBD
+  plus the annual-zero move, on the KBD's curve time, of the RUONIA OIS curve rebootstrapped
+  from quotes moved by the bucket hats (`_shocked_request`, the OIS curve's own quote-risk
+  rule). With RUONIA held the shocked curve is the v3 view itself, so basis risk, its
+  Hessian and every basis-only price are today's v3 numbers to the bit; only the RUONIA leg
+  is new. Joint shifts add in annual zero (the overlay is solved on the base KBD and the
+  OIS move added); cross gammas and joint scenarios follow this rule.
+- **The long end (ZX).** The OIS request used here is extended with one synthetic quote per
+  v3 par tenor after the last quote (15Y and 20Y after 10Y): KBD par at the quote's maturity
+  minus `s_tail = KBD par(T_last) − quote(T_last)`. KBD par is that of an annual-coupon bond
+  on the base KBD from its curve date (yearly unadjusted rolls, a roll within 180 days of
+  maturity dropped, ACT/365F); the OIS quote is as published; maturities resolve under the OIS
+  convention. The synthetic quotes are fixed at the base: RUONIA 15Y/20Y+ move them by their
+  hats, basis buckets never rebuild the OIS curve. Without them a 10Y RUONIA bump moves the
+  15Y OIS zero by +3.9 bp (flat-forward extrapolation) and a 15Y OFZ shows ±700 RUB/bp of
+  RUONIA 7Y/10Y risk.
+- `ofz_basis.OfzBasisCurve(kbd, ois)`: the v3 KBD (`zero_shock="annual_par"`, else
+  `InvalidTerms`) and RUONIA OIS quotes; `.extended`, `.synthetic_quotes`, `.tail_spread`,
+  `.shocked(ruonia, basis, cache)`, `.ois_curve`, `.ois_jets` (`∂ΔZ/∂s`, `∂²ΔZ/∂s²` at a date).
+- `ofz_basis.OfzBasisRiskEngine(engine, curve)`: a `BondRiskEngine` on that KBD over 11 RUONIA
+  buckets, 11 basis buckets and the spread: `.price`, `.risk(method=..., kbd_risk=...)`
+  (`OfzBasisRiskResult`), `.second_order(method=...)` (23 × 23 `BondSecondOrderRisk`),
+  `.reprice` (`BondScenarioResult`; the v3 1M–6M rule on the basis shifts). `method="bump"`
+  for any bond the engine prices (fixed, perpetual tails, single-curve KBD floaters,
+  floaters projected off the same RUONIA quotes; other projections `InvalidTerms`);
+  `method="analytic"` for fixed cash flows: annual-zero derivatives at the flow dates, the
+  basis block through the v3 par Jacobian with the instruments' curvature (the engine's own
+  analytic Hessian, to the bit), the RUONIA rows through `∂ΔZ/∂s` and `∂²ΔZ/∂s²` of the OIS
+  zero per date, central differences of the cached shocked OIS curves (memoised per date).
+- `factors.ofz_basis_factor_risk(risk, ois_curve_id, basis_id, second_order=None)`: factors
+  `IR|<ois>|*` (the OIS curve's own, so they add up with OIS swaps), `IR|<basis>|*`, `CS`.
+- `ValuationPolicy(ofz_basis=OfzBasisIds(kbd_curve_id, ois_curve_id, basis_id))` (omitted at
+  None): `value_portfolio` reports every bond discounted on the KBD in these factors instead
+  of `IR|<kbd>|*` (row `curve_basis = "ruonia_ois_quote+kbd_par_basis"`, v3 model flag
+  `ruonia_basis`); closed form where `risk_method` / `second_order_method` ask for it. PV,
+  spread, yields, G-spread, `spread_buckets_rub` and JTD are unchanged. Scenarios move RUONIA
+  by the OIS curve's shift (named, else the shock's) and the basis by `curve_shifts_bp` of the
+  basis ID (held when not named); naming the KBD is `INVALID_TERMS` for these bonds. A KBD
+  that is not `rub_ofz_kbd_v3` or an OIS curve without quotes is `INVALID_TERMS` for them; an
+  OIS calendar that cannot resolve the tail tenors is `CALENDAR_OUT_OF_RANGE`.
+- **Shocked OIS curves.** The extended request is a separate `ShockedCurveCache` request
+  (same keys, persisted by `export` / `seed`): 22 rebuilds per job for first order, 220 more
+  for the RUONIA Hessian, shared by the closed form and the bump path. OIS positions keep the
+  plain request (their numbers and keys are unchanged); quotes that already reach 20Y add no
+  tenor and share every curve.
+- **Accuracy** (`tests/test_ofz_basis.py`): RUONIA buckets equal an independent
+  rebuild-compose-reprice to 1e-9; closed form against bump 2.6e-6 relative at 1 bp and
+  2.6e-8 at 0.1 bp (O(bump²)); a second-order Taylor expansion of a joint RUONIA + basis +
+  spread move of 4–10 bp leaves a third-order residual (halving the move divides it by ~8).
+  On synthetic OIS quotes shaped like the KBD of 2026-10-15, RUONIA and basis totals differ by
+  0.2–0.3 % and bucket by bucket by 4–22 % of DV01 (14.6Y bond: 15Y −391.1 against −409.1
+  RUB/bp per 1 mn), the pattern of the research (SU26238: −406.6 against −417.9).
+- **Cost** (`benchmarks/portfolio_bench.py --cases kbd3,ofzbasis,ofzbasis-bump`, 2000 bonds
+  on the v3 KBD and 17 MOEX RUONIA quotes, ms per position; noisy shared machine): closed
+  form, first order 3.65 (plain v3 2.43), with the Hessian 7.26 (v3 3.97), with five
+  scenarios 7.50 (v3 3.53); by bumps 4.47 / 26.62 / 24.41 (the 23 × 23 bumped Hessian is
+  about 1 060 repricings per bond). The ~243 extended OIS rebuilds are ~1.2 s per job.
+  The default cases are unchanged (within machine noise of 0.38.0).
+
+### Changed
+
+- `basis_view`: numbers unchanged; documented as the variant-P approximation (RUONIA ≡ basis
+  bucket by bucket), kept for comparison and for curves without quotes to rebootstrap.
+- `portfolio.py`: three pre-existing over-long lines reformatted (`ruff format`); no
+  behaviour change.
+
+### Not covered
+
+- A floater discounted on RUONIA and projected off the KBD keeps `IR|<kbd>|*` projection
+  factors under `ofz_basis`; `rub_ofz_kbd_v2` is not accepted (it would compose the same
+  way); OIS positions do not use the extended request; `horizon_portfolio` does not report
+  factors and is unchanged.
+
 ## 0.38.0 — faster RUONIA rebuilds, curve risk in quotes for key-rate and FX curves, closed-form first order
 
 The second wave of the desk's 2026-10-23 decision (risk of every curve in its par quotes)
