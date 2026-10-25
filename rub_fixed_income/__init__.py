@@ -230,6 +230,7 @@ from .factors import (
     fx_translated_factor_risk,
     ir_factor,
     linker_factor_risk,
+    ofz_basis_factor_risk,
     real_factor,
 )
 from .floating import (
@@ -383,6 +384,14 @@ from .local_risk import (
     PreparedLocalBondRisk,
     RiskRunContext,
     prepare_local_bond_risk,
+)
+from .ofz_basis import (
+    OFZ_BASIS_CURVE_BASIS,
+    OFZ_BASIS_MODEL_VERSION,
+    OfzBasisCurve,
+    OfzBasisIds,
+    OfzBasisRiskEngine,
+    OfzBasisRiskResult,
 )
 from .ofz_futures import (
     OFZ_FUTURES_HORIZON_MODEL_VERSION,
@@ -1268,4 +1277,15 @@ __all__ += [
     "BenchmarkEquivalent",
     "BenchmarkHedge",
     "benchmark_equivalents",
+]
+
+# Issue #83: OFZ risk as RUONIA OIS plus a basis, both computed (docs/ofz-basis.md).
+__all__ += [
+    "OFZ_BASIS_CURVE_BASIS",
+    "OFZ_BASIS_MODEL_VERSION",
+    "OfzBasisCurve",
+    "OfzBasisIds",
+    "OfzBasisRiskEngine",
+    "OfzBasisRiskResult",
+    "ofz_basis_factor_risk",
 ]
