@@ -30,7 +30,9 @@ from rub_fixed_income import (
     BondRiskEngine,
     BondRiskRequest,
     BondScenario,
+    BusinessCalendar,
     CalendarEntry,
+    CalendarRangeError,
     CouponPeriod,
     CurveBootstrapRequest,
     CurveEntry,
@@ -64,6 +66,7 @@ from rub_fixed_income import (
     from_dict,
     kbd_discount_curve,
     ofz_basis_factor_risk,
+    ois_curve_convention,
     to_dict,
     value_portfolio,
 )
@@ -399,6 +402,15 @@ def test_refusals() -> None:
         OfzBasisCurve(kbd_discount_curve(PARAMS, zero_shock="annual"), OIS)
     with pytest.raises(InvalidTerms, match="quotes"):
         OfzBasisCurve(KBD, bootstrap_discount_curve(OIS))  # type: ignore[arg-type]
+    bounded = BusinessCalendar(
+        holidays=OIS_CALENDAR.holidays,
+        version="bounded",
+        valid_from=date(2026, 1, 1),
+        valid_to=date(2038, 12, 31),
+    )
+    convention = ois_curve_convention("rub_ruonia_ois_moex_v2", bounded)
+    with pytest.raises(CalendarRangeError):  # the 15Y tail quote cannot resolve
+        OfzBasisCurve(KBD, replace(OIS, convention=convention))
     with pytest.raises(InvalidTerms, match="same curve date"):
         OfzBasisCurve(KBD, replace(OIS, curve_date=DATE - timedelta(days=1)))
     other = BondRiskEngine(

@@ -17,6 +17,11 @@ The ``fx`` curve case (package 3) is the same book as CNY, USD and EUR bonds in 
 each on a caller-built discount curve of its currency, valued in RUB at snapshot FX
 rates with ``FX|<ccy>`` and its cross terms; its scenarios add a 10 % FX move.
 
+Optional cases (not in the default list): ``kbd3`` values the book on the KBD on par
+factors (``rub_ofz_kbd_v3``) with the closed-form risk and Hessian, ``ofzbasis`` the same
+with ``ValuationPolicy.ofz_basis`` (RUONIA + basis, issue #83; ``ruonia`` quotes) and
+``ofzbasis-bump`` that view by bump-and-reprice.
+
 The ``mixed`` case (result contract v3) cycles through the positions of the mixed book
 of ``tests/portfolio_v3_book.py``: bonds, seasoned, two-curve and key-rate swaps, an FX
 forward and swap, XCCY on quotes and on discount factors, RUB and USD CDS, FX, RUON,
@@ -29,6 +34,7 @@ Run from the repository root::
     uv run python benchmarks/portfolio_bench.py --positions 2000
     uv run python benchmarks/portfolio_bench.py --positions 2000 --cases mixed
     uv run python benchmarks/portfolio_bench.py --positions 50 --cases ruonia
+    uv run python benchmarks/portfolio_bench.py --positions 2000 --cases kbd3,ofzbasis
 
 The numbers are machine-dependent; the target is <= 10 ms per position amortised
 for OIS with the Hessian at 2k positions.
@@ -63,6 +69,7 @@ from rub_fixed_income import (
     MarketSnapshot,
     Offer,
     OfferKind,
+    OfzBasisIds,
     OfzFuturesInstrument,
     OisQuote,
     PortfolioInstrument,
@@ -282,16 +289,19 @@ def run_case(
     curve: str, mode: str, size: int, cache: ShockedCurveCache | None = None
 ) -> tuple[Timing, ShockedCurveCache]:
     foreign = curve == "fx"
+    v3 = curve in ("kbd3", "ofzbasis", "ofzbasis-bump")
     instruments, positions, quotes = book(size, tuple(sorted(FOREIGN)) if foreign else ("RUB",))
     snapshot = MarketSnapshot(
         f"bench-{BUSINESS_DATE}",
         BUSINESS_DATE,
         AS_OF,
         curves=(
-            CurveEntry("RUB_OFZ_KBD", "rub_ofz_kbd_v1", kbd_parameters()),
+            CurveEntry(
+                "RUB_OFZ_KBD", "rub_ofz_kbd_v3" if v3 else "rub_ofz_kbd_v1", kbd_parameters()
+            ),
             (
                 CurveEntry("RUB_OIS", "rub_ruonia_ois_moex_v2", ruonia_request())
-                if curve == "ruonia"
+                if curve == "ruonia" or v3
                 else CurveEntry("RUB_OIS", "rub_ruonia_ois_legacy_v1", ois_request())
             ),
             *(
@@ -304,11 +314,15 @@ def run_case(
         quotes=tuple(quotes),
     )
     policy = ValuationPolicy(
-        "RUB_OFZ_KBD" if curve == "kbd" else "RUB_OIS",
+        "RUB_OFZ_KBD" if curve == "kbd" or v3 else "RUB_OIS",
         horizon="confirmed_put",
         include_second_order=mode != "first",
         foreign_curves=tuple((c, f"{c}_DF") for c in FOREIGN) if foreign else (),
     )
+    if v3 and curve != "ofzbasis-bump":
+        policy = replace(policy, risk_method="analytic", second_order_method="analytic")
+    if curve.startswith("ofzbasis"):
+        policy = replace(policy, ofz_basis=OfzBasisIds("RUB_OFZ_KBD", "RUB_OIS", "RUB_OFZ_BASIS"))
     scenarios = FX_SCENARIOS if foreign else SCENARIOS
     cache = ShockedCurveCache() if cache is None else cache
     started = time.perf_counter()
@@ -333,7 +347,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--cases",
         default="kbd,ois,ruonia,fx,mixed",
-        help="comma-separated: kbd, ois, ruonia, fx, mixed",
+        help="comma-separated: kbd, ois, ruonia, fx, mixed (optional: kbd3, ofzbasis, ofzbasis-bump)",
     )
     args = parser.parse_args(argv)
     size = args.positions

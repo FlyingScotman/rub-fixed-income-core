@@ -178,6 +178,7 @@ version; `portfolio_result_from_json` reads both (v2 into `PortfolioRiskResult`,
 | `perpetual_tail` | a never-called perpetual: its coupons continue forever after the listed ones (BACKLOG #125) |
 | `fx_translated` | amounts converted to RUB at the snapshot `FxRate` (non-RUB bond, non-RUB CDS) |
 | `real_curve` | an inflation-linked bond on a real curve |
+| `ruonia_basis` | a bond on the KBD reported as RUONIA + basis (`ValuationPolicy.ofz_basis`, issue #83) |
 | `known_fixings` | fixings from the snapshot entered the value (an NDF leg frozen at its published fixing) |
 | `fixing_pending` | an NDF leg fixes on the business date and its fixing is not yet published: still projected |
 | `curve_fallback` | a foreign curve absent from the snapshot was replaced by a `fx_curve_fallbacks` curve |

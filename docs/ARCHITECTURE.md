@@ -50,6 +50,7 @@ or floats.
 | `proxy_curves.py` | USD / EUR government par-yield proxy curves for non-RUB bonds (0.36.0). |
 | `rate_futures.py`, `ofz_futures.py` | MOEX RUON, RUONIA index, KEYRATE and OFZ basket futures (0.27.0). |
 | `repo.py` | Repo and reverse-repo legs; collateral as a reference outside PV (0.28.0). |
+| `ofz_basis.py` | The v3 KBD as RUONIA OIS plus a basis, both computed: the composed curve (variant Z, ZX tail), 22-factor risk by bump or closed form (issue #83). |
 | `portfolio_instruments.py`, `portfolio_products.py` | Derivative position types and the per-product adapters behind `value_portfolio`'s result contract v3 (0.29.0). |
 | `_money.py`, `_version.py` | Private money validation helpers; the single runtime version. |
 
@@ -94,6 +95,10 @@ graph LR
   discount --> proxy_curves
   factors --> portfolio
   local_risk --> portfolio
+  risk --> ofz_basis
+  _risk_common --> ofz_basis
+  ofz_basis --> factors
+  ofz_basis --> portfolio
 ```
 
 ## Data flow
