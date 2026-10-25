@@ -110,6 +110,16 @@ FX book and non-RUB bonds; 0.36.0 is that work plus 0.34.0 and never-called perp
   (`prepare_local_bond_risk`) and call `benchmark_equivalents`; the monitor picks the
   benchmarks (liquidity) and the desk may change them.
 
+**From 0.38.0** (FlyingScotman/rub-fixed-income-core#76):
+
+- `ValuationPolicy(risk_method="analytic")` for the closed-form first order of fixed bonds
+  (with `second_order_method="analytic"` every bond with a closed form skips the bumps);
+  omitted at its default, so job IDs and results do not change until the monitor sets it;
+- the hedge view takes KBD floaters (the two-curve engine of the floater, projected off the
+  same KBD curve object or an equal one) and OFZ futures engines as positions; a warning
+  names those whose other curve (RUONIA discount, funding) is held: show that risk beside
+  the benchmark hedges.
+
 ## Deprecations in 0.12.0 and what consumers should move to
 
 Nothing is removed before 1.0. Each call below now emits a `DeprecationWarning` (hidden by

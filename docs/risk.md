@@ -120,6 +120,18 @@ proposal §6). `ValuationPolicy(second_order_method="analytic")` takes it for ev
 bond in `value_portfolio` (the Hessian part about six times faster); everything else is
 bumped.
 
+**Closed-form first order (0.38.0).** `engine.risk(difference="central", method="analytic")`
+gives the first derivatives of the same bonds in closed form: the gradient pass of the
+second order without the Hessian (`J^-T` on `annual_par`), the same `BondRiskResult`
+fields with `model_version = ANALYTIC_RISK_MODEL_VERSION`. It is the limit of the central
+difference (1e-7 relative from it on the tests) and equals the analytic second order's
+gradient to the bit; `parallel_dv01_rub` is the bucket sum (the bucket weights sum to one)
+and `bump_bp` is only recorded. A forward difference has no closed form: `method="analytic"`
+with `difference="forward"` is a `ValueError`. `ValuationPolicy(risk_method="analytic")`
+takes it in `value_portfolio` (about 3.5 times faster per `risk()` call: 0.13-0.18 ms
+instead of 0.5-0.6 ms for a bond); floaters, perpetual tails and bonds on OIS quotes are
+still bumped.
+
 **Benchmark equivalents (0.37.0, the hedge view).** `benchmark_equivalents(benchmarks,
 positions)` shows the positions' rate risk against benchmark bonds the caller chooses: an
 annual-zero overlay with nodes at the benchmarks' maturities, each benchmark's factor the
@@ -132,7 +144,24 @@ node risk more than 3 times (large opposite-sign neighbours, for example coupon-
 benchmarks around a zero). Close benchmarks are harmless: the nodes sit at their
 maturities, `J` is nearly triangular and its condition number stays near 3 even a day
 apart. A bond between two benchmarks maps to them; on 2025–2026 this beat hedging on the
-11 fixed-tenor buckets by 25–37 % of residual daily P&L on 2.5–7.5 years. Fixed-cashflow bonds on one `DiscountCurve` only.
+11 fixed-tenor buckets by 25–37 % of residual daily P&L on 2.5–7.5 years. Benchmarks are
+fixed-cashflow bonds on one `DiscountCurve`; positions (0.38.0) are fixed-cashflow bonds on
+it, floaters that project or discount on it and OFZ basket futures whose bond or funding
+curve it is:
+
+- a floater (for example a KBD `ZR_YLD_CRV` floater projected off the KBD and discounted on
+  RUONIA OIS) is repriced on the overlaid curve with its coupons re-projected, the node
+  risk the central difference over `FLOATER_NODE_BUMP_BP` = 0.1 bp (its O(h²) error is
+  below 1e-9 relative); at benchmarks on the 3Y–10Y pillars it equals the engine's own
+  central bucket DV01 to 1e-7;
+- an OFZ future takes the closed form through the cheapest-to-deliver bond, as the engine
+  prices it: the bond's forward price over its conversion factor, its spread and the basis
+  held. A switch of the cheapest bond is not first order and is not shown;
+- a curve that is not the benchmarks' (a floater's RUONIA discount curve, a future's
+  funding curve) is held and a warning names those positions; hedge that risk on its own
+  curve. A product on none of the benchmarks' curves is `InvalidTerms`.
+
+Curves compare by canonical value: equal curves built apart are the same curve.
 
 ## Risk definitions
 
@@ -148,6 +177,9 @@ For unit price `P`, signed quantity `q`, and a bump of `h` basis points:
 - `parallel_dv01_rub` is independently repriced with all pillars bumped together.
   Finite-bump curvature makes it differ slightly from the bucket sum. No
   rescaling conceals that difference.
+- `method="analytic"` (0.38.0, central only, fixed-cashflow bonds on a `DiscountCurve`)
+  replaces the differences by the exact derivatives; `parallel_dv01_rub` is then the
+  bucket sum.
 - `cs01_rub` bumps the base spread if `spread_kind="credit"`; `ofz_spr01_rub`
   does so if `spread_kind="ofz"`. The other field is zero, avoiding double count.
 
