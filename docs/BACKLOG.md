@@ -17,7 +17,7 @@ other repositories and must be changed there, not in this core.
    project (e.g. market-data-store) and record `version` + `calendar_fingerprint` in outputs.
    Do not hard-code holiday lists from memory.
 2. *(downstream)* **ofz-rates-app `ofz_analytics/fwd_fwd.py` `forward_swap_rate`** treats OIS
-   par rates as annual zero rates with linear interpolation — LIVE cron `237311c0a59a`;
+   par rates as annual zero rates with linear interpolation — runs in a live scheduled job;
    ~28–31 bp bias vs the core bootstrap in a probe. Migrate to `bootstrap_discount_curve` +
    DF-ratio forwards (ofz-swaps-v2 already did).
 3. *(downstream)* **Silent solver garbage in vendored `ofz_analytics`** (4 copies:
@@ -42,9 +42,9 @@ other repositories and must be changed there, not in this core.
 9. **Business-day-adjusted OIS fixed-leg schedule by default.** Today the default bootstrap
    keeps the legacy unadjusted forward schedule (with the 1-day stub for adjusted maturities)
    to preserve numbers; opt-in via `CurveConvention(fixed_leg_schedule=ScheduleConvention(...))`.
-   Decide desk default with a QR/Calypso golden comparison, then flip in a major version.
+   Decide desk default with a bank-system golden comparison, then flip in a major version.
 10. **External golden benchmark** of annual and monthly Z-spread, yield, and bootstrap against
-    VTB QR / Calypso on frozen inputs (`tools/qr_bond_reconciliation_probe.py` is the start).
+    a bank system on frozen inputs (the reconciliation probe in `tools/` is the start).
 11. **Decimal cash arithmetic** — cash amounts are floats; AI rounding uses `Decimal(str(x))`.
     Define a decimal contract for money if required by consumers.
 12. **Bootstrap is O(n²)** — each candidate rebuilds a `DiscountCurve` and re-walks nodes.
@@ -93,10 +93,10 @@ other repositories and must be changed there, not in this core.
     `solve_nominal_annual_yield`.
 22. Three copies of `implied_key_rates/moscow.py` home-grown holiday calendar (includes
     Radunitsa) → replace with the official calendar source (item 1).
-23. corporate-bond-trade-monitor PROD release `deploy/prod/releases/0.6.22-alert-readiness-otc-mds-0.7.3`
+23. corporate-bond-trade-monitor production release 0.6.22
     runs frozen core 0.2.0 + market_data_store 0.7.3 (source is 0.11.2) and is **not
-    scheduled** (job `3f0e998fbbf7` absent from jobs.json; DB last written 2026-09-09). Decide:
-    redeploy on current stack or retire. ~30 stale release venvs under `deploy/prod` to prune.
+    scheduled** (its job is absent from the scheduler; DB last written 2026-09-09). Decide:
+    redeploy on current stack or retire. ~30 stale production release venvs to prune.
 24. Consumers that catch `ValueError` from core solvers should log the new explicit messages;
     previously some invalid inputs returned silent garbage (e.g. 500 % spread).
 
@@ -143,7 +143,7 @@ other repositories and must be changed there, not in this core.
     cooperative cancellation/time budget and the versioned, hash-verified result
     contract. 0.6.0 supplies the pure portfolio worker and strict
     market-data-store schedule bridge (`docs/local-worker.md`). Remaining: wire
-    validated live public bundles and private local positions into the actual
+    validated live public bundles and locally supplied positions into the actual
     monitor, persist coverage/basis/content identity, validate Windows and measure
     the real supported universe. No source-authenticity or complete-history claim
     follows from snapshot labels or synthetic integration tests.
@@ -291,7 +291,7 @@ other repositories and must be changed there, not in this core.
 57. **Swap terms from confirmations.** Explicit period schedules, other front and back
     stubs, amortizing or accreting notionals, compounded spreads, caps and floors.
 58. **Seasoned-swap golden.** No public golden exists; reconcile against a bank system
-    (QR / Calypso) on frozen inputs when the desk can share one (with #10).
+    on frozen inputs when the desk can share one (with #10).
 
 ## MOEX RUONIA OIS spec — 0.22.0
 
@@ -495,9 +495,9 @@ other repositories and must be changed there, not in this core.
      costs, not portfolio overhead); see also #70, #86, #100.
 107. *(downstream)* **v3 consumer migration.** The backend stores v3 next to v2, supplies
      the new snapshot inputs (FX spots with value dates, bases, credit curves, futures
-     prices, RUONIA fixings with declared gaps) and maps desk products to the position
-     types; run imported and computed derivatives in parallel before switching them to
-     `computed`.
+     prices, RUONIA fixings with declared gaps) and maps positions to the v3 position
+     types (the product mapping lives in the private adapter); run imported and computed
+     derivatives in parallel before switching them to `computed`.
 
 ## Derivative carry and theta — 0.31.0
 
@@ -628,7 +628,7 @@ period margins and an optional convexity adjustment, goldens of ten KBD floaters
      yield at the reset date, its rate risk on the KBD as a projection curve. Until then
      `never_called` rejects a floating leg, and an unknown listed coupon is not
      continued. P1.
-128. *(downstream)* **TDM: no call by default.** In `backend/src/desk/valuation/bonds.py`:
+128. *(downstream)* **TDM: no call by default.** In the monitor backend's bond valuation:
      replace `perpetual_call` / `PERPETUAL_CALL_YEARS` (a call assumed in five years) by
      passing the perpetual to core as listed, with its calls, and
      `ValuationPolicy.exercise_assumptions=((id, ExerciseAssumption.never_called()), ...)`
@@ -684,11 +684,10 @@ per-currency foreign specs for every currency (`<ccy>_discount_factors_v1`,
 (`fx_crosses`, `FxCrossInstrument`), NDF fixings (#49, part), points-held RUB risk (#46),
 basis scenarios (#103), FX fallbacks to proxies (#131).
 
-134. *(owner, downstream)* **The desk's NDF terms.** Fixing source (CBR official rate,
-     MOEX fixing, other), fixing lag and the value date the fixing refers to, and the
-     settlement currency of the desk's NDF trades; the desk's own reports carry them per
-     trade (the private adapter maps them to `trade_terms`). Core takes them as
-     `NdfConvention` / leg terms; the backend maps the source to `FxFixing.source`.
+134. *(owner, downstream)* **The desk's NDF terms.** The desk's deal terms for NDFs are
+     tracked in the private repository; the private adapter maps them to `trade_terms`.
+     Core takes them as `NdfConvention` / leg terms (fixing source, fixing lag, fixing
+     value date, settlement currency); the backend maps the source to `FxFixing.source`.
 135. **NDFs settled in a foreign currency and cross NDFs.** An offshore-style USD/RUB NDF
      settles `N · (1 − K / fixing)` USD (a quanto-like ratio, not linear in the forward);
      a cross NDF needs both fixings. Both are rejected today. P2, when the book has them.
