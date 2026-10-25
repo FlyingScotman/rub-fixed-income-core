@@ -33,6 +33,7 @@ from typing import Literal
 
 from ._curve_views import FxHorizon
 from ._money import finite_money, positive_money
+from ._quote_curves import QuoteCurve, foreign_identity
 from ._risk_common import _ZERO_SHOCK, RISK_BUCKETS, ShockedCurveCache, _curve_identity, _shifts
 from .canonical import canonical_sha256
 from .conventions import DayCount
@@ -203,7 +204,7 @@ class FxCrossRiskRequest:
 
     Each currency has its own curve, spot (with its value date) and basis, as in an
     :class:`~rub_fixed_income.fx_forwards.FxForwardRiskRequest`; the three curves share
-    one valuation date.
+    one valuation date. A foreign curve may be XCCY par quotes, as for a forward.
     """
 
     instrument: FxCrossForward | FxCrossSwap
@@ -212,8 +213,8 @@ class FxCrossRiskRequest:
     quote_spot_rate: float
     quote_spot_value_date: date
     rub_curve: DiscountCurve | CurveBootstrapRequest
-    base_curve: DiscountCurve | CurveBootstrapRequest
-    quote_curve: DiscountCurve | CurveBootstrapRequest
+    base_curve: DiscountCurve | CurveBootstrapRequest | QuoteCurve
+    quote_curve: DiscountCurve | CurveBootstrapRequest | QuoteCurve
     base_basis_bp: float
     quote_basis_bp: float
     base_basis_day_count: DayCount = DayCount.ACT_365_FIXED
@@ -453,9 +454,9 @@ class FxCrossRiskEngine:
                     "rub_curve_basis": base.rub_curve_basis,
                     "rub_curve": _curve_identity(base.request.rub_curve),
                     "base_curve_basis": base.foreign_curve_basis,
-                    "base_curve": _curve_identity(base.request.foreign_curve),
+                    "base_curve": foreign_identity(base.request.foreign_curve),
                     "quote_curve_basis": quote.foreign_curve_basis,
-                    "quote_curve": _curve_identity(quote.request.foreign_curve),
+                    "quote_curve": foreign_identity(quote.request.foreign_curve),
                     "base_basis_bp": req.base_basis_bp,
                     "base_basis_day_count": req.base_basis_day_count.value,
                     "quote_basis_bp": req.quote_basis_bp,

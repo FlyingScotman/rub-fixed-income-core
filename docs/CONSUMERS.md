@@ -120,7 +120,11 @@ monitor opts in. To take the key-rate curve's risk in KRS quotes:
 - `ValuationPolicy(quote_curve_risk=True)`. `IR|<key-rate curve>|<bucket>` is then risk
   to the KRS mid quotes (rows flagged `quote_curve`); PV and carry are unchanged. Without
   the flag the same snapshot values exactly as the built curve. The job ID changes with
-  the flag: mark the change of factor unit in the run history.
+  the flag: mark the change of factor unit in the run history;
+- with the flag, FX forwards, FX swaps, crosses and FX futures may name the CNY XCCY
+  quotes (`XccyCurveBootstrapRequest` under `cny_ruonia_xccy_v1`, the entry XCCY swaps
+  already read) as their foreign curve instead of the built CNY curve: their CNY buckets
+  are then risk to the XCCY quotes, in the same unit as the XCCY swaps'.
 
 ## Deprecations in 0.12.0 and what consumers should move to
 

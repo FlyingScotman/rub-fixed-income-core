@@ -150,6 +150,9 @@ date. The quotes, the spot and the notional rate are held.
 
 - A quoted par swap therefore stays at par under RUB shocks: its RUB risk is zero.
 - Its CNY risk is that of its own quote.
+- FX forwards, FX swaps, crosses and FX futures take the same request as their foreign
+  curve (issue #77) and rebuild it the same way on their one RUB curve, so the
+  `IR|<cny curve>|<bucket>` factors of every product on the quotes share one unit.
 - `XccyCurveCache` shares the rebuilt curves across positions.
 - Under spot moves the curve is held (sticky curve), so the FX delta stays exact.
 

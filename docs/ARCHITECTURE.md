@@ -23,6 +23,7 @@ or floats.
 | `risk.py` | Bond DV01/KRD, spread risk, scenarios, Hessian, JTD; shared curve shocking (`ShockedCurveCache`). |
 | `fx_futures.py` | FX futures against RUB: covered-parity price, two-curve rate risk, basis, FX delta, scenarios, Hessian. |
 | `_risk_common.py` | Private internals shared by `risk` and `fx_futures`: bucket weights, curve snapshotting and shocking, `ShockedCurveCache`, central derivatives, curve identity (0.12.0). |
+| `_quote_curves.py` | Private: foreign curves FX engines rebuild from par quotes under every shock (`QuoteCurve`, base of `XccyCurveBootstrapRequest`), on the shocked RUB curve when the build reads it (issue #77). |
 | `floating.py` | Fixing-aware floating coupons: `FixingHistory`, `FloatingCouponRule`, `FloatingLeg` (0.8.0). |
 | `local_risk.py`, `local_worker.py` | Per-bond risk adapter and the v1 portfolio worker over `PublicBondSnapshot` (0.5.0–0.7.0). |
 | `public_schedule.py` | Deprecated bridge from the retired market-data-store schedule payload. |

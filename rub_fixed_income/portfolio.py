@@ -278,7 +278,10 @@ class ValuationPolicy:
     ``rub_key_rate_swap_v1``) is recalibrated to quotes shifted by each bucket's hat at their
     maturity, so ``IR|<curve>|<bucket>`` of key-rate swaps and KEYRATE futures is risk to the
     KRS quotes. Without it such quotes are built once and their mid curve takes
-    forward-rate bucket shifts, as a caller-built curve.
+    forward-rate bucket shifts, as a caller-built curve. With it FX forwards, FX swaps,
+    crosses and FX futures may also name XCCY par quotes (``XccyCurveBootstrapRequest``,
+    otherwise ``INVALID_TERMS``) as their foreign curve: rebuilt on their shocked RUB
+    curve under every shock, as cross-currency swaps rebuild it.
     """
 
     discount_curve_id: str
