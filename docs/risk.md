@@ -107,6 +107,17 @@ instrument and its miss. The solved overlay is cached per (curve, shift vector) 
 by every position on the curve: risk costs what `annual_zero` risk costs. Why and the
 evidence on 2024–2026 hub data: [proposals/ofz-curve-risk-factors.md](proposals/ofz-curve-risk-factors.md).
 
+**RUONIA + basis, computed (issue #83, unreleased).** `ofz_basis.OfzBasisRiskEngine` and
+`ValuationPolicy(ofz_basis=...)` report a bond on the v3 KBD as RUONIA OIS quote buckets
+plus basis buckets, both computed: the KBD annual zero under a joint move is
+`base + overlay_v3(basis) + [Z_OIS'(t) − Z_OIS(t)]`, the OIS curve rebootstrapped from its
+quotes moved by the RUONIA hats and extended beyond its last quote with synthetic quotes at
+the v3 tenors (KBD par minus the par spread at the last quote, held at the base). With OIS
+held this is exactly v3, so basis risk is today's v3 par risk; RUONIA risk differs from it
+by curve shape, bucket design and the long end. Shifts of the two families add in annual
+zero. `basis_view` (RUONIA ≡ basis bucket by bucket) is now the labelled approximation
+(variant P). Scheme, conventions and accuracy: [ofz-basis.md](ofz-basis.md).
+
 **Closed-form second order (0.37.0).** `engine.second_order(method="analytic")` gives the
 exact gradient and Hessian of a fixed-cashflow bond on a `DiscountCurve` (any zero basis;
 no floating leg or perpetual tail) from one pass over its flows: the same factors as the

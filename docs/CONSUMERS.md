@@ -148,6 +148,31 @@ FlyingScotman/trading-desk-monitor#171). Nothing changes until the monitor opts 
   the proxy (bonds, CDS, FX fallbacks) has `IR|<proxy>|<bucket>` in par yields
   (`curve_basis = "par_yield_quote"`).
 
+**Unreleased: RUONIA + basis computed** (FlyingScotman/rub-fixed-income-core#83, decision
+of 2026-10-25; the monitor side is FlyingScotman/trading-desk-monitor#213;
+[ofz-basis.md](ofz-basis.md)). Nothing changes until the monitor opts in. To show OFZ on
+the KBD as RUONIA + basis with both legs computed (instead of `basis_view`):
+
+- the snapshot as today for 0.38.0: the KBD under `rub_ofz_kbd_v3` (OFZ discounted on it
+  via `curve_overrides`) and RUONIA OIS as quotes (`CurveBootstrapRequest` under
+  `rub_ruonia_ois_moex_v2`). The OIS calendar must resolve the 15Y and 20Y tenors (the
+  synthetic tail quotes mature there): extend it by the fixed rules as for the 10Y quote;
+  a calendar bounded earlier is `CALENDAR_OUT_OF_RANGE` for those bonds;
+- `ValuationPolicy(ofz_basis=OfzBasisIds(kbd_curve_id, ois_curve_id, "RUB_OFZ_BASIS"))`
+  (the basis ID is the monitor's name; it is not a snapshot curve), with
+  `risk_method="analytic"` and `second_order_method="analytic"` (the bumped 23 × 23 Hessian
+  costs about 1 060 repricings per bond). The job ID changes with the field: mark the
+  change of factors in the run history;
+- each OFZ row then has `IR|<ois>|*` (adds to OIS swaps' RUONIA ladder), `IR|RUB_OFZ_BASIS|*`
+  (equal to today's `IR|<kbd>|*` of `rub_ofz_kbd_v3`, so the basis ladder is unchanged) and
+  `CS`; `curve_basis = "ruonia_ois_quote+kbd_par_basis"`. No `IR|<kbd>|*` factors remain for
+  those bonds; KBD floaters discounted on RUONIA keep their `IR|<kbd>|*` projection;
+- scenarios: a RUONIA move is a shift of the OIS curve ID (or an unnamed shock: every
+  curve moves, the basis held); a basis move a shift of `RUB_OFZ_BASIS`; shifts add in
+  annual zero. A scenario naming the KBD ID is `INVALID_TERMS` for these bonds: rename the
+  monitor's «RUB OFZ» scenarios to the basis ID (with RUONIA held it is the same KBD move);
+- `basis_view` remains for comparison (variant P: RUONIA ≡ basis bucket by bucket).
+
 ## Deprecations in 0.12.0 and what consumers should move to
 
 Nothing is removed before 1.0. Each call below now emits a `DeprecationWarning` (hidden by
