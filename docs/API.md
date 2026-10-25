@@ -529,7 +529,7 @@ their bytes.
 | `ParYieldCurveRequest` as a curve input; `.shocked(shifts)` | Par-yield proxy quotes (USD / EUR) as the risk source of bonds (`BondRiskRequest.curve`), CDS (`CdsRiskRequest.discount_curve`), FX forwards, swaps, crosses, FX futures and XCCY swaps (foreign curve): basis `par_yield_quote`, each par yield moved by the bucket hats at its maturity and the curve rebuilt (`bootstrap_par_yield_curve`). `CurveEntry` takes it under a `*_par_proxy_v1` spec. `local_risk.CurveRiskBasis` adds `par_yield_quote`. |
 | `ValuationPolicy(..., quote_curve_risk=False)` | `True`: a curve the snapshot holds as quotes is risked in them (model flag `quote_curve` on derivatives): KRS quotes of key-rate swaps and KEYRATE futures; XCCY quotes named by FX forwards, swaps, crosses and futures (otherwise `INVALID_TERMS`, as before); par-yield proxy quotes for every position on the proxy (bond and CDS rows' `curve_basis = "par_yield_quote"`, FX and XCCY rows flagged `quote_curve`). `False`: KRS and par-yield quotes are built once and the built curve takes zero-rate (KRS: forward-rate) bucket shifts, the same numbers as the built curve in the snapshot. |
 
-## OFZ risk as RUONIA plus a basis (unreleased, issue #83)
+## OFZ risk as RUONIA plus a basis (0.39.0, issue #83)
 
 The owner's decision of 2026-10-25: RUONIA and basis risk of an OFZ computed, not identical
 ([ofz-basis.md](ofz-basis.md)). Off by default: the new policy field is omitted at its

@@ -107,7 +107,7 @@ instrument and its miss. The solved overlay is cached per (curve, shift vector) 
 by every position on the curve: risk costs what `annual_zero` risk costs. Why and the
 evidence on 2024–2026 hub data: [proposals/ofz-curve-risk-factors.md](proposals/ofz-curve-risk-factors.md).
 
-**RUONIA + basis, computed (issue #83, unreleased).** `ofz_basis.OfzBasisRiskEngine` and
+**RUONIA + basis, computed (0.39.0, issue #83).** `ofz_basis.OfzBasisRiskEngine` and
 `ValuationPolicy(ofz_basis=...)` report a bond on the v3 KBD as RUONIA OIS quote buckets
 plus basis buckets, both computed: the KBD annual zero under a joint move is
 `base + overlay_v3(basis) + [Z_OIS'(t) − Z_OIS(t)]`, the OIS curve rebootstrapped from its
