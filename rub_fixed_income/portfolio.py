@@ -122,6 +122,7 @@ from .portfolio_products import (
 from .risk import (
     BondRiskEngine,
     BondRiskRequest,
+    BondRiskResult,
     BondScenario,
     BondSecondOrderRisk,
     ShockedCurveCache,
@@ -182,6 +183,15 @@ def _foreign_currency(value: object, label: str) -> str:
     if value == "RUB":
         raise InvalidTerms(f"{label} must be a currency other than RUB")
     return value
+
+
+def _bond_risk(engine: BondRiskEngine, policy: ValuationPolicy) -> BondRiskResult:
+    """The bond's central first-order risk under ``policy``: closed form where it has one and
+    the policy asks."""
+    analytic = policy.risk_method == "analytic" and supports_analytic(engine) is None
+    return engine.risk(
+        bump_bp=policy.bump_bp, difference="central", method="analytic" if analytic else "bump"
+    )
 
 
 def _bond_second_order(
@@ -271,6 +281,13 @@ class ValuationPolicy:
     (:meth:`BondRiskEngine.second_order`): the same factors, equal to the bumped Hessian up
     to its O(bump^2) error, the Hessian part about six times faster. Floaters, perpetual
     tails, bonds on OIS quotes and every other product are still bumped.
+
+    ``risk_method="analytic"`` (0.38.0, omitted at its default ``"bump"``) takes the
+    first-order risk of the same bonds in closed form (:meth:`BondRiskEngine.risk`): the
+    limit of the central difference, equal to it up to its O(bump^2) error. It feeds the
+    factor first order when there is no Hessian, ``pv_rub`` and ``spread_buckets_rub``; with
+    a Hessian the factor first order is still that Hessian's gradient. A separate field
+    from ``second_order_method`` so that policies of 0.37.0 keep their results.
     """
 
     discount_curve_id: str
@@ -300,6 +317,7 @@ class ValuationPolicy:
     second_order_method: Literal["bump", "analytic"] = field(
         default="bump", metadata=OMIT_IF_DEFAULT
     )
+    risk_method: Literal["bump", "analytic"] = field(default="bump", metadata=OMIT_IF_DEFAULT)
 
     def __post_init__(self) -> None:
         pairs = tuple(sorted(self.exercise_assumptions, key=lambda p: p[0]))
@@ -390,6 +408,8 @@ class ValuationPolicy:
             raise TypeError("include_second_order must be boolean")
         if self.second_order_method not in ("bump", "analytic"):
             raise InvalidTerms("second_order_method must be bump or analytic")
+        if self.risk_method not in ("bump", "analytic"):
+            raise InvalidTerms("risk_method must be bump or analytic")
         positive_money(self.bump_bp, "bump_bp")
 
     def curve_for(self, instrument_id: str) -> str:
@@ -1543,7 +1563,7 @@ def _value_position(
             curve_cache=cache,
         )
         engine, adapter_id = prepared.engine, prepared.calculation_id
-    risk = engine.risk(bump_bp=policy.bump_bp, difference="central")
+    risk = _bond_risk(engine, policy)
     second = _bond_second_order(engine, policy)
     factor_risk = bond_factor_risk(risk, curve_id, second, projection_curve_id=projection_id)
     dirty = cast(float, engine.request.dirty_price_rub)
@@ -1874,7 +1894,7 @@ def _value_linker_position(
         curve_cache=cache,
     )
     engine = prepared.engine
-    risk = engine.risk(bump_bp=policy.bump_bp, difference="central")
+    risk = _bond_risk(engine, policy)
     second = _bond_second_order(engine, policy)
     dirty = cast(float, engine.request.dirty_price_rub)
     real_yield, duration = _yield_and_duration(settlement, dirty, flows, convention)

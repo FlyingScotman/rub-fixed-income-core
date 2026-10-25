@@ -1,4 +1,5 @@
-"""Closed-form second order of fixed-cashflow bonds (0.37.0, ``second_order(method="analytic")``)."""
+"""Closed-form risk of fixed-cashflow bonds: second order (0.37.0, ``second_order(method="analytic")``)
+and first order (0.38.0, ``risk(method="analytic")``)."""
 
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ from rub_fixed_income import (
     BondCashflow,
     BondRiskEngine,
     BondRiskRequest,
+    BondRiskResult,
     BondScenario,
     Compounding,
     InvalidTerms,
@@ -24,7 +26,11 @@ from rub_fixed_income import (
 from rub_fixed_income._analytic_risk import _par_map
 from rub_fixed_income._par_overlay import par_jacobians
 from rub_fixed_income.dates import add_months
-from rub_fixed_income.risk import ANALYTIC_SECOND_ORDER_MODEL_VERSION
+from rub_fixed_income.risk import (
+    ANALYTIC_RISK_MODEL_VERSION,
+    ANALYTIC_SECOND_ORDER_MODEL_VERSION,
+    RISK_MODEL_VERSION,
+)
 from rub_fixed_income.serialization import to_dict
 
 PARAMS, _ = load("zcyc_2026-10-15.json")
@@ -145,3 +151,82 @@ def test_portfolio_policy_takes_the_closed_form_where_it_exists() -> None:
             assert abs(ha.get(ij, 0.0) - hb.get(ij, 0.0)) <= 2e-6 * scale
     with pytest.raises(InvalidTerms, match="second_order_method"):
         replace(POLICY, second_order_method="exact")  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("shock", sorted(CURVES))
+@pytest.mark.parametrize("convention", CONVENTIONS, ids=lambda c: c.identifier)
+@pytest.mark.parametrize("settle_days", [0, 3])
+def test_closed_form_risk_equals_the_central_bumps(
+    shock: str, convention: ZSpreadConvention, settle_days: int
+) -> None:
+    engine = bond(shock, settle_days=settle_days, convention=convention)
+    exact = engine.risk(difference="central", method="analytic")
+    bumped = engine.risk(difference="central")
+    assert exact.model_version == ANALYTIC_RISK_MODEL_VERSION
+    assert bumped.model_version == RISK_MODEL_VERSION
+    assert (exact.base_id, exact.difference, exact.bump_bp, exact.pv_rub, exact.spread_bp) == (
+        bumped.base_id,
+        bumped.difference,
+        bumped.bump_bp,
+        bumped.pv_rub,
+        bumped.spread_bp,
+    )
+    assert [b.bucket for b in exact.buckets] == [b.bucket for b in bumped.buckets]
+
+    def first(r: BondRiskResult) -> np.ndarray:
+        return np.array(
+            [*(b.dv01_rub for b in r.buckets), r.dv01_rub, r.parallel_dv01_rub, r.ofz_spr01_rub]
+        )
+
+    a, b = first(exact), first(bumped)
+    # The limit of the central difference: its O(bump^2) error is 1e-7 relative here.
+    assert np.max(np.abs(a - b)) < 1e-6 * np.max(np.abs(b))
+    krd_a = np.array([r.krd_years for r in exact.buckets])
+    krd_b = np.array([r.krd_years for r in bumped.buckets])
+    assert np.max(np.abs(krd_a - krd_b)) < 1e-6 * np.max(np.abs(krd_b))
+    assert exact.cs01_rub == bumped.cs01_rub == 0.0
+    assert exact.dv01_rub == pytest.approx(exact.parallel_dv01_rub, rel=1e-14)
+    # The same numbers as the closed-form second order's gradient, to the bit.
+    gradient = engine.second_order(method="analytic").gradient_rub_per_bp
+    assert (*(r.dv01_rub for r in exact.buckets), exact.ofz_spr01_rub) == gradient
+    if shock == "annual_par":
+        assert [r.dv01_rub for r in exact.buckets[:3]] == [0.0, 0.0, 0.0]
+
+
+def test_closed_form_risk_needs_central_and_a_closed_form() -> None:
+    engine = bond("annual_par")
+    with pytest.raises(ValueError, match="difference='central'"):
+        engine.risk(method="analytic")
+    with pytest.raises(ValueError, match="bump or analytic"):
+        engine.risk(difference="central", method="taylor")  # type: ignore[arg-type]
+    with pytest.raises(InvalidTerms, match="floating coupons"):
+        BondRiskEngine(kbd_floater_request()).risk(difference="central", method="analytic")
+    credit = BondRiskEngine(replace(engine.request, spread_kind="credit"))
+    result = credit.risk(difference="central", method="analytic")
+    assert result.ofz_spr01_rub == 0.0
+    assert result.cs01_rub == pytest.approx(credit.risk(difference="central").cs01_rub, rel=1e-6)
+
+
+@pytest.mark.parametrize("second", [False, True])
+def test_portfolio_policy_takes_the_closed_form_risk(second: bool) -> None:
+    bumped = replace(POLICY, include_second_order=second, spread_buckets=True)
+    analytic = replace(bumped, risk_method="analytic")
+    assert "risk_method" not in to_dict(bumped)
+    assert to_dict(analytic)["risk_method"] == "analytic"
+    left = {p.position_id: p for p in run(policy=bumped).positions}
+    right = {p.position_id: p for p in run(policy=analytic).positions}
+    assert left.keys() == right.keys()
+    for key, a in left.items():
+        b = right[key]
+        assert a.pv_rub == b.pv_rub
+        fa, fb = np.array(a.factor_risk.first_order), np.array(b.factor_risk.first_order)
+        if second:
+            # With a Hessian the first order is its gradient: the risk method does not touch it.
+            assert np.array_equal(fa, fb)
+        else:
+            assert np.max(np.abs(fa - fb)) <= 1e-6 * max(1.0, np.max(np.abs(fa)))
+        sa, sb = np.array(a.spread_buckets_rub), np.array(b.spread_buckets_rub)
+        assert sa.shape == sb.shape
+        assert np.max(np.abs(sa - sb), initial=0.0) <= 1e-6 * max(1.0, np.max(np.abs(sa)))
+    with pytest.raises(InvalidTerms, match="risk_method"):
+        replace(POLICY, risk_method="exact")  # type: ignore[arg-type]

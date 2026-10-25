@@ -17,11 +17,14 @@ The second term is the curvature of the instruments themselves (implicit-functio
 without it the bucket gamma is wrong, even that of a par instrument, whose own gamma is its
 annuity's, ``d2V/dq_l dq_k = -(1 + [k = l]) dA/dq_k`` (not zero: the coupon is fixed); the
 naive ``J^-T H J^-1`` overstates it 1.6-7.6 times on the 2Y-15Y instruments.
+
+``BondRiskEngine.risk(method="analytic")`` (``analytic_risk``) takes the gradient alone: the
+same pass without the Hessian terms, ``J^-T`` on the par basis.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 
@@ -50,6 +53,28 @@ def _log_df_derivatives(curve: DiscountCurve, target: object) -> tuple[np.ndarra
         return -time * w * _BP, np.zeros((_N, _N))
     growth = base_df ** (-1.0 / time)
     return -time * w * _BP / growth, time * np.outer(w, w) * (_BP / growth) ** 2
+
+
+def _log_df_gradient(curve: DiscountCurve, target: object) -> np.ndarray:
+    """The gradient of :func:`_log_df_derivatives` alone (the same numbers)."""
+    time, weights, base_df = _zero_shock_terms(curve, target)  # type: ignore[arg-type]
+    w = np.zeros(_N)
+    for i, value in weights:
+        w[i] = value
+    if time <= 0.0:
+        return np.zeros(_N)
+    if curve.convention.zero_shock == "continuous":
+        return -time * w * _BP
+    return np.asarray(-time * w * _BP / base_df ** (-1.0 / time))
+
+
+def _par_inverse(curve: DiscountCurve) -> np.ndarray:
+    """``J^-1`` of the curve's par instruments, cached on the curve like ``J`` itself."""
+    cached = curve.__dict__.get("_par_jacobian_inverse")
+    if cached is None:
+        cached = np.linalg.inv(par_jacobians(curve)[0])
+        object.__setattr__(curve, "_par_jacobian_inverse", cached)
+    return cast(np.ndarray, cached)
 
 
 def _par_map() -> np.ndarray:
@@ -131,8 +156,8 @@ def analytic_second_order(
     if not np.isclose(price, engine.base_price_rub, rtol=1e-9, atol=1e-9):
         raise ValueError("closed-form price does not reproduce the engine's base price")
     if curve.convention.zero_shock == "annual_par":
-        jacobian, hessians = par_jacobians(curve)
-        inverse = np.linalg.inv(jacobian)
+        hessians = par_jacobians(curve)[1]
+        inverse = _par_inverse(curve)
         e_map = _par_map()
         g_q = inverse.T @ (e_map.T @ g_x)
         curvature = sum(g * h for g, h in zip(g_q, hessians, strict=True))
@@ -150,3 +175,35 @@ def analytic_second_order(
     full[_N, _N] = h_zz
     full *= q
     return gradient, tuple(tuple(float(v) for v in row) for row in full)
+
+
+def analytic_risk(engine: BondRiskEngine) -> tuple[tuple[float, ...], float]:
+    """Per-bond gradient (RUB/bp, not signed by quantity) over the 11 buckets in the engine
+    curve's basis, and over the spread: the first order of :func:`analytic_second_order`."""
+    reason = supports_analytic(engine)
+    if reason is not None:
+        raise InvalidTerms(reason)
+    req = engine.request
+    curve = engine._curve
+    settlement = req.settlement_date
+    convention = req.spread_convention
+    a_s = _log_df_gradient(curve, settlement)
+    df_s = curve.discount_factor(settlement)
+    spread = engine.spread_bp * _BP
+    g_x = np.zeros(_N)
+    g_z = price = 0.0
+    for payment, amount in engine._fixed_flows():
+        if payment <= settlement or amount == 0.0:
+            continue
+        forward = curve.discount_factor(payment) / df_s
+        tau = convention.day_count.year_fraction(settlement, payment)
+        value, p_l, _, p_z, _, _ = flow_partials(amount, forward, tau, spread, convention)
+        price += value
+        g_x += p_l * (_log_df_gradient(curve, payment) - a_s)
+        g_z += p_z * _BP
+    if not np.isclose(price, engine.base_price_rub, rtol=1e-9, atol=1e-9):
+        raise ValueError("closed-form price does not reproduce the engine's base price")
+    if curve.convention.zero_shock == "annual_par":
+        g_q = _par_inverse(curve).T @ (_par_map().T @ g_x)
+        g_x = np.concatenate((np.zeros(PAR_FIRST_BUCKET), g_q))
+    return tuple(float(v) for v in g_x), float(g_z)

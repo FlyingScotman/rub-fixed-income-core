@@ -546,6 +546,7 @@ from .repo import (
     repo_start_amount,
 )
 from .risk import (
+    ANALYTIC_RISK_MODEL_VERSION,
     ANALYTIC_SECOND_ORDER_MODEL_VERSION,
     FLOATING_RISK_MODEL_VERSION,
     FLOATING_TWO_CURVE_RISK_MODEL_VERSION,
@@ -1259,6 +1260,7 @@ __all__ += [
 
 # 0.37.0: OFZ curve risk in par quotes (docs/proposals/ofz-curve-risk-factors.md).
 __all__ += [
+    "ANALYTIC_RISK_MODEL_VERSION",  # 0.38.0: analytic first-order risk
     "ANALYTIC_SECOND_ORDER_MODEL_VERSION",
     "BENCHMARK_EQUIVALENTS_MODEL_VERSION",
     "BenchmarkEquivalent",

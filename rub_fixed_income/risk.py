@@ -51,6 +51,7 @@ from .perpetual import PerpetualTail
 # Bucket weights, the shocked-curve cache and curve helpers live in ._risk_common since
 # 0.12.0 (shared with fx_futures); the public names stay importable from here.
 __all__ = [
+    "ANALYTIC_RISK_MODEL_VERSION",
     "ANALYTIC_SECOND_ORDER_MODEL_VERSION",
     "FLOATING_RISK_MODEL_VERSION",
     "FLOATING_TWO_CURVE_RISK_MODEL_VERSION",
@@ -83,6 +84,7 @@ _SECOND_ORDER_MODELS = {
     FLOATING_TWO_CURVE_RISK_MODEL_VERSION: "rub-floating-two-curve-second-order-v1",
 }
 ANALYTIC_SECOND_ORDER_MODEL_VERSION = "rub-fixed-cashflow-second-order-analytic-v1"
+ANALYTIC_RISK_MODEL_VERSION = "rub-fixed-cashflow-risk-analytic-v1"
 # Bounds on the per-engine memo of re-projected coupons (memory only, never numbers).
 _COUPON_MEMO_SIZE = 65_536
 _CURVE_MEMO_SIZE = 1024
@@ -605,7 +607,11 @@ class BondRiskEngine:
             raise ValueError("shock is outside the supported numerical domain") from exc
 
     def risk(
-        self, *, bump_bp: float = 1.0, difference: Literal["forward", "central"] = "forward"
+        self,
+        *,
+        bump_bp: float = 1.0,
+        difference: Literal["forward", "central"] = "forward",
+        method: Literal["bump", "analytic"] = "bump",
     ) -> BondRiskResult:
         """Signed RUB/bp. Default is exact +1bp P&L; central is a derivative estimate.
 
@@ -614,10 +620,26 @@ class BondRiskEngine:
         With a separate projection curve, ``buckets`` are the discount curve's and
         ``projection_buckets`` the projection curve's; dv01 sums both and
         parallel_dv01 moves both curves together.
+
+        ``method="analytic"`` (0.38.0) gives the exact first derivatives in closed form for
+        a fixed-cashflow bond on a ``DiscountCurve`` (as ``second_order(method="analytic")``,
+        without the Hessian; otherwise :class:`InvalidTerms`): the limit of the central
+        difference, so it needs ``difference="central"`` and equals it up to its O(bump^2)
+        error. ``parallel_dv01`` is then the bucket sum (the bucket weights sum to one) and
+        ``bump_bp`` is only recorded. Model ``ANALYTIC_RISK_MODEL_VERSION``.
         """
         bump = positive_money(bump_bp, "risk bump bp")
         if difference not in ("forward", "central"):
             raise ValueError("difference must be forward or central")
+        if method not in ("bump", "analytic"):
+            raise ValueError("method must be bump or analytic")
+        if method == "analytic":
+            if difference != "central":
+                raise ValueError(
+                    "analytic risk is a derivative, the limit of the central difference: "
+                    "pass difference='central'"
+                )
+            return self._analytic_risk(bump)
 
         def sensitivity(
             shifts: tuple[float, ...], spread: float, projection: tuple[float, ...] = _ZERO_SHOCK
@@ -690,6 +712,36 @@ class BondRiskEngine:
             model_version=result.model_version,
             projection_curve_basis=cast(str, self.projection_curve_basis),
             projection_buckets=tuple(projection_buckets),
+        )
+
+    def _analytic_risk(self, bump: float) -> BondRiskResult:
+        from ._analytic_risk import analytic_risk
+
+        units, spread_unit = analytic_risk(self)
+        quantity = self.request.quantity
+        buckets = tuple(
+            BucketRisk(
+                bucket,
+                finite_money(unit * quantity, "bucket DV01"),
+                finite_money(-unit / self.base_price_rub * 10_000.0, "key rate duration"),
+            )
+            for bucket, unit in zip(RISK_BUCKETS, units, strict=True)
+        )
+        spread = finite_money(spread_unit * quantity, "spread sensitivity")
+        return BondRiskResult(
+            base_id=self.base_id,
+            curve_basis=self.curve_basis,
+            spread_convention=self.request.spread_convention.identifier,
+            difference="central",
+            bump_bp=bump,
+            pv_rub=finite_money(self.base_price_rub * quantity, "position PV"),
+            spread_bp=self.spread_bp,
+            buckets=buckets,
+            dv01_rub=finite_money(math.fsum(b.dv01_rub for b in buckets), "bucket sum DV01"),
+            parallel_dv01_rub=finite_money(math.fsum(units) * quantity, "DV01"),
+            cs01_rub=spread if self.request.spread_kind == "credit" else 0.0,
+            ofz_spr01_rub=spread if self.request.spread_kind == "ofz" else 0.0,
+            model_version=ANALYTIC_RISK_MODEL_VERSION,
         )
 
     def reprice(
