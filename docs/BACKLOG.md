@@ -496,8 +496,8 @@ other repositories and must be changed there, not in this core.
 107. *(downstream)* **v3 consumer migration.** The backend stores v3 next to v2, supplies
      the new snapshot inputs (FX spots with value dates, bases, credit curves, futures
      prices, RUONIA fixings with declared gaps) and maps positions to the v3 position
-     types (the product mapping lives in the private adapter); run imported and computed derivatives in parallel before switching them to
-     `computed`.
+     types (the product mapping lives in the private adapter); run imported and computed
+     derivatives in parallel before switching them to `computed`.
 
 ## Derivative carry and theta — 0.31.0
 
