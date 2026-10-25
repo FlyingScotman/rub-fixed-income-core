@@ -1,25 +1,33 @@
-"""Benchmark-bond equivalents of curve risk (0.37.0, the hedge view)."""
+"""Benchmark-bond equivalents of curve risk (0.37.0, the hedge view; floaters and OFZ futures 0.38.0)."""
 
 from __future__ import annotations
 
 from dataclasses import replace
 from datetime import timedelta
 
+import numpy as np
 import pytest
+import test_ofz_futures as ofz
 from test_floating_kbd import _request as kbd_floater_request
 from test_kbd import load
 
 from rub_fixed_income import (
+    RISK_BUCKETS,
     BondCashflow,
     BondRiskEngine,
     BondRiskRequest,
     BondScenario,
+    DeliverableBond,
     DiscountCurve,
     InvalidTerms,
+    OfzFuturesRiskEngine,
+    OfzFuturesRiskRequest,
+    TwoCurveBondRiskResult,
     ZSpreadConvention,
     benchmark_equivalents,
     kbd_discount_curve,
 )
+from rub_fixed_income import hedge_equivalents as hedge
 from rub_fixed_income.dates import add_months
 
 PARAMS, _ = load("zcyc_2026-10-15.json")
@@ -122,7 +130,8 @@ def test_close_benchmarks_stay_well_conditioned_and_bad_inputs_are_refused() -> 
     with pytest.raises(InvalidTerms, match="same curve"):
         other = kbd_discount_curve(PARAMS, zero_shock="annual")
         benchmark_equivalents(BENCHMARKS, [bond(6, 0.1, 860.0, curve=other)])
-    with pytest.raises(InvalidTerms, match="floating coupons"):
+    # A floater neither discounted nor projected on the benchmarks' curve (0.38.0).
+    with pytest.raises(InvalidTerms, match="same curve"):
         benchmark_equivalents(BENCHMARKS, [BondRiskEngine(kbd_floater_request())])
     with pytest.raises(InvalidTerms, match="at least one"):
         benchmark_equivalents((), [])
@@ -186,3 +195,135 @@ def test_hedges_that_amplify_the_risk_are_flagged() -> None:
     )
     # The condition number stays small: it does not see this.
     assert result.condition_number < 10
+
+
+# -- floaters and OFZ futures (0.38.0)
+
+ANNUAL_KBD = kbd_discount_curve(PARAMS, zero_shock="annual")
+PILLAR_YEARS = (2, 3, 5, 7, 10, 15)
+INTERIOR = ("3Y", "5Y", "7Y", "10Y")
+
+
+def pillar_bond(years: int, coupon: float = 0.12) -> BondRiskEngine:
+    """An annual-coupon bond maturing exactly at the ``years`` risk pillar (ACT/365F)."""
+    flows = [
+        BondCashflow(DATE + timedelta(days=365 * k), 1000.0 * coupon) for k in range(1, 1 + years)
+    ]
+    flows[-1] = BondCashflow(flows[-1].payment_date, 1000.0 * (1.0 + coupon))
+    return BondRiskEngine(
+        BondRiskRequest(tuple(flows), DATE, ANNUAL_KBD, ZSpreadConvention(), "ofz", spread_bp=20.0)
+    )
+
+
+PILLAR_BENCHMARKS = tuple((f"P{y}", pillar_bond(y)) for y in PILLAR_YEARS)
+"""Benchmarks at the 2Y-15Y pillars: between them the overlay's hats are the buckets' own."""
+
+
+def floater(
+    two_curve: bool, curve: DiscountCurve = KBD, quantity: float = 1000.0
+) -> BondRiskEngine:
+    """The KBD floater of ``test_floating_kbd``: single-curve on ``curve``, or projected off it
+    and discounted on RUONIA."""
+    request = kbd_floater_request(curve)
+    if not two_curve:
+        request = replace(request, curve=curve, projection_curve=None)
+    return BondRiskEngine(replace(request, quantity=quantity))
+
+
+def futures(
+    funding_on_curve: bool, curve: DiscountCurve, quantity: float = -7.0
+) -> OfzFuturesRiskEngine:
+    basket = ((ofz.SHORT, 1.0, 98.0), (ofz.LONG, 1.1, 104.0))
+    return OfzFuturesRiskEngine(
+        OfzFuturesRiskRequest(
+            ofz.CONTRACT,
+            tuple(DeliverableBond(i, cf, px) for i, cf, px in basket),
+            ofz.SPOT,
+            curve,
+            curve if funding_on_curve else DiscountCurve.flat(DATE, 0.15),
+            basis_bp=0.0,
+            quantity=quantity,
+        )
+    )
+
+
+def interior_gap(engine: BondRiskEngine | OfzFuturesRiskEngine, buckets: list[float]) -> float:
+    """Relative gap of the node risk at the interior pillars to the engine's bumped buckets."""
+    nodes = np.array([float(y) for y in PILLAR_YEARS])
+    exposure = hedge._exposure(engine, ANNUAL_KBD, hedge._identity(ANNUAL_KBD), nodes)
+    node = exposure.gradient[1:5]
+    bumped = np.array([buckets[RISK_BUCKETS.index(b)] for b in INTERIOR])
+    return float(np.max(np.abs(node - bumped)) / np.max(np.abs(bumped)))
+
+
+def test_floater_and_futures_node_risk_is_the_bumped_bucket_risk() -> None:
+    """At an interior benchmark the overlay's hat is the bucket's: the node risk must be the
+    engine's own central bucket DV01, coupons re-projected and the CTD repriced."""
+    single = floater(False, ANNUAL_KBD)
+    risk = single.risk(difference="central")
+    assert interior_gap(single, [b.dv01_rub for b in risk.buckets]) < 1e-6
+    two = floater(True, ANNUAL_KBD)
+    risk = two.risk(difference="central")
+    assert isinstance(risk, TwoCurveBondRiskResult)
+    assert interior_gap(two, [b.dv01_rub for b in risk.projection_buckets]) < 1e-6
+    for funding in (False, True):
+        future = futures(funding, ANNUAL_KBD)
+        bumped = future.risk(difference="central")
+        buckets = [
+            b.dv01_rub + (f.dv01_rub if funding else 0.0)
+            for b, f in zip(bumped.bond_buckets, bumped.funding_buckets, strict=True)
+        ]
+        assert interior_gap(future, buckets) < 1e-6
+        result = benchmark_equivalents(PILLAR_BENCHMARKS, [future])
+        parallel = bumped.bond_parallel_dv01_rub + (
+            bumped.funding_parallel_dv01_rub if funding else 0.0
+        )
+        assert result.total_risk_rub_per_bp == pytest.approx(parallel, rel=0.02)
+        held = [w for w in result.warnings if "other than the benchmarks'" in w]
+        assert len(held) == (0 if funding else 1)
+
+
+def test_a_kbd_floater_is_hedged_in_benchmarks() -> None:
+    for two_curve in (False, True):
+        position = floater(two_curve)
+        result = benchmark_equivalents(BENCHMARKS, [position])
+        risk = position.risk(difference="central")
+        kbd = (
+            sum(b.dv01_rub for b in risk.projection_buckets)
+            if isinstance(risk, TwoCurveBondRiskResult)
+            else risk.parallel_dv01_rub
+        )
+        # The coupon rises with the long end, falls with the short end: a steepener.
+        by_id = {e.instrument_id: e.risk_rub_per_bp for e in result.equivalents}
+        assert by_id["B2"] < 0 < by_id["B10"]
+        assert result.total_risk_rub_per_bp == pytest.approx(kbd, rel=0.05)
+        expected = (
+            (
+                "positions 0 also depend on a curve other than the benchmarks': it is held, its risk is not in this view",
+            )
+            if two_curve
+            else ()
+        )
+        assert result.warnings == expected
+        hedges = [
+            bond(*TERMS[e.instrument_id], quantity=e.hedge_quantity) for e in result.equivalents
+        ]
+        hedged = benchmark_equivalents(BENCHMARKS, [position, *hedges])
+        gross = sum(abs(e.risk_rub_per_bp) for e in result.equivalents)
+        assert all(abs(e.risk_rub_per_bp) < 1e-9 * gross for e in hedged.equivalents)
+
+
+def test_products_off_the_benchmarks_curve_are_refused() -> None:
+    other = kbd_discount_curve(PARAMS, zero_shock="annual")
+    with pytest.raises(InvalidTerms, match="same curve"):
+        benchmark_equivalents(BENCHMARKS, [floater(False, other)])
+    with pytest.raises(InvalidTerms, match="same curve"):
+        benchmark_equivalents(BENCHMARKS, [futures(False, other)])
+    with pytest.raises(TypeError, match="OfzFuturesRiskEngine"):
+        benchmark_equivalents(BENCHMARKS, ["SU26238"])  # type: ignore[list-item]
+    # An equal curve built apart is the same curve.
+    twin = kbd_discount_curve(PARAMS, zero_shock="annual_par")
+    assert twin is not KBD
+    result = benchmark_equivalents(BENCHMARKS, [bond(6, 0.10, 860.0, curve=twin)])
+    reference = benchmark_equivalents(BENCHMARKS, [bond(6, 0.10, 860.0)])
+    assert result == reference
