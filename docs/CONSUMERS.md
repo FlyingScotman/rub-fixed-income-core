@@ -13,7 +13,7 @@ them (cron jobs and two long-running MCP servers pick it up on next import/resta
 | ofz-market-figures-reporter | – | transitive editable | crons | none directly (via market-data-store) |
 | market-snapshot-reporter | – | transitive editable | crons | none directly |
 | corporate-bond-trade-monitor (dev env) | – | transitive editable via market-data-store | dev only | none directly |
-| corporate-bond-trade-monitor PROD release `deploy/prod/releases/0.6.22-alert-readiness-otc-mds-0.7.3` | frozen core 0.2.0 + market_data_store 0.7.3 | frozen release venv | **not scheduled** (wrapper job `3f0e998fbbf7` absent from jobs.json; DB last written 2026-09-09) | – |
+| corporate-bond-trade-monitor production release 0.6.22 | frozen core 0.2.0 + market_data_store 0.7.3 | frozen release venv | **not scheduled** (its job is absent from the scheduler; DB last written 2026-09-09) | – |
 | ofz-swaps-v2 | `==0.2.0` (lock says 0.2.0) | editable path; runs 0.2.1 | app | bootstrap, KRS, financed-bond, `YieldRequest`, `annual_schedule`, `year_fraction`, `add_months` |
 | corporate-bond-monitor | `==0.1.0` | **non-editable** path; stale `.venv` with 0.1.0 | Windows desk app | `analyze_bond` (continuous Z), `BondTermsV1`…, `verify_result_sha256`, trade grids, `canonical_*` |
 | rgbi-futures-arbitrage-monitor | `==0.1.0` | vendored 0.1.0 wheel (not affected by main) | crons | financed-bond projection, accumulation, clean/dirty conversion (scipy brentq locally; no compatibility/analytics) |
