@@ -218,4 +218,4 @@ gamma = engine.second_order()
 - identity and input checks.
 
 These are synthetic mathematical references. They are not a reconciliation with
-QR/Calypso or MOEX settlement prices.
+a bank system or MOEX settlement prices.
