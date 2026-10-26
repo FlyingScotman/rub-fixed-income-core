@@ -314,9 +314,13 @@ class ValuationPolicy:
     ``docs/ofz-basis.md``); the row's ``curve_basis`` reads ``OFZ_BASIS_CURVE_BASIS``. Fixed
     cash flows take the closed form where ``risk_method`` / ``second_order_method`` ask for it;
     perpetual tails and floaters on the KBD (or projected off the same RUONIA quotes) are
-    bumped. A KBD that is not on par factors, an OIS curve given as built discount factors and a
-    floater projected off any other curve are ``INVALID_TERMS`` for those bonds. Scenarios move
-    RUONIA by the OIS curve's shift (named, else the shock's) and the basis by
+    bumped. A KBD floater discounted on the OIS curve and projected off the KBD (issue #90) is
+    reported the same way, bumped: RUONIA moves its discount curve (the OIS quotes rebootstrapped,
+    as for any bond on them) and its projection (the composed KBD), the basis its projection
+    only (= its ``IR|<kbd>|*`` projection risk without the opt-in). A KBD that is not on par
+    factors, an OIS curve given as built discount factors and a floater projected off any other
+    curve are ``INVALID_TERMS`` for those bonds. Scenarios move RUONIA by the OIS curve's shift
+    (named, else the shock's; a floater's projection by its projection shift) and the basis by
     ``curve_shifts_bp`` of the basis ID (held when not named); naming the KBD itself is
     refused for these bonds. Every other position is valued as without it.
     """
@@ -1529,8 +1533,9 @@ def _value_position(
     A never-called perpetual (``perpetual_tail``) is valued to the put the policy's
     horizon picks, if any, and otherwise as its listed coupons plus the tail.
 
-    A bond discounted on the KBD of ``ofz_job`` (``ValuationPolicy.ofz_basis``) reports its
-    rate risk as RUONIA + basis; its engine is recorded in ``ofz_job.engines``.
+    A bond discounted on the KBD of ``ofz_job`` (``ValuationPolicy.ofz_basis``), or a floater
+    discounted on its RUONIA OIS curve and projected off that KBD, reports its rate risk as
+    RUONIA + basis; its engine is recorded in ``ofz_job.engines``.
     """
     linker = instruments.get(position.instrument_id)
     if linker is not None and linker.product is ProductType.INFLATION_LINKED_BOND:
@@ -1658,7 +1663,7 @@ def _value_position(
         )
         engine, adapter_id = prepared.engine, prepared.calculation_id
     risk = _bond_risk(engine, policy)
-    if ofz_job is not None and curve_id == ofz_job.ids.kbd_curve_id:
+    if ofz_job is not None and _in_ofz_basis(ofz_job.ids, curve_id, projection_id):
         ofz = OfzBasisRiskEngine(engine, ofz_job.resolve())
         factor_risk = _ofz_basis_factor_risk(ofz, risk, policy, ofz_job.ids)
         ofz_job.engines[position.position_id] = ofz
@@ -1745,6 +1750,14 @@ def _value_position(
         curve_fallback_from=fallback_from,
     )
     return valuation, engine
+
+
+def _in_ofz_basis(ids: OfzBasisIds, curve_id: str, projection_id: str | None) -> bool:
+    """Whether a bond is reported as RUONIA + basis: discounted on the KBD, or a floater
+    discounted on the RUONIA OIS curve and projected off the KBD (issue #90)."""
+    return curve_id == ids.kbd_curve_id or (
+        curve_id == ids.ois_curve_id and projection_id == ids.kbd_curve_id
+    )
 
 
 def _ofz_basis_factor_risk(
@@ -2121,7 +2134,10 @@ def _run_scenario(
     by a nominal shock, unless ``scenario.curve_shifts_bp`` names the real curve.
     Derivative positions reprice with their own engines (``ProductOutcome.reprice``).
     Bonds reported as RUONIA + basis (``ofz_job``) move RUONIA by the OIS curve's shift and the
-    basis by its named shift (held otherwise); a named shift of their KBD is refused.
+    basis by its named shift (held otherwise); a named shift of their KBD is refused. A
+    floater's projection takes the OIS curve's projection shift (``curve_shift(...,
+    projection=True)``): the OIS curve it projects off or, for a KBD floater discounted on
+    RUONIA, the OIS zero move inside its composed KBD.
     """
     named = bool(scenario.curve_shifts_bp)
     rows: list[PositionScenarioPnl] = []

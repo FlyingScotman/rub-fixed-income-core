@@ -166,7 +166,11 @@ the KBD as RUONIA + basis with both legs computed (instead of `basis_view`):
 - each OFZ row then has `IR|<ois>|*` (adds to OIS swaps' RUONIA ladder), `IR|RUB_OFZ_BASIS|*`
   (equal to today's `IR|<kbd>|*` of `rub_ofz_kbd_v3`, so the basis ladder is unchanged) and
   `CS`; `curve_basis = "ruonia_ois_quote+kbd_par_basis"`. No `IR|<kbd>|*` factors remain for
-  those bonds; KBD floaters discounted on RUONIA keep their `IR|<kbd>|*` projection;
+  those bonds. KBD floaters discounted on RUONIA keep their `IR|<kbd>|*` projection in
+  0.39.0; from the next release (issue #90, unreleased) a floater discounted on the OIS ID and
+  projected off the KBD ID is reported the same way: `IR|<ois>|*` (its discount and the RUONIA
+  part of its projection), `IR|RUB_OFZ_BASIS|*` (equal to its `IR|<kbd>|*` without the
+  opt-in) and `CS`, bumped. A scenario naming the KBD ID is then refused for it too;
 - scenarios: a RUONIA move is a shift of the OIS curve ID (or an unnamed shock: every
   curve moves, the basis held); a basis move a shift of `RUB_OFZ_BASIS`; shifts add in
   annual zero. A scenario naming the KBD ID is `INVALID_TERMS` for these bonds: rename the
