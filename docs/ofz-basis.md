@@ -1,7 +1,7 @@
 # OFZ risk as RUONIA plus a basis (issue #83)
 
 Status: released in 0.39.0; KBD floaters discounted on RUONIA (issue #90,
-[below](#kbd-floaters-discounted-on-ruonia-issue-90)) unreleased. Decision of the owner of
+[below](#kbd-floaters-discounted-on-ruonia-issue-90)) released in 0.40.0. Decision of the owner of
 2026-10-25: the RUONIA risk and the basis risk of an OFZ must be **computed**, not identical.
 Research run on hub data of 2026-10-22: [proposals/ofz-curve-risk-factors.md](proposals/ofz-curve-risk-factors.md),
 §11 (in Russian). Consumer issue: FlyingScotman/trading-desk-monitor#213.

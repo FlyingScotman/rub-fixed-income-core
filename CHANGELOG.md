@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.40.0 — KBD floaters discounted on RUONIA in RUONIA + basis coordinates
 
 ### KBD floaters discounted on RUONIA in RUONIA + basis coordinates (#90)
 
