@@ -1,6 +1,7 @@
 # OFZ risk as RUONIA plus a basis (issue #83)
 
-Status: released in 0.39.0. Decision of the owner of
+Status: released in 0.39.0; KBD floaters discounted on RUONIA (issue #90,
+[below](#kbd-floaters-discounted-on-ruonia-issue-90)) unreleased. Decision of the owner of
 2026-10-25: the RUONIA risk and the basis risk of an OFZ must be **computed**, not identical.
 Research run on hub data of 2026-10-22: [proposals/ofz-curve-risk-factors.md](proposals/ofz-curve-risk-factors.md),
 §11 (in Russian). Consumer issue: FlyingScotman/trading-desk-monitor#213.
@@ -127,6 +128,59 @@ and 2.6e-8 at 0.1 bp (gradient and Hessian, O(bump²)). A second-order Taylor ex
 basis + spread move of 4–10 bp leaves a third-order residual (halving the move divides it
 by ~8; < 1e-4 of the P&L).
 
+## KBD floaters discounted on RUONIA (issue #90)
+
+The mirrored case: a KBD floater (MOEX `ZR_YLD_CRV`, `FloatingCouponRule(index="kbd")`)
+discounted on the RUONIA OIS quotes plus its Z-spread, its coupons projected off the v3 KBD.
+Without the opt-in it reports `IR|<ois>|*` (discount) and `IR|<kbd>|*` (projection, v3 par
+buckets). `OfzBasisRiskEngine` takes it when the engine's discount curve is the view's OIS
+request and its projection curve the view's KBD (`discounted_on == "ois"`); factors as for an
+OFZ (11 RUONIA, 11 basis, the spread):
+
+| Factor | Moves | Equals |
+| --- | --- | --- |
+| `IR\|<ois>\|<bucket>` (RUONIA) | the discount curve: the **plain** OIS request rebootstrapped from quotes moved by the bucket hats; and the projection: the composed KBD `Y + overlay(q) + [Z_s − Z_0]` with `Z` from the **extended** (ZX) request | the bond's own discount bucket plus the RUONIA leg of its projection |
+| `IR\|<basis>\|<bucket>` (basis) | the projection only: the KBD's v3 par instruments by the bucket shift, RUONIA held | the bond's `IR\|<kbd>\|*` projection risk without the opt-in, to the bit (the same repricings) |
+| `CS` | the bond's spread over the OIS curve | unchanged |
+
+**Two requests, on purpose.** The discount leg uses the plain request, the rule of
+`IR|<ois>|*` for every bond and swap on the OIS curve: the floater's RUONIA ladder adds up with
+OIS swaps' and its discount part is the bond's own discount risk without the opt-in; the
+shocked curves are the same cache entries. The projection's composed KBD uses the extended
+request exactly as an OFZ does (`OfzBasisCurve.shocked`): a 7Y-tenor KBD index read up to 7Y
+after a fixing reaches 14Y and beyond, past the last 10Y quote, where the plain request would
+swing the long KBD by the flat-forward extrapolation. So a RUONIA 15Y / 20Y+ bump does not move
+the discount (no plain quote there) and moves the projection through the synthetic quotes.
+The two base curves are equal to the bit up to the 9Y node, differ by ~6e-10 in DF on the
+last quote's segment (the 10Y swap's payment lag reads past its node, on the 15Y segment of the
+extended curve) and diverge beyond 10Y, where only the extended one has quotes. **When the
+quotes reach 20Y no tenor is added:** the extended request is the plain one and both legs read
+the same shocked OIS curve.
+
+With the projection's RUONIA held (`projection_shifts` zero) the price is the engine's
+two-curve price with its projection moved by the basis, so basis risk, the basis × basis and
+basis × spread Hessian, and every basis-only scenario are the plain numbers to the bit. Joint
+RUONIA + basis moves add in annual zero inside the projection, as for an OFZ. Floating coupons
+re-project, so the risk is bumped (first and second order); the closed form is refused.
+
+Synthetic 7Y floater (`tests/test_ofz_basis_kbd_floater.py`: KBD 7Y + 0.50 %, 14 semiannual
+coupons from 2026-10-23, spread 250 bp, the OIS quotes of the next section), RUB/bp per 1 mn:
+
+| bucket | plain discount `IR\|<ois>` | plain projection = basis | RUONIA | of which projection |
+| --- | ---: | ---: | ---: | ---: |
+| 6M | −3.5 | 0 | −6.9 | −3.4 |
+| 1Y | 1.7 | −17.1 | −10.6 | −12.3 |
+| 3Y | −6.8 | −89.2 | −93.6 | −86.8 |
+| 5Y | −13.0 | −203.3 | −205.1 | −192.0 |
+| 7Y | −339.4 | 29.4 | −302.0 | 37.4 |
+| 10Y | −1.2 | 471.8 | 415.9 | 417.2 |
+| 15Y | 0 | 246.8 | 274.1 | 274.1 |
+| total | −365.9 | 404.8 | 36.9 | 402.9 |
+
+The projection's RUONIA total is within 0.5 % of the basis total, the bucket split differs
+as for OFZ (pillars, the 1M–6M exposure, the long end). Cost per bond after the job's shared
+OIS rebuilds: about 0.08 s for the bumped 23 × 23 Hessian (the plain two-curve one: 0.06 s).
+
 ## Numbers (synthetic OIS shaped like the KBD of 2026-10-15)
 
 `tests/ofz_basis_data.py`: OIS quotes 1W–10Y = KBD par + a basis (OIS above the KBD at the
@@ -157,8 +211,10 @@ for bonds between pillars, the RUONIA 1M–6M exposure, and the long end.
 `ValuationPolicy(ofz_basis=OfzBasisIds(kbd_curve_id, ois_curve_id, basis_id))`, omitted at
 its default None (earlier policies, job IDs and results keep their bytes):
 
-- every bond discounted on `kbd_curve_id` reports `IR|<ois_curve_id>|*`,
-  `IR|<basis_id>|*` and `CS` instead of `IR|<kbd_curve_id>|*`; `curve_basis` reads
+- every bond discounted on `kbd_curve_id`, and (issue #90) every floater discounted on
+  `ois_curve_id` and projected off `kbd_curve_id`, reports `IR|<ois_curve_id>|*`,
+  `IR|<basis_id>|*` and `CS` instead of `IR|<kbd_curve_id>|*` (and the floater's
+  discount `IR|<ois_curve_id>|*`, now inside RUONIA); `curve_basis` reads
   `ruonia_ois_quote+kbd_par_basis` (`OFZ_BASIS_CURVE_BASIS`); v3 position models add the
   flag `ruonia_basis`. PV, spread, yields, G-spread, `spread_buckets_rub` and JTD are
   unchanged;
@@ -170,8 +226,14 @@ its default None (earlier policies, job IDs and results keep their bytes):
 - scenarios: RUONIA moves by the OIS curve's shift (named in `curve_shifts_bp`, else the
   shock's — an unnamed parallel shock moves every curve, the basis held); the basis by
   `curve_shifts_bp` of `basis_id` (held when not named; 1M–6M zero or equal to 1Y); a
-  floater projected off the OIS curve takes the OIS projection shift. Naming
+  floater projected off the OIS curve takes the OIS projection shift, and so does the RUONIA
+  part of a KBD floater's composed projection (`curve_shift(ois, projection=True)`: the named
+  OIS shift, else `projection_curve_shifts_bp`, else the shock's) while its discount takes the
+  OIS curve's shift. Naming
   `kbd_curve_id` itself is `INVALID_TERMS` for these bonds: the KBD is not their factor;
+- a KBD floater on another KBD ID, key-rate and RUONIA floaters, OIS swaps and every bond on
+  other curves keep their 0.39 numbers; a KBD floater on the OIS curve is `INVALID_TERMS`
+  when the view cannot be built (a KBD that is not v3, an OIS curve without quotes), as an OFZ;
 - `horizon_portfolio` (carry, rolldown) does not use factors and is unchanged.
 
 Cost (`benchmarks/portfolio_bench.py --positions 2000 --cases kbd3,ofzbasis,ofzbasis-bump`,
@@ -195,5 +257,6 @@ Use the closed form (`risk_method` and `second_order_method` `"analytic"`): the 
   request: their curves and keys are then shared, at the price of changing their numbers
   slightly near 10Y (payment lags past the last node read the 15Y node).
 - `rub_ofz_kbd_v2` (annual-zero buckets) composes the same way; only v3 is accepted now.
-- A floater discounted on RUONIA and projected off the KBD keeps `IR|<kbd>|*` projection
-  factors under the opt-in; mapping them to RUONIA + basis is not done.
+- KBD floaters discounted on RUONIA (issue #90) read the plain request for the discount and
+  the extended one inside the projection; if the desk sets OIS positions on the extended
+  request (above), both legs read one curve.
