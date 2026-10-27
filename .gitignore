@@ -36,3 +36,6 @@ cookies*.json
 # Local evidence folders (multi-GB SQLite and cached sources); keep outside git
 audit/
 implementation/
+
+# Local CodeGraph index
+.codegraph/
