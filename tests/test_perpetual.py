@@ -21,7 +21,6 @@ from test_portfolio import AS_OF, POLICY, instruments
 
 from rub_fixed_income import (
     CONTINUOUS,
-    AssumptionPolicy,
     BondCashflow,
     BondRiskEngine,
     BondRiskRequest,
@@ -32,7 +31,6 @@ from rub_fixed_income import (
     FactorRisk,
     FixedCouponLeg,
     Instrument,
-    InstrumentAssumption,
     InvalidTerms,
     Offer,
     OfferKind,
@@ -44,7 +42,6 @@ from rub_fixed_income import (
     call_analysis,
     exercised_instrument,
     from_dict,
-    horizon_portfolio,
     kbd_discount_curve,
     perpetual_current_yield,
     portfolio_result_from_json,
@@ -54,7 +51,6 @@ from rub_fixed_income import (
     resolve_exercise,
     solve_z_spread,
     to_dict,
-    value_assumed_portfolio,
     value_portfolio,
     verify_portfolio_result,
     yield_never_called,
@@ -444,28 +440,3 @@ def test_a_never_called_perpetual_with_an_open_put_is_valued_to_the_put() -> Non
     )
     row = {v.position_id: v for v in result.positions}["p-perp"]
     assert (row.horizon, row.horizon_date) == ("confirmed_put", date(2027, 12, 1))
-
-
-def test_wrappers_and_horizon_reject_a_never_called_perpetual_with_a_reason() -> None:
-    wrapped = value_assumed_portfolio(
-        run_id="eod-2026-10-15",
-        as_of=AS_OF,
-        snapshot=book_snapshot(),
-        instruments=BOOK,
-        positions=POSITIONS,
-        policy=POLICY,
-        assumptions=AssumptionPolicy(
-            overrides=(InstrumentAssumption("PERP", exercise=ExerciseAssumption.never_called()),)
-        ),
-    )
-    codes = {r.position_id: r.code for r in wrapped.coverage.rejections}
-    assert codes["p-perp"] == "UNSUPPORTED_PRODUCT"
-    horizon = horizon_portfolio(
-        snapshot=book_snapshot(),
-        instruments=BOOK,
-        positions=POSITIONS,
-        policy=NEVER,
-        horizon_date=date(2026, 12, 15),
-    )
-    codes = {r.position_id: r.code for r in horizon.coverage.rejections}
-    assert codes == {"p-perp": "UNSUPPORTED_PRODUCT"}

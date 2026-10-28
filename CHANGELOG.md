@@ -1,6 +1,33 @@
 # Changelog
 
-## 0.41.0 — Coupons fixed once per reset cycle
+## 0.41.0 — Never-called perpetuals: horizon P&L, coupon formulas
+
+### Horizon P&L of a never-called perpetual (#27)
+
+FlyingScotman/rub-fixed-income-core#27 (BACKLOG B#126). Under 0.40.0 `horizon_portfolio`
+and the assumed-book wrappers rejected a never-called perpetual (`UNSUPPORTED_PRODUCT`), so
+its theta and carry had a gap once the monitor values perpetuals as never called.
+
+- `horizon_valuation(..., perpetual_tail=None)` (and `explain_horizon_pnl`): with the tail
+  of a never-called perpetual (`ExercisedBond.perpetual_tail`) every value adds the tail
+  coupons after its settlement, priced exactly as `value_portfolio` prices them
+  (`tail_pv_at_spread`): `pv_start`, `pv_forward` on today's curve from the horizon
+  settlement, `pv_rolled` on the rolled curve read from the horizon date; tail coupons paid
+  in `(S0, S1]` are received. `redemption_horizon="perpetual"` (new value of
+  `HorizonValuation.redemption_horizon`) and `redemption_date` the tail's anchor, as
+  `value_portfolio` rows read; `accrued_end_rub` is None past the anchor. A put the
+  horizon policy picks is the horizon instead, as in `value_portfolio`. A perpetual without
+  a tail keeps its rejection; a tail on a dated bond is `InvalidTerms`.
+- `horizon_portfolio` carries a perpetual under `ValuationPolicy.exercise_assumptions`
+  `never_called()` instead of rejecting it.
+- `value_assumed_portfolio` / `horizon_assumed_portfolio`: a never-called perpetual is kept
+  as given and valued natively (`AssumedBook.native_exercises`, added to the policy's
+  `exercise_assumptions` by `AssumedBook.policy_for`); its `AssumptionUse` reads
+  `exercise="never"`. Books without one are unchanged, hash for hash.
+- Tests (`tests/test_perpetual_horizon.py`): carry and rolldown against the materialised
+  stream (250 years of tail flows) on the KBD to 1e-10, horizons before and after the
+  anchor; the flat-curve closed form; explain against a full revaluation at the end curve;
+  the portfolio and wrapper paths against the native valuation.
 
 ### Coupons fixed once per multi-period reset cycle (#29)
 

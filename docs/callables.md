@@ -176,11 +176,26 @@ without one (`UNSUPPORTED_PRODUCT`). A never-called perpetual reads `horizon="pe
 `horizon_date` its last listed coupon (the tail's anchor), `exercise_assumption`
 `exercise:never_called@never`, the model flag `perpetual_tail`; its effective yield and
 Macaulay duration are the stream's. When the policy's `horizon` (`confirmed_put`,
-`open_put`) picks a put, the perpetual is valued to the put instead. Its horizon P&L
-(`horizon_portfolio`) is not modelled yet (`UNSUPPORTED_PRODUCT`, BACKLOG #126).
+`open_put`) picks a put, the perpetual is valued to the put instead.
 
-`value_assumed_portfolio` wraps `value_portfolio` without assumptions in the policy (and
-rejects a never-called perpetual: only the native path prices its tail):
+**Horizon P&L (0.41.0, BACKLOG #126).** `horizon_portfolio` carries a never-called
+perpetual under the same `exercise_assumptions` (`horizon_valuation(...,
+perpetual_tail=)` per bond): the start value, `pv_forward` (today's curve read forward
+from the horizon settlement) and `pv_rolled` (the rolled curve, read from the horizon
+date: its first 30 years, flat-forward beyond) each add the tail coupons after their
+settlement, priced exactly as in `value_portfolio`, and tail coupons paid by the horizon
+settlement are received as cash. The row reads `redemption_horizon="perpetual"` and
+`redemption_date` the tail's anchor; past the anchor `accrued_end_rub` is None (the terms
+list no coupon there). A put the policy picks is the horizon instead. `explain_horizon_pnl`
+takes the same `perpetual_tail`. Carry and rolldown reconcile with a full revaluation of
+the materialised stream to 1e-10 (`tests/test_perpetual_horizon.py`).
+
+`value_assumed_portfolio` wraps `value_portfolio` without assumptions in the policy. A
+never-called perpetual is the exception (0.41.0): only the native path prices its tail,
+so `prepare_assumed_book` keeps it as given and records its assumption in
+`AssumedBook.native_exercises`, which the wrappers add to the policy's
+`exercise_assumptions` (`AssumedBook.policy_for(policy)`); its `AssumptionUse` reads
+`exercise="never"`. `horizon_assumed_portfolio` carries it the same way.
 
 1. `prepare_assumed_book` applies an `AssumptionPolicy` (`default_exercise` for callables
    without an override; per-instrument `InstrumentAssumption` with an exercise or a

@@ -277,8 +277,9 @@ class ExercisedBond:
     horizon, risk). ``source_sha256`` identifies the callable terms it came from.
 
     A never-called perpetual stays a perpetual without calls: ``instrument`` holds its
-    listed coupons and ``perpetual_tail`` the coupons after them, forever. Only
-    ``value_portfolio`` values it (its risk engine prices the tail).
+    listed coupons and ``perpetual_tail`` the coupons after them, forever. Only the
+    native paths value it, which price the tail: ``value_portfolio`` and (0.41.0)
+    ``horizon_portfolio`` / ``horizon_valuation(..., perpetual_tail=)``.
     """
 
     instrument: Instrument

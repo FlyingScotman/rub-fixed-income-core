@@ -2524,18 +2524,16 @@ def _horizon_position(
     exercised_memo: dict[str, ExercisedBond | CoreRejection] | None = None,
 ) -> PositionHorizon:
     terms = instruments.get(position.instrument_id)
+    tail: PerpetualTail | None = None
     if terms is not None and policy.exercise_assumptions:
         exercised = _exercised(
             terms, policy, snapshot, {} if exercised_memo is None else exercised_memo
         )
         if exercised is not None:
-            if exercised.perpetual_tail is not None:
-                raise UnsupportedProduct(
-                    "the horizon P&L of a never-called perpetual is not modelled yet "
-                    "(BACKLOG #126); value it with value_portfolio"
-                )
+            # A never-called perpetual is carried with its tail (BACKLOG #126).
+            tail = exercised.perpetual_tail
             instruments = _Replaced(instruments, exercised.instrument)
-    instrument = _supported_instrument(position, instruments)
+    instrument = _supported_instrument(position, instruments, perpetual=tail is not None)
     calendar = _use_calendar(snapshot, instrument, used_calendars)
     curve_id = policy.curve_for(instrument.instrument_id)
     if curve_id not in built:
@@ -2573,6 +2571,7 @@ def _horizon_position(
         fixings=fixings,
         projection_curve=projection_curve,
         strike_guard_bp=policy.cap_floor_guard_bp,
+        perpetual_tail=tail,
     )
     q = position.quantity
     return PositionHorizon(
