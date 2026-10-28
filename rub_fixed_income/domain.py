@@ -286,6 +286,10 @@ class FloatingCouponLeg:
             raise TypeError("accrual_basis must be an AccrualBasis or None")
         if not self.periods:
             raise InvalidTerms("a floating leg needs at least one period")
+        if self.rule.fixing_date is None and any(p.fixing_anchor is not None for p in self.periods):
+            raise InvalidTerms(
+                "a period fixing_anchor needs a single_fixing rule with a fixing_date"
+            )
         if self.projection_curve_id is not None:
             _text(self.projection_curve_id, "projection_curve_id")
             if "|" in self.projection_curve_id:

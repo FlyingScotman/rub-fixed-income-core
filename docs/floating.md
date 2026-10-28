@@ -70,7 +70,7 @@ hashes and identifiers.
   the amount accrues over the accrual period.
 - `FixingDateRule(anchor, offset_days, unit)`: the single fixing date, `offset_days`
   before `accrual_start` (in advance), `accrual_end` or `payment_date` (in arrears).
-- `FloatingCouponPeriod(accrual_start, accrual_end, payment_date, notional_rub, published_coupon_rub=None)`
+- `FloatingCouponPeriod(accrual_start, accrual_end, payment_date, notional_rub, published_coupon_rub=None, published_rate=None, margin=None, fixing_anchor=None)`
   - Amounts are RUB per bond, on the notional outstanding during the period.
   - **A published coupon is cash and is used as is.** MOEX shows 0 for coupons not
     yet fixed, so `0.0` is rejected; pass `None` for those.
@@ -159,6 +159,15 @@ index_tenor_years=T, rate_day_count=ACT_365_FIXED, ...)`:
   volatility source yet (BACKLOG #122).
 - **Margin.** `FloatingCouponPeriod.margin` replaces the rule's margin for one period: a
   margin reset at an offer (RZD 001B-03/04/06/08).
+- **Reset cycles (0.41.0).** `FloatingCouponPeriod.fixing_anchor` replaces the rule's
+  anchor date for one period; the rule's `offset_days` and `unit` count back from it. A
+  coupon reset every five years to the KBD 5Y and paid semi-annually gives the ten periods
+  of a cycle the cycle's start: they share one fixing (from the history when it is before
+  the valuation date, else the forward `exp(ln(DF(fix) / DF(fix + 5Y)) / 5) - 1`), so the
+  projection risk sits at the reset fixings (short at the fixing, long at fixing + 5Y),
+  not spread over every period start. The anchor fixes in advance: it must be on or before
+  the period's `accrual_start` (a reset in arrears is not supported), and only a
+  `single_fixing` rule takes it. Such a coupon accrues as any coupon fixed in advance.
 - **Risk.** With `projection_curve` a KBD (`rub_ofz_kbd_v2`: annual-yield buckets) and
   `curve` RUONIA OIS, the two-curve engine gives `IR|<KBD>|*` projection risk next to
   `IR|<RUONIA>|*` discount risk and `CS`.

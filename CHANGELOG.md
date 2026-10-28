@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.41.0 — Coupons fixed once per reset cycle
+
+### Coupons fixed once per multi-period reset cycle (#29)
+
+Part of FlyingScotman/rub-fixed-income-core#29 (BACKLOG B#127): a floater whose coupon is
+reset once per cycle of several periods, e.g. every five years to the KBD 5Y
+(`FloatingCouponRule(index="kbd", index_tenor_years=5)`) plus a margin, paid
+semi-annually. Under 0.40.0 the single fixing of every period was anchored on that period's
+own `accrual_start` / `accrual_end` / `payment_date`, so each semi-annual period took its
+own forward: the wrong coupon and the wrong rate-risk shape. Periods without the new field
+are unchanged (the suite's goldens and pinned hashes pass unchanged).
+
+- `FloatingCouponPeriod(..., fixing_anchor=None)`: the date the rule's `fixing_date`
+  offset (`offset_days` in its `unit`) counts back from for this period, replacing the
+  rule's anchor. All periods of a cycle carry the cycle's start and share one fixing: from
+  the history when it is before the valuation date (`fixed_by_history` for the whole
+  cycle), else the forward KBD yield at that fixing over the tenor; published coupons stay
+  cash. In advance only: `fixing_anchor > accrual_start` is `ValueError` (a reset in
+  arrears is not needed by any bond seen); a period with it under a rule without
+  `fixing_date` is `InvalidTerms` from `FloatingLeg` and `FloatingCouponLeg`. Omitted from
+  the canonical form at None (round-trips with `to_dict` / `from_dict`; enters the leg
+  identity only when set). Accrued interest is that of any coupon fixed in advance.
+- Tests (`tests/test_kbd_reset_fixing.py`, synthetic): three five-year cycles of ten
+  semi-annual periods on the KBD of 2026-10-15; each projected cycle's rate equals the DF
+  forward to 1e-12 and the ZCYC formula within 0.02 bp; the past cycle reads its history
+  fixing for all seven remaining periods; projection risk through `BondRiskEngine` and
+  `value_portfolio` is short at the 3Y bucket (the 2029 reset fixing), long at 7Y–15Y and
+  zero before 3Y and at 20Y+, against risk spread from 1Y to 20Y+ with per-period anchors.
+
 ## 0.40.0 — KBD floaters discounted on RUONIA in RUONIA + basis coordinates
 
 ### KBD floaters discounted on RUONIA in RUONIA + basis coordinates (#90)

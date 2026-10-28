@@ -497,6 +497,7 @@ field is omitted at its default.
 | `FloatingCouponRule(index="kbd", ..., index_tenor_years=T, convexity=None)`; `FixingHistory("kbd", ..., tenor_years=T)` | MOEX `ZR_YLD_CRV`: the KBD yield at a constant maturity, a single fixing; projected as the forward yield over the tenor ([floating.md](floating.md)). |
 | `ConstantMaturityConvexity(normal_vol_bp)`, `.adjust(forward, years_to_fixing, tenor_years)` | Optional convexity adjustment of a projected constant-maturity fixing. |
 | `FloatingCouponPeriod(..., margin=None)` | The period's margin, replacing the rule's. |
+| `FloatingCouponPeriod(..., fixing_anchor=None)` | **0.41.0** (issue #29): the date the rule's `fixing_date` offset counts back from for this period, replacing its `accrual_start` / `accrual_end` / `payment_date` anchor. A coupon fixed once per multi-period reset cycle (KBD 5Y reset every five years, paid semi-annually): every period of the cycle carries the cycle's start and shares its one fixing (history before the valuation date, else the forward). In advance only (`fixing_anchor <= accrual_start`, else `ValueError`); a rule without `fixing_date` is `InvalidTerms` (`FloatingLeg`, `FloatingCouponLeg`). Omitted at None. |
 | `basis_view(risk, base_curve_id, curve_id, basis_id)` | The same `FactorRisk` on the base curve and the basis `curve − base` (first order and Hessian). |
 
 ## OFZ curve risk in par quotes (0.37.0)
