@@ -1589,7 +1589,7 @@ def _value_position(
     if policy.require_known_coupons:
         _check_known_coupons(instrument, settlement, horizon_date)
     flows = instrument.cashflows(after=settlement, horizon=horizon_date, offer=offer)
-    if not flows:
+    if not flows and tail is None:
         raise InvalidTerms("no cashflows remain after settlement")
     spread_kind = policy.spread_kind_for(instrument.instrument_id)
     quote = snapshot.quote(instrument.instrument_id)
@@ -1618,7 +1618,10 @@ def _value_position(
             quote,
             (nominal, accrued, position.quantity),
             run_id,
+            tail,
         )
+        # A floating perpetual's tail at its base projection (BACKLOG #127).
+        tail = engine.tail_for(engine.projected_coupons)
         # Yield and duration of a floater are on its base projected flows.
         yield_flows = tuple(
             BondCashflow(d, a)
@@ -1898,10 +1901,12 @@ def _floating_engine(
     quote: BondPriceObservation,
     amounts: tuple[float, float, float],
     run_id: str,
+    tail: PerpetualTail | None = None,
 ) -> tuple[BondRiskEngine, str, str | None]:
     """The risk engine of a RUB floater, its adapter ID and its separate projection curve.
 
-    ``flows`` are the principal flows; the coupons come from the floating leg.
+    ``flows`` are the principal flows; the coupons come from the floating leg. ``tail``
+    (0.41.0) is a never-called floating perpetual's projected tail (BACKLOG #127).
     """
     settlement, horizon_date, offer = dates
     nominal, accrued, quantity = amounts
@@ -1925,27 +1930,29 @@ def _floating_engine(
             quantity=quantity,
             floating_leg=model,
             projection_curve=projected.curve if two_curve else None,
+            perpetual_tail=tail,
         ),
         cache,
     )
-    adapter_id = canonical_sha256(
-        {
-            "adapter_model": "portfolio-floating-rub-risk-v1",
-            "library_version": __version__,
-            "run_id": run_id,
-            "instrument_id": instrument.instrument_id,
-            "market_snapshot_id": snapshot.snapshot_id,
-            "discount_curve": f"{snapshot.snapshot_id}:{curve_id}",
-            "projection_curve": f"{snapshot.snapshot_id}:{projection_id}",
-            "fixing_id": leg.fixing_id,
-            "core_base_id": engine.base_id,
-            "horizon": "maturity" if offer is None else "confirmed_investor_put",
-            "horizon_date": horizon_date,
-            "current_nominal_rub": nominal,
-            "clean_price_pct": quote.clean_price_pct,
-            "accrued_interest_rub": accrued,
-        }
-    )
+    adapter: dict[str, object] = {
+        "adapter_model": "portfolio-floating-rub-risk-v1",
+        "library_version": __version__,
+        "run_id": run_id,
+        "instrument_id": instrument.instrument_id,
+        "market_snapshot_id": snapshot.snapshot_id,
+        "discount_curve": f"{snapshot.snapshot_id}:{curve_id}",
+        "projection_curve": f"{snapshot.snapshot_id}:{projection_id}",
+        "fixing_id": leg.fixing_id,
+        "core_base_id": engine.base_id,
+        "horizon": "maturity" if offer is None else "confirmed_investor_put",
+        "horizon_date": horizon_date,
+        "current_nominal_rub": nominal,
+        "clean_price_pct": quote.clean_price_pct,
+        "accrued_interest_rub": accrued,
+    }
+    if tail is not None:
+        adapter["horizon"] = "perpetual"
+    adapter_id = canonical_sha256(adapter)
     return engine, adapter_id, projection_id if two_curve else None
 
 

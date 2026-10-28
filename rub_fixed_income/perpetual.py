@@ -20,6 +20,15 @@ The tail is valued exactly, without materialising its flows on the instrument:
   annual-yield shock of the 20Y+ bucket bends it) is read date by date instead;
 - at an effective yield, ``sum a (1 + y)^-t``.
 
+A perpetual whose coupon follows a formula (0.41.0, BACKLOG #127: a RUONIA or key-rate
+floater, a coupon reset every N years to the N-year KBD) continues its floating leg
+instead: :func:`floating_perpetual_tail` lists the periods after the last listed one at
+the same step until one (a reset leg: a whole cycle) starts :data:`FLOATING_EXPLICIT_YEARS`
+(35) years past settlement, each projected as any floating coupon; past them every
+projection curve core builds is flat-forward (and every bucket shock flat), so the rates
+are constant and a tail with ``amount=None`` continues the last coupon scaled to the mean
+step (:meth:`PerpetualTail.projected`), re-projected on each curve by the risk engine.
+
 The sum runs to :data:`TAIL_SUM_YEARS` (600) years past the anchor and adds the
 geometric remainder of its last two terms. A stream that does not converge (a total
 discount rate at or below zero) is worth infinity: the pricing functions return
@@ -47,14 +56,17 @@ from .discount import DiscountCurve, DiscountFactorCurve
 from .errors import InvalidTerms
 
 if TYPE_CHECKING:
-    from .domain import CouponPeriod, RateCouponPeriod
+    from .domain import CouponPeriod, FloatingCouponLeg, RateCouponPeriod
+    from .floating import FloatingCouponPeriod, FloatingCouponProjection
 
 __all__ = [
+    "FLOATING_EXPLICIT_YEARS",
     "PERPETUAL_TAIL_MODEL_VERSION",
     "TAIL_CURVE_YEARS",
     "TAIL_SUM_YEARS",
     "PerpetualTail",
     "PerpetualYield",
+    "floating_perpetual_tail",
     "perpetual_tail",
     "perpetual_yield",
     "tail_pv_at_spread",
@@ -64,6 +76,13 @@ __all__ = [
 PERPETUAL_TAIL_MODEL_VERSION = "rub-perpetual-tail-v1"
 TAIL_CURVE_YEARS = 30
 TAIL_SUM_YEARS = 600
+# A floating perpetual's leg is listed explicitly until its last period (a reset leg: its
+# last cycle) starts this many years past settlement: past 30 years from the curve date
+# every curve core builds is flat-forward, so with five years of margin for a horizon
+# every later coupon is projected at the last one's rate.
+FLOATING_EXPLICIT_YEARS = 35
+_MAX_CONTINUED_PERIODS = 5000
+_MEAN_MONTH_DAYS = 365.2425 / 12.0  # the Gregorian mean
 # Discount factors are read from the curve up to this many days after the curve date:
 # 30 years and their leap days. The KBD materialises nodes to 365 * 30 + 7 days.
 _CURVE_DAYS = 365 * TAIL_CURVE_YEARS + 8
@@ -80,10 +99,15 @@ class PerpetualTail:
     The k-th tail coupon (k >= 1) is paid ``k * period_days`` days or
     ``add_months(anchor_date, k * period_months)`` after the anchor; exactly one of
     the two steps is given. Amounts are in the instrument currency per bond.
+
+    ``amount=None`` (0.41.0) continues a floating leg whose last period is paid on the
+    anchor: each tail coupon is that period's projected coupon, re-projected on every
+    curve (``BondRiskRequest(floating_leg=..., perpetual_tail=...)``); such a tail is
+    priced only with its leg (:meth:`with_amount` fixes it).
     """
 
     anchor_date: date
-    amount: float
+    amount: float | None
     period_days: int | None = field(default=None, metadata=OMIT_IF_DEFAULT)
     period_months: int | None = field(default=None, metadata=OMIT_IF_DEFAULT)
     model_version: str = PERPETUAL_TAIL_MODEL_VERSION
@@ -91,7 +115,8 @@ class PerpetualTail:
     def __post_init__(self) -> None:
         if not isinstance(self.anchor_date, date):
             raise TypeError("anchor_date must be a date")
-        object.__setattr__(self, "amount", positive_money(self.amount, "tail coupon amount"))
+        if self.amount is not None:
+            object.__setattr__(self, "amount", positive_money(self.amount, "tail coupon amount"))
         if (self.period_days is None) == (self.period_months is None):
             raise InvalidTerms("a perpetual tail needs exactly one of period_days, period_months")
         for name in ("period_days", "period_months"):
@@ -105,25 +130,78 @@ class PerpetualTail:
 
     def payment_date(self, k: int) -> date:
         """The k-th tail payment date (k >= 1)."""
-        if self.period_days is not None:
-            return self.anchor_date + timedelta(days=k * self.period_days)
-        assert self.period_months is not None
-        return add_months(self.anchor_date, k * self.period_months)
+        return _shifted(self.anchor_date, k, self.period_days, self.period_months)
 
     def scaled(self, factor: float) -> PerpetualTail:
         """The same tail with its amount multiplied by ``factor`` (an FX rate)."""
-        return PerpetualTail(
-            self.anchor_date,
-            self.amount * positive_money(factor, "tail scale"),
-            self.period_days,
-            self.period_months,
-            self.model_version,
+        return self.with_amount(self.coupon * positive_money(factor, "tail scale"))
+
+    def projected(self, last: FloatingCouponProjection) -> PerpetualTail:
+        """A floating tail at one projection of the leg's last coupon ``last``.
+
+        Past the explicit periods the coupon's rate is constant; its amount follows the
+        accrual days of each period, which vary around the mean step (89-92 days a
+        quarter). The tail pays the last coupon scaled to the mean step, ``amount * mean
+        days / last period's days`` (``period_days``, or 365.2425 / 12 days a month), so
+        that the periodic day-count variation averages out instead of repeating the last
+        period's length forever. A tail with an amount is returned unchanged.
+        """
+        if self.amount is not None:
+            return self
+        if last.payment_date != self.anchor_date:
+            raise InvalidTerms("a floating perpetual tail continues its leg's last coupon")
+        days = (last.accrual_end - last.accrual_start).days
+        mean = (
+            float(self.period_days)
+            if self.period_days is not None
+            else _MEAN_MONTH_DAYS * cast(int, self.period_months)
         )
+        return self.with_amount(last.amount_rub * mean / days)
+
+    def with_amount(self, amount: float) -> PerpetualTail:
+        """The same schedule paying ``amount``: a floating tail at one projection."""
+        return PerpetualTail(
+            self.anchor_date, amount, self.period_days, self.period_months, self.model_version
+        )
+
+    @property
+    def floating(self) -> bool:
+        """Whether the coupon continues a floating leg (``amount`` is None)."""
+        return self.amount is None
+
+    @property
+    def coupon(self) -> float:
+        """The tail coupon; a floating tail has none until it is projected."""
+        if self.amount is None:
+            raise InvalidTerms(
+                "a floating perpetual tail is projected with its floating leg "
+                "(BondRiskRequest(floating_leg=..., perpetual_tail=...))"
+            )
+        return self.amount
 
     @property
     def identifier(self) -> str:
         step = f"{self.period_days}d" if self.period_days is not None else f"{self.period_months}m"
         return f"tail:{self.anchor_date.isoformat()}:{step}:{self.amount!r}"
+
+
+def _step(ends: Sequence[date]) -> tuple[int | None, int | None]:
+    """The regular step after the last of ``ends`` (ordered): days or whole months.
+
+    Days when the last two intervals are equally long in days, else whole months when
+    the last two dates fall on the same day of the month; two dates alone step by their
+    distance in days when they are not whole months apart.
+    """
+    last, previous = ends[-1], ends[-2]
+    days = (last - previous).days
+    if len(ends) >= 3 and (previous - ends[-3]).days == days:
+        return days, None
+    months = (last.year - previous.year) * 12 + (last.month - previous.month)
+    if months > 0 and add_months(previous, months) == last:
+        return None, months
+    if len(ends) < 3:
+        return days, None
+    raise InvalidTerms(f"the coupon schedule ending {last} has no regular step to continue")
 
 
 def perpetual_tail(periods: Sequence[CouponPeriod | RateCouponPeriod]) -> PerpetualTail:
@@ -146,31 +224,111 @@ def perpetual_tail(periods: Sequence[CouponPeriod | RateCouponPeriod]) -> Perpet
             f"the coupon paid {last.payment_date} is not known; a perpetual is continued "
             "only from a known coupon"
         )
-    previous = periods[-2]
-    days = (last.payment_date - previous.payment_date).days
-    if len(periods) >= 3:
-        earlier = (previous.payment_date - periods[-3].payment_date).days
-        if earlier == days:
-            return PerpetualTail(last.payment_date, last.amount, period_days=days)
-    months = (last.payment_date.year - previous.payment_date.year) * 12 + (
-        last.payment_date.month - previous.payment_date.month
-    )
-    if months > 0 and add_months(previous.payment_date, months) == last.payment_date:
-        return PerpetualTail(last.payment_date, last.amount, period_months=months)
-    if len(periods) < 3:
-        return PerpetualTail(last.payment_date, last.amount, period_days=days)
-    raise InvalidTerms(
-        f"the coupon schedule ending {last.payment_date} has no regular step to continue"
-    )
+    days, months = _step([p.payment_date for p in periods[-3:]])
+    return PerpetualTail(last.payment_date, last.amount, period_days=days, period_months=months)
+
+
+def _shifted(start: date, k: int, days: int | None, months: int | None) -> date:
+    """``start`` moved by ``k`` steps of ``days`` days or ``months`` months."""
+    if days is not None:
+        return start + timedelta(days=k * days)
+    assert months is not None
+    return add_months(start, k * months)
+
+
+def floating_perpetual_tail(
+    leg: FloatingCouponLeg, settlement: date
+) -> tuple[FloatingCouponLeg, PerpetualTail]:
+    """A never-called floating perpetual's leg continued, and the tail after it (0.41.0).
+
+    The listed periods must run without a gap from ``settlement``. New periods follow the
+    last at its step (:func:`perpetual_tail`'s rule, on the accrual ends), with its
+    notional, margin and payment lag, until the last one starts at least
+    :data:`FLOATING_EXPLICIT_YEARS` after settlement. A period with a ``fixing_anchor``
+    (a coupon fixed once per reset cycle) is continued cycle by cycle: the cycle is the
+    index tenor (``index_tenor_years``, whole months: a coupon reset every N years to the
+    N-year KBD), each new period is anchored on the last reset on or before its start,
+    and the leg ends with the first whole cycle that starts that far out. The tail (``amount=None``) continues the last
+    period's projected coupon at the same step from its payment date.
+
+    The last coupon is thus fixed 35 years out or later, where every curve core builds is
+    flat-forward (from 30 years after the curve date; bucket shocks are flat past 20
+    years, a rolled curve for a horizon of up to five years past 30 years from it), so
+    every later coupon would be projected at the same rate and differs from the last
+    only by its accrual days: the tail pays the last coupon scaled to the mean step
+    (:meth:`PerpetualTail.projected`).
+    """
+    from dataclasses import replace
+
+    periods = leg.periods
+    future = [p for p in periods if p.payment_date > settlement]
+    if not future:
+        raise InvalidTerms(
+            f"no coupon of the perpetual is listed after {settlement}; "
+            "list its current period or value it to its put"
+        )
+    for left, right in pairwise(future):
+        if right.accrual_start != left.accrual_end:
+            raise InvalidTerms(
+                f"coupon periods have a gap from {left.accrual_end} to {right.accrual_start}"
+            )
+    if len(periods) < 2:
+        raise InvalidTerms("a perpetual tail needs at least two listed coupons for its step")
+    days, months = _step([p.accrual_end for p in periods[-3:]])
+    last = periods[-1]
+    lag = last.payment_date - last.accrual_end
+    reset = last.fixing_anchor
+    cycle = 0
+    if reset is not None:
+        tenor = leg.rule.index_tenor_years
+        cycle = 0 if tenor is None else round(12.0 * tenor)
+        if tenor is None or abs(12.0 * tenor - cycle) > 1e-9 or cycle <= 0:
+            raise InvalidTerms(
+                "a coupon fixed once per reset cycle is continued over cycles of its index "
+                "tenor: index_tenor_years must be a whole number of months"
+            )
+    target = add_months(settlement, 12 * FLOATING_EXPLICIT_YEARS)
+    added: list[FloatingCouponPeriod] = []
+    cycles = 0  # resets after the last listed anchor
+    current = last
+    k = 1
+    # Each condition reads the last period listed so far: until it starts (a reset leg:
+    # its cycle starts) 35 years out, and a reset leg ends with a whole cycle.
+    while (
+        (current.accrual_start if reset is None else add_months(reset, cycle * cycles)) < target
+    ) or (reset is not None and add_months(reset, cycle * (cycles + 1)) > current.accrual_end):
+        if len(added) >= _MAX_CONTINUED_PERIODS:
+            raise InvalidTerms("the floating leg cannot be continued to the explicit horizon")
+        start = current.accrual_end
+        end = _shifted(last.accrual_end, k, days, months)
+        anchor = None
+        if reset is not None:
+            while add_months(reset, cycle * (cycles + 1)) <= start:
+                cycles += 1
+            anchor = add_months(reset, cycle * cycles)
+        current = replace(
+            last,
+            accrual_start=start,
+            accrual_end=end,
+            payment_date=end + lag,
+            published_coupon_rub=None,
+            published_rate=None,
+            fixing_anchor=anchor,
+        )
+        added.append(current)
+        k += 1
+    continued = replace(leg, periods=(*periods, *added))
+    tail = PerpetualTail(current.payment_date, None, period_days=days, period_months=months)
+    return continued, tail
 
 
 @lru_cache(maxsize=1024)
-def _ordinals(tail: PerpetualTail) -> np.ndarray:
-    """Payment dates of the tail as proleptic ordinals, to ``TAIL_SUM_YEARS`` past the anchor."""
-    end = add_months(tail.anchor_date, 12 * TAIL_SUM_YEARS)
+def _schedule(anchor: date, period_days: int | None, period_months: int | None) -> np.ndarray:
+    """Payment dates of a tail as proleptic ordinals, to ``TAIL_SUM_YEARS`` past the anchor."""
+    end = add_months(anchor, 12 * TAIL_SUM_YEARS)
     out = []
     k = 1
-    while (payment := tail.payment_date(k)) <= end:
+    while (payment := _shifted(anchor, k, period_days, period_months)) <= end:
         out.append(payment.toordinal())
         k += 1
     array = np.asarray(out, dtype=np.int64)
@@ -178,10 +336,27 @@ def _ordinals(tail: PerpetualTail) -> np.ndarray:
     return array
 
 
-@lru_cache(maxsize=4096)
+def _ordinals(tail: PerpetualTail) -> np.ndarray:
+    """Payment dates of the tail (cached on its schedule: a re-projected amount shares it)."""
+    return _schedule(tail.anchor_date, tail.period_days, tail.period_months)
+
+
 def _times(tail: PerpetualTail, settlement: date, day_count: DayCount) -> np.ndarray:
+    return _schedule_times(
+        tail.anchor_date, tail.period_days, tail.period_months, settlement, day_count
+    )
+
+
+@lru_cache(maxsize=4096)
+def _schedule_times(
+    anchor: date,
+    period_days: int | None,
+    period_months: int | None,
+    settlement: date,
+    day_count: DayCount,
+) -> np.ndarray:
     """Year fractions from ``settlement`` of the tail payments after it."""
-    ordinals = _ordinals(tail)
+    ordinals = _schedule(anchor, period_days, period_months)
     future = ordinals[ordinals > settlement.toordinal()]
     if day_count is DayCount.ACT_365_FIXED:
         times = (future - settlement.toordinal()) / 365.0
@@ -287,6 +462,7 @@ def tail_pv_at_spread(
     the settlement-forward discount factor, its zero rate in ``convention`` plus the
     spread. Returns ``inf`` when the stream does not converge.
     """
+    amount = tail.coupon
     ordinals = _ordinals(tail)
     future = ordinals[ordinals > settlement.toordinal()]
     if future.size == 0:
@@ -295,14 +471,14 @@ def tail_pv_at_spread(
     forward = _discount_factors(curve, future) / curve.discount_factor(settlement)
     with np.errstate(over="ignore", under="ignore", divide="ignore", invalid="ignore"):
         if convention.compounding.is_continuous:
-            terms = tail.amount * forward * np.exp(-spread * times)
+            terms = amount * forward * np.exp(-spread * times)
         else:
             m = convention.compounding.periods_per_year
             zero = m * (forward ** (-1.0 / (m * times)) - 1.0)
             base = 1.0 + (zero + spread) / m
             if np.any(base <= 0.0):
                 raise ValueError("rate is outside the compounding domain")
-            terms = tail.amount * base ** (-m * times)
+            terms = amount * base ** (-m * times)
     return _sum_with_remainder(terms)
 
 
@@ -318,6 +494,7 @@ def tail_pv_at_yield(
 
     ``time_weighted`` gives ``sum t a (1 + y)^-t``, the Macaulay numerator.
     """
+    amount = tail.coupon
     y = finite_money(effective_yield, "effective yield")
     if y <= -1.0:
         raise InvalidTerms("effective yield must be above -100%")
@@ -325,7 +502,7 @@ def tail_pv_at_yield(
     if times.size == 0:
         return 0.0
     with np.errstate(over="ignore", under="ignore"):
-        terms = tail.amount * (1.0 + y) ** (-times)
+        terms = amount * (1.0 + y) ** (-times)
         if time_weighted:
             terms = terms * times
     return _sum_with_remainder(terms)

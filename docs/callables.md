@@ -106,8 +106,7 @@ period_months)`, built by `perpetual_tail(periods)`):
 - the listed coupons must run without a gap from settlement and all be known: an
   unknown coupon (amount 0, as MOEX lists a coupon not set yet) is not continued; such a
   bond usually has a put and is valued to it (`ValuationPolicy.horizon`). A perpetual
-  whose coupon follows a formula (a floater, a reset on the KBD) needs its projection
-  and is not continued (BACKLOG #127).
+  whose coupon follows a formula continues the formula (0.41.0, below).
 
 **Exact tail.** The tail is valued exactly, not truncated (a stream cut at 30 years
 loses about a point of price and 12–36 bp of Z-spread at RUB rates; 50–60 years are
@@ -132,6 +131,49 @@ past 20 years is all `20Y+`; at RUB rates 20–40 % of the DV01, the rest on 3Y�
 CS01, the Hessian and scenarios reprice it exactly
 (`BondRiskRequest.perpetual_tail`). At 85 % of face a 12 % coupon's Macaulay duration is
 about 7.6 years against 3.8 for a call in five years.
+
+### Never called with a coupon formula (0.41.0, BACKLOG #127)
+
+A perpetual with a `FloatingCouponLeg` (RUONIA or key rate plus a margin, or a coupon
+reset every N years to the N-year KBD plus a margin) never called keeps projecting its
+formula. `exercised_instrument` (through `floating_perpetual_tail(leg, settlement)`)
+continues the leg past its listed periods and adds a tail after them:
+
+- **Continued periods.** The listed periods must run without a gap from settlement. New
+  periods follow the last at its step (the rule above, on the accrual ends), with its
+  notional, period margin and payment lag, unpublished, until one starts at least 35 years
+  after settlement (`FLOATING_EXPLICIT_YEARS`). A listed period with a `fixing_anchor` (a
+  coupon fixed once per reset cycle, [floating.md](floating.md)) is continued cycle by
+  cycle: the cycle is the index tenor (`index_tenor_years`, in whole months), each new
+  period is anchored on the last reset on or before its start (`add_months(anchor,
+  12 N k)`), and the leg ends with the first whole cycle that starts 35 years out. Each
+  continued coupon is projected as any floating coupon; published coupons stay cash and
+  realised fixings come from the history (a cycle fixed in the past for all its periods).
+- **The cut.** The last coupon is fixed 35 years out or later. Past 30 years from the curve
+  date every curve core builds is flat-forward (KBD nodes to 30 years, RUONIA OIS and the
+  key-rate path end earlier), and bucket shocks are flat past 20 years, so every later
+  coupon would be projected at the same rate. The tail (`PerpetualTail(anchor, None,
+  step)`, `amount=None`) pays the last coupon scaled to the mean step (`amount * mean
+  days / its days`, `PerpetualTail.projected`), forever, valued exactly as the fixed tail.
+  It is re-projected on every curve: the risk engine (`BondRiskRequest(floating_leg=...,
+  perpetual_tail=...)`) and the horizon carry take the last coupon of each projection, so
+  a shocked projection curve moves the tail too. Against the leg written out to 100 years
+  without a tail: 1e-5 of the price and 7e-4 of CS01 per bucket for a quarterly RUONIA
+  perpetual, 1e-6 and 5e-6 for key-rate and KBD-reset ones
+  (`tests/test_floating_perpetuals.py`).
+- **Risk.** As for dated floaters: the Z-spread over the discount curve, discount and
+  projection bucket DV01 separately (`IR|<discount>|*`, `IR|<projection>|*`), CS01, the
+  Hessian, scenarios and horizon carry (`horizon_portfolio`). A KBD-reset perpetual is
+  short the KBD at the next reset's fixing (3Y for a reset in 2029) and long at the
+  forward tenors (7Y to 20Y+); a key-rate perpetual is long every key-rate projection
+  bucket.
+- **Not covered.** The yield functions (`yield_never_called`, `call_analysis`), `to_call`
+  and `to_worst` of a floating perpetual need callable floaters
+  (FlyingScotman/rub-fixed-income-core#28) and raise `UnsupportedProduct`; the position
+  row's yield and duration are its stream's at the base projection. Assumed coupons are for
+  fixed legs (`InvalidTerms`). An unknown listed coupon of a **fixed** leg is still not
+  continued. The fixing history's calendar must cover the continued periods (an unbounded
+  or extended calendar): a bounded one ending earlier is `CALENDAR_OUT_OF_RANGE`.
 
 MOEX publishes a perpetual's yield as the **current yield**, coupon rate over clean price
 (`perpetual_current_yield`), with no duration. It is not a yield to call; it is the

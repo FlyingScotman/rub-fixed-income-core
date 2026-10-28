@@ -622,15 +622,16 @@ period margins and an optional convexity adjustment, goldens of ten KBD floaters
      `value_assumed_portfolio` / `horizon_assumed_portfolio` value the perpetual natively
      (`AssumedBook.native_exercises`). Carry and rolldown reconcile with the materialised
      stream to 1e-10 (`tests/test_perpetual_horizon.py`).
-127. **Perpetuals with a coupon formula.** A floater perpetual (RUONIA or key rate plus a
-     margin) needs its floating leg continued to the tail with the projection (with #112,
-     callable floaters); a perpetual whose coupon resets every N years to the KBD / OFZ
-     yield of N years plus a margin is the KBD constant-maturity index of 0.34.0
-     (`FixingIndex` `"kbd"`, `index_tenor_years=N`) fixed once per reset period: its
-     floating leg continued past the listed periods, the reset coupon the forward KBD
-     yield at the reset date, its rate risk on the KBD as a projection curve. Until then
-     `never_called` rejects a floating leg, and an unknown listed coupon is not
-     continued. P1.
+127. *(done, 0.41.0, FlyingScotman/rub-fixed-income-core#29)* **Perpetuals with a coupon
+     formula.** `never_called` continues a perpetual's floating leg
+     (`floating_perpetual_tail`): periods at the same step until one (a reset leg: a
+     whole cycle of `index_tenor_years`) starts 35 years out, projected; then a tail
+     (`PerpetualTail(amount=None)`) at the last coupon scaled to the mean step,
+     re-projected on every curve. A coupon fixed once per reset period is
+     `FloatingCouponPeriod.fixing_anchor`. Published coupons stay cash; risk on the
+     projection curve (the KBD for a KBD reset). Yields, `to_call` and `to_worst` of a
+     floating perpetual need #112 (callable floaters, issue #28); an unknown listed coupon
+     of a fixed leg is still not continued (`docs/callables.md`).
 128. *(downstream)* **TDM: no call by default.** In the monitor backend's bond valuation:
      replace `perpetual_call` / `PERPETUAL_CALL_YEARS` (a call assumed in five years) by
      passing the perpetual to core as listed, with its calls, and

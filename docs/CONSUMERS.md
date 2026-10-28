@@ -177,6 +177,43 @@ the KBD as RUONIA + basis with both legs computed (instead of `basis_view`):
   monitor's «RUB OFZ» scenarios to the basis ID (with RUONIA held it is the same KBD move);
 - `basis_view` remains for comparison (variant P: RUONIA ≡ basis bucket by bucket).
 
+**From 0.41.0: never-called perpetuals carried and with a coupon formula**
+(FlyingScotman/rub-fixed-income-core#27, #29; BACKLOG #126–#128, [callables.md](callables.md)).
+Nothing changes for books without perpetuals. For the monitor's B#128 (no call by default):
+
+- every perpetual and callable: `ValuationPolicy.exercise_assumptions=((instrument_id,
+  ExerciseAssumption.never_called()), ...)`, the instrument as listed with its calls and
+  puts, an empty `PrincipalLeg(())` for a perpetual; `horizon_portfolio` with the same
+  policy now carries them (theta, carry, rolldown) instead of `UNSUPPORTED_PRODUCT`;
+  `value_assumed_portfolio` / `horizon_assumed_portfolio` with an `InstrumentAssumption`
+  `never_called()` value them natively too;
+- fixed coupons (AT1 with a known coupon): `FixedCouponLeg` of the listed coupons, all known
+  from settlement (an unknown one is rejected: value such a bond to its put);
+- RUONIA or key rate + margin: `Instrument(..., ProductType.FLOATING_BOND, ...,
+  FloatingCouponLeg(FloatingCouponRule("ruonia" | "key_rate", ...), periods, fixing_id,
+  projection_curve_id), PrincipalLeg(()), ...)` with at least the current and one more
+  listed period (the step comes from the last two or three periods), published coupons as
+  `published_coupon_rub`; the snapshot carries the fixings and the projection curve as for a
+  dated floater;
+- KBD reset (every N years to the N-year KBD + margin): `FloatingCouponRule("kbd",
+  "single_fixing", margin, ACT_365_FIXED, ACT_365_FIXED, rate_rounding_decimals=2,
+  amount_rounding_decimals=2, fixing_date=FixingDateRule("accrual_start", lag,
+  "business_days"), index_tenor_years=N)`, every listed period of the current cycle with
+  `FloatingCouponPeriod(..., fixing_anchor=<the cycle's reset date>)` and the KBD history
+  `FixingHistory("kbd", ..., tenor_years=N)` holding the reset's fixing; a margin set at a
+  reset is the period's `margin`. The cycle continues every N years from that anchor
+  (`index_tenor_years` must be whole months). Projection curve: the KBD (`rub_ofz_kbd_v2`
+  or v3), so the reset's rate risk is `IR|<kbd>|*`;
+- calendars: the continued periods run 35 years past settlement (to about 2062), so the
+  fixing history's calendar (the ZCYC / RUONIA publication calendar) must cover them:
+  unbounded, or extended by its fixed rules; a bounded one is `CALENDAR_OUT_OF_RANGE`;
+- rows: `horizon="perpetual"`, `horizon_date` the tail's anchor (the last listed coupon for
+  a fixed perpetual, about 35 years out for a floating one), `exercise_assumption
+  exercise:never_called@never`, model flag `perpetual_tail`; yields and durations are the
+  stream's at the base projection. A floating perpetual has no `yield_never_called` /
+  `to_worst` yet (#28). Cost: 0.4–0.6 s with the Hessian for KBD-reset and key-rate
+  perpetuals, about 2.7 s for a quarterly RUONIA one.
+
 ## Deprecations in 0.12.0 and what consumers should move to
 
 Nothing is removed before 1.0. Each call below now emits a `DeprecationWarning` (hidden by

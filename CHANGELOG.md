@@ -29,6 +29,49 @@ its theta and carry had a gap once the monitor values perpetuals as never called
   anchor; the flat-curve closed form; explain against a full revaluation at the end curve;
   the portfolio and wrapper paths against the native valuation.
 
+### Never-called perpetuals with a coupon formula (#29)
+
+FlyingScotman/rub-fixed-income-core#29 (BACKLOG B#127), the floating part. Under 0.40.0
+`never_called` rejected a perpetual with a floating leg. Now it continues the formula:
+
+- `floating_perpetual_tail(leg, settlement)` (used by `exercised_instrument`): the leg's
+  listed periods, then new ones at the last step (its notional, period margin and payment
+  lag, unpublished) until one starts `FLOATING_EXPLICIT_YEARS` (35) years after settlement;
+  a leg whose last period has a `fixing_anchor` (below) continues cycle by cycle, the cycle
+  being `index_tenor_years` in whole months, each period anchored on its cycle's reset, to
+  the first whole cycle that starts 35 years out. Then a tail `PerpetualTail(anchor, None,
+  step)` (new: `amount=None`, `.floating`, `.coupon`, `.projected(last)`, `.with_amount`).
+- The cut: the last coupon is fixed 35 years out or later, where every curve core builds
+  is flat-forward (from 30 years) and every bucket shock flat, so later coupons would be
+  projected at its rate. The tail pays it scaled to the mean step (`amount * mean days /
+  its days`: the 89–92-day variation of quarters averages out) and is re-projected on every
+  curve: `BondRiskRequest(floating_leg=..., perpetual_tail=...)` (anchor = the leg's last
+  payment date) takes the last coupon of each projection (`BondRiskEngine.tail_for`), so the
+  Z-spread, discount and projection bucket DV01, CS01, the Hessian, scenarios, the discount
+  margin, `OfzBasisRiskEngine` and the horizon carry (#27) all move it with the projection
+  curve. Published coupons stay cash; a cycle fixed in the past reads its history fixing.
+- `value_portfolio` / `horizon_portfolio` / the assumed-book wrappers value it under
+  `never_called()` (`horizon="perpetual"`, `horizon_date` the tail's anchor, ~35 years out).
+  Yields, `to_call` and `to_worst` of a floating perpetual still need callable floaters
+  (#28: `UnsupportedProduct`); assumed coupons on a floating leg are `InvalidTerms`; an
+  unknown listed coupon of a fixed leg is still not continued.
+- Internal: the tail's payment schedule and times are cached on its schedule, not its
+  amount, so a re-projected tail costs no new schedule.
+- Tests (`tests/test_floating_perpetuals.py`, `tests/floating_perpetual_data.py`, synthetic
+  on the floater book of 2026-10-15, all discounted on RUONIA OIS): RUONIA compounded + 2 %
+  quarterly (single curve), key rate + 3 % quarterly (key-rate projection curve), KBD 5Y +
+  3.25 % reset every five years and paid semi-annually. Against the leg written out by hand
+  to 100 years without a tail, at the same spread: price within 1e-5 (RUONIA) and 1e-6
+  (others) of the price, bucket DV01 and CS01 within 7e-4 and 5e-6 of CS01, under a
+  tolerance derived from the day-count spread of a period times the tail's share; scenarios
+  within 1 %. The KBD-reset perpetual is short the KBD at the 2029 reset fixing (3Y) and
+  long 7Y–20Y+; the key-rate one long every key-rate bucket. Horizon carry against an
+  independent projection to 1e-10.
+- Timings (`value_portfolio`, one position, with the Hessian and one scenario, this
+  container): RUONIA quarterly 2.7 s (0.7 s first order only), key rate quarterly 0.55 s
+  (0.33 s), KBD reset semi-annual 0.43 s (0.06 s); `horizon_portfolio` 0.13 / 0.14 /
+  0.02 s. The RUONIA leg re-projects about 9 000 overnight steps per curve.
+
 ### Coupons fixed once per multi-period reset cycle (#29)
 
 Part of FlyingScotman/rub-fixed-income-core#29 (BACKLOG B#127): a floater whose coupon is

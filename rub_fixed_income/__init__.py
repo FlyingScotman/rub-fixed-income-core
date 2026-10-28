@@ -428,9 +428,11 @@ from .pass_through import (
     weighted_average_life,
 )
 from .perpetual import (
+    FLOATING_EXPLICIT_YEARS,
     PERPETUAL_TAIL_MODEL_VERSION,
     PerpetualTail,
     PerpetualYield,
+    floating_perpetual_tail,
     perpetual_tail,
     perpetual_yield,
 )
@@ -1015,6 +1017,7 @@ __all__ = [
 __all__ += [
     "ASSUMED_BOOK_MODEL_VERSION",
     "CALL_MODEL_VERSION",
+    "FLOATING_EXPLICIT_YEARS",
     "PERPETUAL_TAIL_MODEL_VERSION",
     "PREPAYMENT_MODEL_VERSION",
     "AssumedBook",
@@ -1046,6 +1049,7 @@ __all__ += [
     "cpr_sensitivity",
     "exercised_instrument",
     "extension_risk",
+    "floating_perpetual_tail",
     "horizon_assumed_portfolio",
     "option_adjusted_spread",
     "pass_through_analytics",

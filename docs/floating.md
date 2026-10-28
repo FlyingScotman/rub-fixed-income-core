@@ -167,7 +167,9 @@ index_tenor_years=T, rate_day_count=ACT_365_FIXED, ...)`:
   projection risk sits at the reset fixings (short at the fixing, long at fixing + 5Y),
   not spread over every period start. The anchor fixes in advance: it must be on or before
   the period's `accrual_start` (a reset in arrears is not supported), and only a
-  `single_fixing` rule takes it. Such a coupon accrues as any coupon fixed in advance.
+  `single_fixing` rule takes it. Such a coupon accrues as any coupon fixed in advance. A
+  never-called perpetual with such a leg continues it cycle by cycle
+  ([callables.md](callables.md#never-called-with-a-coupon-formula-0410-backlog-127)).
 - **Risk.** With `projection_curve` a KBD (`rub_ofz_kbd_v2`: annual-yield buckets) and
   `curve` RUONIA OIS, the two-curve engine gives `IR|<KBD>|*` projection risk next to
   `IR|<RUONIA>|*` discount risk and `CS`.

@@ -92,7 +92,7 @@ def materialised(
     out = []
     k = 1
     while (paid := tail.payment_date(k)) <= end:
-        out.append((paid, tail.amount))
+        out.append((paid, tail.coupon))
         k += 1
     return tuple(out)
 
