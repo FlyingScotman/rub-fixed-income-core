@@ -91,6 +91,7 @@ from .compatibility import price_cashflows
 from .dates import add_months
 from .discount import CurveBootstrapRequest, DiscountCurve, DiscountFactorCurve, OisQuote
 from .errors import InvalidTerms
+from .perpetual import PerpetualTail
 from .risk import (
     BondRiskEngine,
     BondRiskResult,
@@ -505,13 +506,14 @@ class OfzBasisRiskEngine:
 
     def _flows(
         self, curve: DiscountFactorCurve, projection: tuple[float, ...]
-    ) -> tuple[tuple[date, float], ...]:
+    ) -> tuple[tuple[tuple[date, float], ...], PerpetualTail | None]:
+        """Flows and perpetual tail (a floating tail at its last projected coupon)."""
         eng = self.engine
         req = eng.request
         fixed = eng._fixed_flows()
         leg = req.floating_leg
         if leg is None:
-            return fixed
+            return fixed, req.perpetual_tail
         if req.projection_curve is None:
             coupons = tuple(
                 leg.coupon(i, curve, check_guard=False) for i in leg.remaining(req.settlement_date)
@@ -519,7 +521,8 @@ class OfzBasisRiskEngine:
         else:
             moved = _shock_curve(req.projection_curve, eng._projection, projection, self.cache)
             coupons = eng._coupons(moved, projection)
-        return tuple(sorted((*fixed, *((c.payment_date, c.amount_rub) for c in coupons))))
+        flows = tuple(sorted((*fixed, *((c.payment_date, c.amount_rub) for c in coupons))))
+        return flows, eng.tail_for(coupons)
 
     def price(
         self,
@@ -545,14 +548,15 @@ class OfzBasisRiskEngine:
         req = eng.request
         try:
             curve = self.curve.shocked(ruonia_shifts, basis_shifts, self.cache)
+            flows, tail = self._flows(curve, projection)
             return positive_money(
                 price_cashflows(
-                    self._flows(curve, projection),
+                    flows,
                     curve,
                     spread=finite_money(eng.spread_bp + spread_shift, "shocked spread") * 1e-4,
                     settlement_date=req.settlement_date,
                     convention=req.spread_convention,
-                    perpetual_tail=req.perpetual_tail,
+                    perpetual_tail=tail,
                 ),
                 "bond price",
             )
@@ -596,7 +600,7 @@ class OfzBasisRiskEngine:
                     spread=finite_money(eng.spread_bp + spread_shift, "shocked spread") * 1e-4,
                     settlement_date=req.settlement_date,
                     convention=req.spread_convention,
-                    perpetual_tail=req.perpetual_tail,
+                    perpetual_tail=eng.tail_for(coupons),
                 ),
                 "bond price",
             )

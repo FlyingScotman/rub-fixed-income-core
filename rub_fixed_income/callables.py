@@ -16,7 +16,9 @@ named assumption:
   coupons, then the last one again at the same step without end
   (:class:`~rub_fixed_income.perpetual.PerpetualTail`, valued exactly). For a perpetual
   the never-called scenario is also a candidate of ``to_worst``: below par it is the
-  worst.
+  worst. A perpetual with a floating leg (0.41.0, BACKLOG #127) continues its formula
+  (:func:`~rub_fixed_income.perpetual.floating_perpetual_tail`): its unpublished coupons
+  are projected, so only the native valuation paths value it.
 
 Yields are effective annual from settlement on the instrument's
 ``yield_convention`` time basis (default ACT/365F, as MOEX publishes
@@ -64,7 +66,13 @@ from .domain import (
 )
 from .errors import InvalidTerms, UnsupportedProduct
 from .inflation import IndexedCouponLeg
-from .perpetual import PerpetualTail, perpetual_tail, perpetual_yield, tail_pv_at_yield
+from .perpetual import (
+    PerpetualTail,
+    floating_perpetual_tail,
+    perpetual_tail,
+    perpetual_yield,
+    tail_pv_at_yield,
+)
 
 __all__ = [
     "CALL_MODEL_VERSION",
@@ -277,8 +285,11 @@ class ExercisedBond:
     horizon, risk). ``source_sha256`` identifies the callable terms it came from.
 
     A never-called perpetual stays a perpetual without calls: ``instrument`` holds its
-    listed coupons and ``perpetual_tail`` the coupons after them, forever. Only
-    ``value_portfolio`` values it (its risk engine prices the tail).
+    listed coupons and ``perpetual_tail`` the coupons after them, forever. A floating
+    perpetual (0.41.0) holds its leg continued to 35 years and a tail with
+    ``amount=None``, re-projected with the leg (``perpetual.floating_perpetual_tail``). Only the
+    native paths value it, which price the tail: ``value_portfolio`` and (0.41.0)
+    ``horizon_portfolio`` / ``horizon_valuation(..., perpetual_tail=)``.
     """
 
     instrument: Instrument
@@ -385,7 +396,13 @@ def _never_tail(bond: Instrument, settlement: date) -> PerpetualTail:
     leg = bond.coupon_leg
     if leg is None:
         raise InvalidTerms("a perpetual without coupons has no value if never called")
-    assert not isinstance(leg, (FloatingCouponLeg, IndexedCouponLeg))  # _extended rejects
+    if isinstance(leg, FloatingCouponLeg):
+        raise UnsupportedProduct(
+            "a floating perpetual's coupons are projected: value it never called with "
+            "value_portfolio (ValuationPolicy.exercise_assumptions); its yield is the "
+            "position row's"
+        )
+    assert not isinstance(leg, IndexedCouponLeg)  # _extended rejects
     periods: Sequence[CouponPeriod | RateCouponPeriod] = leg.periods
     future = [p for p in periods if p.payment_date > settlement]
     if not future:
@@ -405,6 +422,20 @@ def _never_tail(bond: Instrument, settlement: date) -> PerpetualTail:
                 "perpetual needs its listed coupons (value it to its put instead)"
             )
     return perpetual_tail(periods)
+
+
+def _floating_never(
+    instrument: Instrument, assumed: Sequence[AssumedCoupon], settlement: date
+) -> tuple[FloatingCouponLeg, PerpetualTail]:
+    """A never-called floating perpetual's continued leg and tail (BACKLOG #127)."""
+    leg = instrument.coupon_leg
+    assert isinstance(leg, FloatingCouponLeg)
+    if assumed:
+        raise InvalidTerms(
+            "a floating perpetual continues its coupon formula; assumed coupons are for "
+            "fixed coupon legs"
+        )
+    return floating_perpetual_tail(leg, settlement)
 
 
 def _never_yield(
@@ -729,7 +760,10 @@ def resolve_exercise(
         raise TypeError("assumption must be an ExerciseAssumption")
     assumed = assumption.assumed_coupons
     if assumption.kind == "never_called" and instrument.is_perpetual:
-        _never_tail(_extended(instrument, assumed), settlement)
+        if isinstance(instrument.coupon_leg, FloatingCouponLeg):
+            _floating_never(instrument, assumed, settlement)
+        else:
+            _never_tail(_extended(instrument, assumed), settlement)
         return ResolvedExercise(assumption, settlement, "never", None, None, None)
     if assumption.kind in ("to_maturity", "never_called"):
         maturity = instrument.maturity_date
@@ -773,8 +807,19 @@ def exercised_instrument(instrument: Instrument, resolved: ResolvedExercise) -> 
     redemptions would not sum to the face), so it is rejected here; the yield
     functions above handle any call price.
     """
-    bond = _extended(instrument, resolved.assumption.assumed_coupons)
     redemption = resolved.redemption_date
+    if redemption is None and isinstance(instrument.coupon_leg, FloatingCouponLeg):
+        # A floating perpetual never called: its leg continued, then the projected tail.
+        continued, tail = _floating_never(
+            instrument, resolved.assumption.assumed_coupons, resolved.settlement_date
+        )
+        uncalled = replace(
+            instrument,
+            coupon_leg=continued,
+            offers=tuple(o for o in instrument.offers if o.kind is OfferKind.PUT),
+        )
+        return ExercisedBond(uncalled, resolved, canonical_sha256(instrument), perpetual_tail=tail)
+    bond = _extended(instrument, resolved.assumption.assumed_coupons)
     if redemption is None:
         # Never called: the perpetual keeps its coupons and puts, and the tail goes on.
         tail = _never_tail(bond, resolved.settlement_date)

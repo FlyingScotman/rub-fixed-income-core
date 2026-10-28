@@ -10,6 +10,7 @@ from the discount curve; both then carry their own 11 bucket factors.
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal, cast
@@ -113,8 +114,11 @@ class BondRiskRequest:
 
     ``perpetual_tail`` (BACKLOG #125) adds a never-called perpetual's coupons after its
     last listed one, valued exactly on every shocked curve and spread
-    (``perpetual.tail_pv_at_spread``); ``cashflows`` are then the listed coupons. Fixed
-    coupons only.
+    (``perpetual.tail_pv_at_spread``); ``cashflows`` are then the listed coupons. With a
+    ``floating_leg`` (0.41.0, BACKLOG #127) the tail has ``amount=None``, its anchor is
+    the leg's last payment date (paid after settlement) and each tail coupon is the
+    leg's last coupon as projected on the same curve: on every shocked projection curve
+    the tail moves with it (``perpetual.floating_perpetual_tail``).
     """
 
     cashflows: tuple[BondCashflow, ...]
@@ -166,8 +170,21 @@ class BondRiskRequest:
         if self.perpetual_tail is not None:
             if not isinstance(self.perpetual_tail, PerpetualTail):
                 raise TypeError("perpetual_tail must be a PerpetualTail")
-            if self.floating_leg is not None:
-                raise ValueError("a perpetual tail continues fixed coupons only")
+            tail = self.perpetual_tail
+            if self.floating_leg is None:
+                if tail.floating:
+                    raise ValueError("a tail with amount=None continues a floating leg")
+            else:
+                last = self.floating_leg.periods[-1].payment_date
+                if not tail.floating:
+                    raise ValueError(
+                        "a floating leg's tail continues its last projected coupon: "
+                        "pass amount=None"
+                    )
+                if tail.anchor_date != last:
+                    raise ValueError("a floating tail's anchor is the leg's last payment date")
+                if last <= self.settlement_date:
+                    raise ValueError("a floating tail needs the leg's last period after settlement")
             if any(f.payment_date > self.perpetual_tail.anchor_date for f in flows):
                 raise ValueError("listed cashflows must not follow the perpetual tail's anchor")
         elif not any(f.payment_date > self.settlement_date and f.amount > 0.0 for f in flows):
@@ -343,14 +360,15 @@ class BondRiskEngine:
         spread = req.spread_bp
         if spread is None:
             assert req.dirty_price_rub is not None
+            flows, tail = self._stream(projection, _ZERO_SHOCK)
             spread = (
                 solve_z_spread(
-                    self._flows(curve, projection, _ZERO_SHOCK),
+                    flows,
                     req.dirty_price_rub,
                     curve,
                     settlement_date=req.settlement_date,
                     convention=req.spread_convention,
-                    perpetual_tail=req.perpetual_tail,
+                    perpetual_tail=tail,
                 )
                 * 10_000.0
             )
@@ -424,7 +442,7 @@ class BondRiskEngine:
             units = [b.dv01_rub for b in risk.buckets]
             parallel = risk.cs01_rub if self.request.spread_kind == "credit" else risk.ofz_spr01_rub
         else:
-            held = self._flows(self._projection, self._projection, _ZERO_SHOCK)
+            held, held_tail = self._stream(self._projection, _ZERO_SHOCK)
 
             def price(shifts: tuple[float, ...], spread: float) -> float:
                 curve = self._shocked_curve(shifts)
@@ -434,7 +452,7 @@ class BondRiskEngine:
                     spread=finite_money(self.spread_bp + spread, "shocked spread") * 1e-4,
                     settlement_date=self.request.settlement_date,
                     convention=self.request.spread_convention,
-                    perpetual_tail=self.request.perpetual_tail,
+                    perpetual_tail=held_tail,
                 )
 
             units = []
@@ -466,13 +484,14 @@ class BondRiskEngine:
         if not self.two_curve:
             return self.spread_bp
         projection = self._projection
-        flows = self._flows(projection, projection, _ZERO_SHOCK)
+        flows, tail = self._stream(projection, _ZERO_SHOCK)
         margin = solve_z_spread(
             flows,
             self.base_price_rub,
             projection,
             settlement_date=self.request.settlement_date,
             convention=self.request.spread_convention,
+            perpetual_tail=tail,
         )
         return finite_money(margin * 10_000.0, "discount margin")
 
@@ -565,11 +584,27 @@ class BondRiskEngine:
         projection: DiscountFactorCurve,
         projection_shifts: tuple[float, ...],
     ) -> tuple[tuple[date, float], ...]:
+        return self._stream(projection, projection_shifts)[0]
+
+    def _stream(
+        self, projection: DiscountFactorCurve, projection_shifts: tuple[float, ...]
+    ) -> tuple[tuple[tuple[date, float], ...], PerpetualTail | None]:
+        """The flows and the perpetual tail with coupons projected off ``projection``."""
         fixed = self._fixed_flows()
         if self.request.floating_leg is None:
-            return fixed
+            return fixed, self.request.perpetual_tail
         coupons = self._coupons(projection, projection_shifts)
-        return tuple(sorted((*fixed, *((c.payment_date, c.amount_rub) for c in coupons))))
+        flows = tuple(sorted((*fixed, *((c.payment_date, c.amount_rub) for c in coupons))))
+        return flows, self.tail_for(coupons)
+
+    def tail_for(self, coupons: Sequence[FloatingCouponProjection]) -> PerpetualTail | None:
+        """The request's tail; a floating one (``amount=None``) continues the last of
+        ``coupons`` (the remaining coupons projected on one curve, the leg's last period
+        last; :meth:`PerpetualTail.projected`)."""
+        tail = self.request.perpetual_tail
+        if tail is None or not tail.floating:
+            return tail
+        return tail.projected(coupons[-1])
 
     def _shocked_curve(self, shifts: tuple[float, ...]) -> DiscountFactorCurve:
         return _shock_curve(self.request.curve, self._curve, shifts, self.curve_cache)
@@ -596,14 +631,15 @@ class BondRiskEngine:
                     source, self._projection, projection_shifts, self.curve_cache
                 )
                 moves = projection_shifts
+            flows, tail = self._stream(projection, moves)
             return positive_money(
                 price_cashflows(
-                    self._flows(curve, projection, moves),
+                    flows,
                     curve,
                     spread=finite_money(self.spread_bp + spread_shift, "shocked spread") * 1e-4,
                     settlement_date=self.request.settlement_date,
                     convention=self.request.spread_convention,
-                    perpetual_tail=self.request.perpetual_tail,
+                    perpetual_tail=tail,
                 ),
                 "bond price",
             )

@@ -1,5 +1,110 @@
 # Changelog
 
+## 0.41.0 — Never-called perpetuals: horizon P&L, coupon formulas
+
+### Horizon P&L of a never-called perpetual (#27)
+
+FlyingScotman/rub-fixed-income-core#27 (BACKLOG B#126). Under 0.40.0 `horizon_portfolio`
+and the assumed-book wrappers rejected a never-called perpetual (`UNSUPPORTED_PRODUCT`), so
+its theta and carry had a gap once the monitor values perpetuals as never called.
+
+- `horizon_valuation(..., perpetual_tail=None)` (and `explain_horizon_pnl`): with the tail
+  of a never-called perpetual (`ExercisedBond.perpetual_tail`) every value adds the tail
+  coupons after its settlement, priced exactly as `value_portfolio` prices them
+  (`tail_pv_at_spread`): `pv_start`, `pv_forward` on today's curve from the horizon
+  settlement, `pv_rolled` on the rolled curve read from the horizon date; tail coupons paid
+  in `(S0, S1]` are received. `redemption_horizon="perpetual"` (new value of
+  `HorizonValuation.redemption_horizon`) and `redemption_date` the tail's anchor, as
+  `value_portfolio` rows read; `accrued_end_rub` is None past the anchor. A put the
+  horizon policy picks is the horizon instead, as in `value_portfolio`. A perpetual without
+  a tail keeps its rejection; a tail on a dated bond is `InvalidTerms`.
+- `horizon_portfolio` carries a perpetual under `ValuationPolicy.exercise_assumptions`
+  `never_called()` instead of rejecting it.
+- `value_assumed_portfolio` / `horizon_assumed_portfolio`: a never-called perpetual is kept
+  as given and valued natively (`AssumedBook.native_exercises`, added to the policy's
+  `exercise_assumptions` by `AssumedBook.policy_for`); its `AssumptionUse` reads
+  `exercise="never"`. Books without one are unchanged, hash for hash.
+- Tests (`tests/test_perpetual_horizon.py`): carry and rolldown against the materialised
+  stream (250 years of tail flows) on the KBD to 1e-10, horizons before and after the
+  anchor; the flat-curve closed form; explain against a full revaluation at the end curve;
+  the portfolio and wrapper paths against the native valuation.
+
+### Never-called perpetuals with a coupon formula (#29)
+
+FlyingScotman/rub-fixed-income-core#29 (BACKLOG B#127), the floating part. Under 0.40.0
+`never_called` rejected a perpetual with a floating leg. Now it continues the formula:
+
+- `floating_perpetual_tail(leg, settlement)` (used by `exercised_instrument`): the leg's
+  listed periods, then new ones at the last step (its notional, period margin and payment
+  lag, unpublished) until one starts `FLOATING_EXPLICIT_YEARS` (35) years after settlement;
+  a leg whose last period has a `fixing_anchor` (below) continues cycle by cycle, the cycle
+  being `index_tenor_years` in whole months, each period anchored on its cycle's reset, to
+  the first whole cycle that starts 35 years out. Each new reset is the continued coupon
+  start nearest `add_months(previous reset, 12 N)`, so a 182- or 91-day schedule (whose
+  ten or twenty coupons end six days before five calendar years) and a month-end one reset
+  on the right coupon: every cycle holds its coupons. Then a tail `PerpetualTail(anchor, None,
+  step)` (new: `amount=None`, `.floating`, `.coupon`, `.projected(last)`, `.with_amount`).
+- The cut: the last coupon is fixed 35 years out or later, where every curve core builds
+  is flat-forward (from 30 years) and every bucket shock flat, so later coupons would be
+  projected at its rate. The tail pays it scaled to the mean step (`amount * mean days /
+  its days`: the 89–92-day variation of quarters averages out) and is re-projected on every
+  curve: `BondRiskRequest(floating_leg=..., perpetual_tail=...)` (anchor = the leg's last
+  payment date) takes the last coupon of each projection (`BondRiskEngine.tail_for`), so the
+  Z-spread, discount and projection bucket DV01, CS01, the Hessian, scenarios, the discount
+  margin, `OfzBasisRiskEngine` and the horizon carry (#27) all move it with the projection
+  curve. Published coupons stay cash; a cycle fixed in the past reads its history fixing.
+- `horizon_valuation` / `explain_horizon_pnl` check a tail as `BondRiskRequest` does: a
+  floating tail (`amount=None`) exactly on a floating leg, anchored on the last listed
+  payment date, no listed flow after it (`InvalidTerms`).
+- `value_portfolio` / `horizon_portfolio` / the assumed-book wrappers value it under
+  `never_called()` (`horizon="perpetual"`, `horizon_date` the tail's anchor, ~35 years out).
+  Yields, `to_call` and `to_worst` of a floating perpetual still need callable floaters
+  (#28: `UnsupportedProduct`); assumed coupons on a floating leg are `InvalidTerms`; an
+  unknown listed coupon of a fixed leg is still not continued.
+- Internal: the tail's payment schedule and times are cached on its schedule, not its
+  amount, so a re-projected tail costs no new schedule.
+- Tests (`tests/test_floating_perpetuals.py`, `tests/floating_perpetual_data.py`, synthetic
+  on the floater book of 2026-10-15, all discounted on RUONIA OIS): RUONIA compounded + 2 %
+  quarterly (single curve), key rate + 3 % quarterly (key-rate projection curve), KBD 5Y +
+  3.25 % reset every five years and paid semi-annually. Against the leg written out by hand
+  to 100 years without a tail, at the same spread: price within 1e-5 (RUONIA) and 1e-6
+  (others) of the price, bucket DV01 and CS01 within 7e-4 and 5e-6 of CS01, under a
+  tolerance derived from the day-count spread of a period times the tail's share; scenarios
+  within 1 %. The KBD-reset perpetual is short the KBD at the 2029 reset fixing (3Y) and
+  long 7Y–20Y+; the key-rate one long every key-rate bucket. Horizon carry against an
+  independent projection to 1e-10.
+- Timings (`value_portfolio`, one position, with the Hessian and one scenario, this
+  container): RUONIA quarterly 2.7 s (0.7 s first order only), key rate quarterly 0.55 s
+  (0.33 s), KBD reset semi-annual 0.43 s (0.06 s); `horizon_portfolio` 0.13 / 0.14 /
+  0.02 s. The RUONIA leg re-projects about 9 000 overnight steps per curve.
+
+### Coupons fixed once per multi-period reset cycle (#29)
+
+Part of FlyingScotman/rub-fixed-income-core#29 (BACKLOG B#127): a floater whose coupon is
+reset once per cycle of several periods, e.g. every five years to the KBD 5Y
+(`FloatingCouponRule(index="kbd", index_tenor_years=5)`) plus a margin, paid
+semi-annually. Under 0.40.0 the single fixing of every period was anchored on that period's
+own `accrual_start` / `accrual_end` / `payment_date`, so each semi-annual period took its
+own forward: the wrong coupon and the wrong rate-risk shape. Periods without the new field
+are unchanged (the suite's goldens and pinned hashes pass unchanged).
+
+- `FloatingCouponPeriod(..., fixing_anchor=None)`: the date the rule's `fixing_date`
+  offset (`offset_days` in its `unit`) counts back from for this period, replacing the
+  rule's anchor. All periods of a cycle carry the cycle's start and share one fixing: from
+  the history when it is before the valuation date (`fixed_by_history` for the whole
+  cycle), else the forward KBD yield at that fixing over the tenor; published coupons stay
+  cash. In advance only: `fixing_anchor > accrual_start` is `ValueError` (a reset in
+  arrears is not needed by any bond seen); a period with it under a rule without
+  `fixing_date` is `InvalidTerms` from `FloatingLeg` and `FloatingCouponLeg`. Omitted from
+  the canonical form at None (round-trips with `to_dict` / `from_dict`; enters the leg
+  identity only when set). Accrued interest is that of any coupon fixed in advance.
+- Tests (`tests/test_kbd_reset_fixing.py`, synthetic): three five-year cycles of ten
+  semi-annual periods on the KBD of 2026-10-15; each projected cycle's rate equals the DF
+  forward to 1e-12 and the ZCYC formula within 0.02 bp; the past cycle reads its history
+  fixing for all seven remaining periods; projection risk through `BondRiskEngine` and
+  `value_portfolio` is short at the 3Y bucket (the 2029 reset fixing), long at 7Y–15Y and
+  zero before 3Y and at 20Y+, against risk spread from 1Y to 20Y+ with per-period anchors.
+
 ## 0.40.0 — KBD floaters discounted on RUONIA in RUONIA + basis coordinates
 
 ### KBD floaters discounted on RUONIA in RUONIA + basis coordinates (#90)

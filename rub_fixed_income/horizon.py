@@ -30,6 +30,13 @@ floater is left to the caller here, so its accrued fields are None
 a floater (0.33.0) takes the fixings at both dates: at the end market its coupons are
 re-projected with the fixings realised over the horizon.
 
+A never-called perpetual (0.41.0, BACKLOG #126) is carried with its tail
+(``perpetual_tail``, :class:`~rub_fixed_income.perpetual.PerpetualTail`): every value
+adds the tail coupons after its settlement, priced exactly as ``value_portfolio`` prices
+them (the curve read from that curve's date, flat-forward past 30 years, the sum to 600
+years); tail coupons paid by the horizon settlement are received. Unless the horizon
+policy picks a put, which it is then valued to, as in ``value_portfolio``.
+
 Amounts are RUB per bond; :func:`horizon_portfolio` scales by position quantity.
 
 Derivative engines carry to a horizon on the same two curve views (BACKLOG #101):
@@ -62,9 +69,10 @@ from .compatibility import price_cashflows, solve_z_spread
 from .conventions import ZSpreadConvention
 from .dates import BusinessCalendar
 from .discount import CurveBootstrapRequest, DiscountCurve
-from .domain import FloatingCouponLeg, Instrument, ProductType
+from .domain import FloatingCouponLeg, Instrument, Offer, OfferKind, ProductType
 from .errors import InvalidTerms, UnsupportedProduct
-from .floating import FixingHistory, FloatingLeg
+from .floating import FixingHistory, FloatingCouponProjection, FloatingLeg
+from .perpetual import PerpetualTail
 
 __all__ = [
     "FX_HORIZONS",
@@ -82,18 +90,26 @@ __all__ = [
 
 HORIZON_MODEL_VERSION = "rub-horizon-carry-v1"
 HorizonPolicy = Literal["maturity", "confirmed_put", "open_put"]
+# What a bond was valued to: a horizon policy, or a never-called perpetual's tail (0.41.0).
+HorizonLabel = Literal["maturity", "confirmed_put", "open_put", "perpetual"]
 
 
 @dataclass(frozen=True)
 class HorizonValuation:
-    """Carry and rolldown of one bond from ``settlement_date`` to the horizon settlement."""
+    """Carry and rolldown of one bond from ``settlement_date`` to the horizon settlement.
+
+    A never-called perpetual reads ``redemption_horizon="perpetual"`` and
+    ``redemption_date`` its tail's anchor (the last listed coupon), as in
+    ``value_portfolio``; its received coupons include the tail coupons paid by the
+    horizon settlement.
+    """
 
     instrument_id: str
     start_date: date
     horizon_date: date
     settlement_date: date
     horizon_settlement_date: date
-    redemption_horizon: HorizonPolicy
+    redemption_horizon: HorizonLabel
     redemption_date: date
     spread_bp: float
     spread_convention: str
@@ -138,7 +154,7 @@ class _Setup:
     settlement: date
     horizon_settlement: date
     redemption_date: date
-    policy: HorizonPolicy
+    policy: HorizonLabel
     remaining: tuple[tuple[date, float], ...]
     received_coupons: float
     received_principal: float
@@ -146,7 +162,15 @@ class _Setup:
     # Floaters: the start projection curve and the remaining flows re-projected off a
     # rolled projection curve (observations before the horizon at today's forwards).
     projection: DiscountCurve | None = None
-    reproject: Callable[[DiscountCurve], tuple[tuple[date, float], ...]] | None = None
+    reproject: (
+        Callable[[DiscountCurve], tuple[tuple[tuple[date, float], ...], PerpetualTail | None]]
+        | None
+    ) = None
+    # A never-called perpetual: the coupons after its listed ones, forever (a floating
+    # one at its start projection).
+    tail: PerpetualTail | None = None
+    # The put valued to, if any.
+    offer: Offer | None = None
 
 
 @dataclass(frozen=True)
@@ -163,6 +187,7 @@ def _setup(
     horizon_date: date,
     policy: HorizonPolicy,
     floating: _FloatingInputs | None = None,
+    tail: PerpetualTail | None = None,
 ) -> _Setup:
     floater = instrument.product is ProductType.FLOATING_BOND
     if not (instrument.product is ProductType.FIXED_BOND or (floater and floating is not None)):
@@ -170,23 +195,42 @@ def _setup(
             f"{instrument.product.value} horizon valuation is not supported"
             + (" without its fixing history (fixings=)" if floater else "")
         )
-    if instrument.is_perpetual:
-        raise UnsupportedProduct("perpetual bonds need a call assumption (package 9)")
+    if tail is not None and not isinstance(tail, PerpetualTail):
+        raise TypeError("perpetual_tail must be a PerpetualTail")
+    if instrument.is_perpetual and tail is None:
+        raise UnsupportedProduct(
+            "perpetual bonds need a call assumption or a never-called tail (perpetual_tail=)"
+        )
+    if tail is not None and not instrument.is_perpetual:
+        raise InvalidTerms("a perpetual tail continues a perpetual bond only")
+    if tail is not None:
+        _check_tail(instrument, tail)
     if horizon_date <= start_date:
         raise InvalidTerms("horizon date must be after the start date")
     settlement = calendar.add_business_days(start_date, instrument.settlement_lag_days)
     horizon_settlement = calendar.add_business_days(horizon_date, instrument.settlement_lag_days)
-    redemption_date, offer = instrument.horizon(policy, settlement)
+    label: HorizonLabel
+    if tail is None:
+        redemption_date, offer = instrument.horizon(policy, settlement)
+        label = "maturity" if offer is None else policy
+    else:
+        offer = _perpetual_put(instrument, policy, settlement)
+        if offer is None:
+            redemption_date, label = tail.anchor_date, "perpetual"
+        else:  # valued to the put the policy picks, as in value_portfolio
+            redemption_date, label, tail = offer.offer_date, policy, None
     flows = instrument.cashflows(after=settlement, horizon=redemption_date, offer=offer)
-    if not flows:
+    if not flows and tail is None:
         raise InvalidTerms("no cashflows remain after settlement")
     received = [f for f in flows if f.payment_date <= horizon_settlement]
     coupons_received = math.fsum(f.coupon for f in received)
     pairs = tuple((f.payment_date, f.amount) for f in flows)
     reproject = None
+    perpetual = tail
     if floating is not None:
         leg = _floating_leg(instrument, floating, start_date, redemption_date)
         start_coupons = leg.project(floating.projection, settlement_date=settlement)
+        tail = _projected_tail(tail, start_coupons)
         coupons_received = math.fsum(
             c.amount_rub for c in start_coupons if c.payment_date <= horizon_settlement
         )
@@ -196,33 +240,93 @@ def _setup(
         )
         start_curve = floating.projection
 
-        def reproject(rolled: DiscountCurve) -> tuple[tuple[date, float], ...]:
+        def reproject(
+            rolled: DiscountCurve,
+        ) -> tuple[tuple[tuple[date, float], ...], PerpetualTail | None]:
             coupons = leg.project(
                 rolled,
                 settlement_date=horizon_settlement,
                 check_guard=False,
                 bridge=(start_curve, horizon_date),
             )
-            return tuple(
+            flows = tuple(
                 sorted((*principal_left, *((c.payment_date, c.amount_rub) for c in coupons)))
             )
+            return flows, _projected_tail(perpetual, coupons)
 
+    if tail is not None:
+        coupons_received += _tail_received(tail, settlement, horizon_settlement)
     remaining = tuple((d, a) for d, a in pairs if d > horizon_settlement)
-    if not remaining:
+    if not remaining and tail is None:
         raise InvalidTerms("the bond is redeemed before the horizon settlement")
     return _Setup(
         instrument,
         settlement,
         horizon_settlement,
         redemption_date,
-        "maturity" if offer is None else policy,
+        label,
         remaining,
         coupons_received,
         math.fsum(f.principal for f in received),
         pairs,
         None if floating is None else floating.projection,
         reproject,
+        tail,
+        offer,
     )
+
+
+def _check_tail(instrument: Instrument, tail: PerpetualTail) -> None:
+    """The tail continues the listed coupons, as ``BondRiskRequest`` requires."""
+    leg = instrument.coupon_leg
+    floating = isinstance(leg, FloatingCouponLeg)
+    if tail.floating != floating:
+        raise InvalidTerms(
+            "a floating leg's tail continues its projected coupon (amount=None); "
+            "a fixed leg's tail has an amount"
+        )
+    if leg is None or not leg.periods:
+        raise InvalidTerms("a perpetual tail continues listed coupons")
+    last = leg.periods[-1].payment_date
+    if tail.anchor_date != last:
+        raise InvalidTerms(
+            f"the perpetual tail is anchored on {tail.anchor_date}, the last listed coupon "
+            f"is paid {last}"
+        )
+    if any(f.payment_date > tail.anchor_date for f in instrument.cashflows()):
+        raise InvalidTerms("listed cashflows must not follow the perpetual tail's anchor")
+
+
+def _perpetual_put(instrument: Instrument, policy: HorizonPolicy, settlement: date) -> Offer | None:
+    """The put a never-called perpetual is valued to under ``policy``, or None."""
+    if policy == "maturity" or not any(o.kind is OfferKind.PUT for o in instrument.offers):
+        return None
+    try:
+        return instrument.horizon(policy, settlement)[1]
+    except InvalidTerms:  # no put chosen: a perpetual has no maturity horizon
+        return None
+
+
+def _projected_tail(
+    tail: PerpetualTail | None, coupons: tuple[FloatingCouponProjection, ...]
+) -> PerpetualTail | None:
+    """A floating perpetual's tail (``amount=None``) at the last of ``coupons``, the leg's
+    last period projected on one curve (BACKLOG #127); any other tail as given."""
+    if tail is None or not tail.floating:
+        return tail
+    if not coupons:
+        raise InvalidTerms("a floating perpetual tail needs its leg's last period projected")
+    return tail.projected(coupons[-1])
+
+
+def _tail_received(tail: PerpetualTail, settlement: date, horizon_settlement: date) -> float:
+    """The tail coupons paid in ``(settlement, horizon_settlement]``, received as cash."""
+    total, k = 0.0, 1
+    while (paid := tail.payment_date(k)) <= horizon_settlement:
+        if paid > settlement:
+            total += tail.coupon
+        k += 1
+    return total
 
 
 def _floating_leg(
@@ -248,9 +352,15 @@ def _price(
     spread_bp: float,
     settlement: date,
     convention: ZSpreadConvention,
+    tail: PerpetualTail | None = None,
 ) -> float:
     return price_cashflows(
-        flows, curve, spread=spread_bp / 10_000.0, settlement_date=settlement, convention=convention
+        flows,
+        curve,
+        spread=spread_bp / 10_000.0,
+        settlement_date=settlement,
+        convention=convention,
+        perpetual_tail=tail,
     )
 
 
@@ -268,7 +378,12 @@ def _start_spread(
     dirty = positive_money(dirty_price_rub, "dirty price")  # type: ignore[arg-type]
     return (
         solve_z_spread(
-            setup.pv_flows, dirty, curve, settlement_date=setup.settlement, convention=convention
+            setup.pv_flows,
+            dirty,
+            curve,
+            settlement_date=setup.settlement,
+            convention=convention,
+            perpetual_tail=setup.tail,
         )
         * 10_000.0
     )
@@ -288,6 +403,7 @@ def horizon_valuation(
     fixings: FixingHistory | None = None,
     projection_curve: DiscountCurve | CurveBootstrapRequest | None = None,
     strike_guard_bp: float | None = None,
+    perpetual_tail: PerpetualTail | None = None,
 ) -> HorizonValuation:
     """Carry a fixed-coupon bond or a RUB floater from ``curve.curve_date`` to ``horizon_date``.
 
@@ -299,6 +415,12 @@ def horizon_valuation(
     A floater needs ``fixings`` dated at the curve date. Its coupons project off
     ``projection_curve`` (same date) or, when None, off ``curve`` itself;
     ``strike_guard_bp`` is the cap/floor policy of :class:`FloatingLeg`.
+
+    A never-called perpetual (0.41.0) needs ``perpetual_tail``, the coupons after its
+    listed ones (``ExercisedBond.perpetual_tail``): each value adds the tail after its
+    settlement (``pv_rolled`` on the rolled curve, read from the horizon date), and tail
+    coupons paid by the horizon settlement are received. A put the horizon policy picks
+    is valued to instead, as in ``value_portfolio``.
     """
     convention = ZSpreadConvention() if spread_convention is None else spread_convention
     cache = ShockedCurveCache() if curve_cache is None else curve_cache
@@ -312,7 +434,13 @@ def horizon_valuation(
     elif projection_curve is not None:
         raise InvalidTerms("a projection curve needs the floater's fixings")
     setup = _setup(
-        instrument, calendar, base.curve_date, horizon_date, redemption_horizon, floating
+        instrument,
+        calendar,
+        base.curve_date,
+        horizon_date,
+        redemption_horizon,
+        floating,
+        perpetual_tail,
     )
     spread = _start_spread(setup, base, convention, spread_bp, dirty_price_rub)
     return _valuation(setup, base, horizon_date, spread, convention)
@@ -325,17 +453,20 @@ def _valuation(
     spread: float,
     convention: ZSpreadConvention,
 ) -> HorizonValuation:
-    pv_start = _price(setup.pv_flows, base, spread, setup.settlement, convention)
-    pv_forward = _price(setup.remaining, base, spread, setup.horizon_settlement, convention)
+    tail = setup.tail
+    pv_start = _price(setup.pv_flows, base, spread, setup.settlement, convention, tail)
+    pv_forward = _price(setup.remaining, base, spread, setup.horizon_settlement, convention, tail)
     rolled = roll_curve(base, horizon_date)
-    rolled_flows = setup.remaining
+    rolled_flows, rolled_tail = setup.remaining, tail
     if setup.reproject is not None:
         assert setup.projection is not None
         rolled_projection = (
             rolled if setup.projection is base else roll_curve(setup.projection, horizon_date)
         )
-        rolled_flows = setup.reproject(rolled_projection)
-    pv_rolled = _price(rolled_flows, rolled, spread, setup.horizon_settlement, convention)
+        rolled_flows, rolled_tail = setup.reproject(rolled_projection)
+    pv_rolled = _price(
+        rolled_flows, rolled, spread, setup.horizon_settlement, convention, rolled_tail
+    )
     received = setup.received_coupons + setup.received_principal
     carry = finite_money(pv_forward + received - pv_start, "carry")
     rolldown = finite_money(pv_rolled - pv_forward, "rolldown")
@@ -356,7 +487,11 @@ def _valuation(
         setup.received_coupons,
         setup.received_principal,
         None if setup.reproject is not None else instrument.accrued(setup.settlement),
-        None if setup.reproject is not None else instrument.accrued(setup.horizon_settlement),
+        # Past the last listed coupon a perpetual accrues a tail coupon the terms do not list.
+        None
+        if setup.reproject is not None
+        or (tail is not None and setup.horizon_settlement >= tail.anchor_date)
+        else instrument.accrued(setup.horizon_settlement),
         instrument.outstanding_face(setup.settlement),
         instrument.outstanding_face(setup.horizon_settlement),
         carry,
@@ -383,6 +518,7 @@ def explain_horizon_pnl(
     projection_curve: DiscountCurve | CurveBootstrapRequest | None = None,
     end_projection_curve: DiscountCurve | CurveBootstrapRequest | None = None,
     strike_guard_bp: float | None = None,
+    perpetual_tail: PerpetualTail | None = None,
 ) -> HorizonPnlExplain:
     """Explain the change from the start market to the end market (curve and spread).
 
@@ -397,6 +533,9 @@ def explain_horizon_pnl(
     end projection curve: ``rates`` is that repricing at the start spread, so it holds
     the projection-curve move and the fixings published over the horizon against the
     forwards that carry assumed; ``spread`` reprices the rolled flows at the end spread.
+
+    ``perpetual_tail`` (0.41.0): a never-called perpetual's tail, as in
+    :func:`horizon_valuation`; the end market prices the same tail at the end curve.
     """
     convention = ZSpreadConvention() if spread_convention is None else spread_convention
     cache = ShockedCurveCache() if curve_cache is None else curve_cache
@@ -426,38 +565,43 @@ def explain_horizon_pnl(
     elif any(x is not None for x in (fixings, end_fixings, projection_curve, end_projection_curve)):
         raise InvalidTerms("fixings and projection curves are for floaters only")
     setup = _setup(
-        instrument, calendar, start.curve_date, horizon_date, redemption_horizon, floating
+        instrument,
+        calendar,
+        start.curve_date,
+        horizon_date,
+        redemption_horizon,
+        floating,
+        perpetual_tail,
     )
+    tail = setup.tail
     s0 = _start_spread(setup, start, convention, start_spread_bp, start_dirty_price_rub)
     valuation = _valuation(setup, start, horizon_date, s0, convention)
     rolled = roll_curve(start, horizon_date)
     at = setup.horizon_settlement
     end_flows, rolled_flows = setup.remaining, setup.remaining
+    end_tail = rolled_tail = tail
     if floating is not None:
         assert end_fixings is not None and setup.reproject is not None
         end_inputs = _FloatingInputs(end_fixings, end_projection, strike_guard_bp)
         end_leg = _floating_leg(instrument, end_inputs, horizon_date, setup.redemption_date)
         coupons = end_leg.project(end_projection, settlement_date=at)
-        _, offer = instrument.horizon(setup.policy, setup.settlement)
+        end_tail = _projected_tail(perpetual_tail if tail is not None else None, coupons)
+        offer = setup.offer
         principal = tuple(
             (f.payment_date, f.amount)
-            for f in instrument.cashflows(
-                after=at, horizon=setup.redemption_date, offer=offer
-            )
+            for f in instrument.cashflows(after=at, horizon=setup.redemption_date, offer=offer)
         )
-        end_flows = tuple(
-            sorted((*principal, *((c.payment_date, c.amount_rub) for c in coupons)))
-        )
+        end_flows = tuple(sorted((*principal, *((c.payment_date, c.amount_rub) for c in coupons))))
         assert setup.projection is not None
         rolled_projection = (
             rolled if setup.projection is start else roll_curve(setup.projection, horizon_date)
         )
-        rolled_flows = setup.reproject(rolled_projection)
-    end_setup = replace(setup, settlement=at, pv_flows=end_flows)
+        rolled_flows, rolled_tail = setup.reproject(rolled_projection)
+    end_setup = replace(setup, settlement=at, pv_flows=end_flows, tail=end_tail)
     s1 = _start_spread(end_setup, end, convention, end_spread_bp, end_dirty_price_rub)
-    pv_end = _price(end_flows, end, s1, at, convention)
-    rates = _price(end_flows, end, s0, at, convention) - valuation.pv_rolled_rub
-    spread = _price(rolled_flows, rolled, s1, at, convention) - valuation.pv_rolled_rub
+    pv_end = _price(end_flows, end, s1, at, convention, end_tail)
+    rates = _price(end_flows, end, s0, at, convention, end_tail) - valuation.pv_rolled_rub
+    spread = _price(rolled_flows, rolled, s1, at, convention, rolled_tail) - valuation.pv_rolled_rub
     total = pv_end + valuation.received_rub - valuation.pv_start_rub
     residual = total - (valuation.carry_rub + valuation.rolldown_rub + rates + spread)
     return HorizonPnlExplain(

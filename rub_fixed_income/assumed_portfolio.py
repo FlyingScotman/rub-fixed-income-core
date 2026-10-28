@@ -13,6 +13,11 @@ assumption, and its numbers and hashes must not move. This module wraps it:
    with the unchanged ``value_portfolio`` / ``horizon_portfolio`` and attach the
    assumptions used (:class:`AssumptionUse`), with coverage over every position.
 
+A never-called perpetual (0.41.0, BACKLOG #126) is not replaced: its tail of endless
+coupons is priced only by the native path, so it stays as given and the wrappers pass
+its assumption to ``value_portfolio`` / ``horizon_portfolio`` in
+``ValuationPolicy.exercise_assumptions`` (:attr:`AssumedBook.native_exercises`).
+
 A callable without an assumption is still rejected by ``value_portfolio`` as before.
 An assumption that cannot be applied (no coupons to the call, a perpetual without a
 call date, a missing CPR, a to_worst bond without a quote) is a typed rejection of
@@ -23,7 +28,7 @@ fixed under every risk bump and scenario.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from typing import Literal
 
@@ -34,10 +39,10 @@ from .callables import (
     exercised_instrument,
     resolve_exercise,
 )
-from .canonical import canonical_sha256
+from .canonical import OMIT_IF_DEFAULT, canonical_sha256
 from .cashflows import clean_price_pct_to_dirty_rub
 from .domain import Instrument, MarketSnapshot, Position, ProductType
-from .errors import CoreRejection, InvalidTerms, MissingAssumption, UnsupportedProduct
+from .errors import CoreRejection, InvalidTerms, MissingAssumption
 from .pass_through import (
     PassThroughTerms,
     PrepaymentAssumption,
@@ -146,11 +151,26 @@ class AssumedBook:
 
     Instruments whose assumption was rejected are left out; their positions are
     rejected with the code in ``uses``.
+
+    ``native_exercises`` (0.41.0) are the never-called perpetuals, kept as given in
+    ``instruments``: valued natively under these ``ValuationPolicy.exercise_assumptions``
+    entries, which price their tails.
     """
 
     instruments: tuple[Instrument, ...]
     uses: tuple[AssumptionUse, ...]
     model_version: str = ASSUMED_BOOK_MODEL_VERSION
+    native_exercises: tuple[tuple[str, ExerciseAssumption], ...] = field(
+        default=(), metadata=OMIT_IF_DEFAULT
+    )
+
+    def policy_for(self, policy: ValuationPolicy) -> ValuationPolicy:
+        """``policy`` with the native exercises added (unchanged when there are none)."""
+        if not self.native_exercises:
+            return policy
+        merged = dict(policy.exercise_assumptions)
+        merged.update(self.native_exercises)
+        return replace(policy, exercise_assumptions=tuple(merged.items()))
 
     def rejection(self, instrument_id: str) -> AssumptionUse | None:
         for use in self.uses:
@@ -229,16 +249,13 @@ def _rejected(
 
 def _exercise(
     instrument: Instrument, assumption: ExerciseAssumption, snapshot: MarketSnapshot
-) -> tuple[Instrument, AssumptionUse]:
+) -> tuple[Instrument, AssumptionUse, bool]:
+    """The bond to value, its use, and whether it is valued natively (a perpetual tail)."""
     settlement = _settlement(snapshot, instrument.calendar_id, instrument.settlement_lag_days)
     dirty = _dirty(snapshot, instrument, settlement) if assumption.kind == "to_worst" else None
     resolved = resolve_exercise(instrument, settlement, assumption, dirty_price_rub=dirty)
     bond = exercised_instrument(instrument, resolved)
-    if bond.perpetual_tail is not None:
-        raise UnsupportedProduct(
-            "a never-called perpetual is valued by value_portfolio under "
-            "ValuationPolicy.exercise_assumptions, which prices its endless coupons"
-        )
+    native = bond.perpetual_tail is not None
     use = AssumptionUse(
         instrument.instrument_id,
         "perpetual" if instrument.is_perpetual else "callable",
@@ -253,7 +270,8 @@ def _exercise(
         bond.source_sha256,
         canonical_sha256(bond.instrument),
     )
-    return bond.instrument, use
+    # A never-called perpetual stays as given: value_portfolio exercises it and prices its tail.
+    return (instrument if native else bond.instrument), use, native
 
 
 def _pass_through(
@@ -296,6 +314,7 @@ def prepare_assumed_book(
         raise ValueError("duplicate instrument identifiers")
     out: list[Instrument] = []
     uses: list[AssumptionUse] = []
+    native: list[tuple[str, ExerciseAssumption]] = []
     for instrument in instruments:
         override = policy.override(instrument.instrument_id)
         if override is not None and override.prepayment is not None:
@@ -317,7 +336,7 @@ def prepare_assumed_book(
             continue
         kind: AssumptionKind = "perpetual" if instrument.is_perpetual else "callable"
         try:
-            valued, use = _exercise(instrument, assumption, snapshot)
+            valued, use, natively = _exercise(instrument, assumption, snapshot)
         except (CoreRejection, ValueError, ArithmeticError) as exc:
             uses.append(
                 _rejected(
@@ -331,6 +350,8 @@ def prepare_assumed_book(
             continue
         out.append(valued)
         uses.append(use)
+        if natively:
+            native.append((instrument.instrument_id, assumption))
     for terms in pass_throughs:
         override = policy.override(terms.instrument_id)
         source = canonical_sha256(terms)
@@ -362,7 +383,11 @@ def prepare_assumed_book(
             continue
         out.append(valued)
         uses.append(use)
-    return AssumedBook(tuple(out), tuple(sorted(uses, key=lambda u: u.instrument_id)))
+    return AssumedBook(
+        tuple(out),
+        tuple(sorted(uses, key=lambda u: u.instrument_id)),
+        native_exercises=tuple(sorted(native, key=lambda p: p[0])),
+    )
 
 
 def _merge(
@@ -420,7 +445,7 @@ def value_assumed_portfolio(
         snapshot=snapshot,
         instruments=book.instruments,
         positions=_split(positions, book),
-        policy=policy,
+        policy=book.policy_for(policy),
         scenarios=scenarios,
         time_budget_seconds=time_budget_seconds,
         should_cancel=should_cancel,
@@ -471,7 +496,7 @@ def horizon_assumed_portfolio(
         snapshot=snapshot,
         instruments=book.instruments,
         positions=_split(positions, book),
-        policy=policy,
+        policy=book.policy_for(policy),
         horizon_date=horizon_date,
         curve_cache=curve_cache,
     )

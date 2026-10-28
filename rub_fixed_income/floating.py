@@ -450,6 +450,14 @@ class FixingDateRule:
             raise ValueError("fixing offset unit must be business_days or calendar_days")
 
 
+def _check_fixing_anchors(
+    rule: FloatingCouponRule, periods: tuple[FloatingCouponPeriod, ...]
+) -> None:
+    """A period ``fixing_anchor`` (0.41.0) moves the date of a single fixing only."""
+    if rule.fixing_date is None and any(p.fixing_anchor is not None for p in periods):
+        raise InvalidTerms("a period fixing_anchor needs a single_fixing rule with a fixing_date")
+
+
 class RateDayBasis(Protocol):
     """Accrued days and days a year of a rate accrual (``domain.AccrualBasis``)."""
 
@@ -600,6 +608,13 @@ class FloatingCouponPeriod:
     rate (:meth:`FloatingLeg.accrued_interest` with a ``rate_basis``) uses it.
     ``margin`` (0.34.0, decimal a year, optional) replaces the rule's margin for this
     period: a margin reset at an offer.
+    ``fixing_anchor`` (0.41.0, optional) replaces the anchor date of the rule's
+    ``fixing_date`` for this period; its ``offset_days`` and ``unit`` still count back
+    from it. A coupon fixed once per multi-period reset cycle (a perpetual reset every
+    five years to the KBD 5Y, paid semi-annually) gives every period of the cycle the
+    cycle's start: all of them then share that one fixing. Only a ``single_fixing`` rule
+    takes it (checked by the leg), and only in advance: it cannot be after the period's
+    ``accrual_start``.
     """
 
     accrual_start: date
@@ -609,12 +624,22 @@ class FloatingCouponPeriod:
     published_coupon_rub: float | None = None
     published_rate: float | None = field(default=None, metadata=OMIT_IF_DEFAULT)
     margin: float | None = field(default=None, metadata=OMIT_IF_DEFAULT)
+    fixing_anchor: date | None = field(default=None, metadata=OMIT_IF_DEFAULT)
 
     def __post_init__(self) -> None:
         if self.margin is not None:
             object.__setattr__(self, "margin", finite_money(self.margin, "period margin"))
         if self.accrual_end <= self.accrual_start:
             raise ValueError("coupon accrual end must follow its start")
+        anchor = self.fixing_anchor
+        if anchor is not None:
+            if not isinstance(anchor, date) or isinstance(anchor, datetime):
+                raise TypeError("fixing_anchor must be a date or None")
+            if anchor > self.accrual_start:
+                raise ValueError(
+                    "a period fixing_anchor fixes in advance: it cannot be after the "
+                    "period's accrual start"
+                )
         if self.payment_date < self.accrual_end:
             raise ValueError("coupon payment cannot precede the accrual end")
         object.__setattr__(
@@ -719,6 +744,7 @@ class FloatingLeg:
         for left, right in pairwise(periods):
             if right.accrual_start < left.accrual_end:
                 raise ValueError("coupon periods must be ordered and non-overlapping")
+        _check_fixing_anchors(self.rule, periods)
         object.__setattr__(self, "periods", periods)
         if self.strike_guard_bp is not None:
             guard = finite_money(self.strike_guard_bp, "strike guard bp")
@@ -788,7 +814,7 @@ class FloatingLeg:
         start, end = period.accrual_start, period.accrual_end
         if rule.fixing_date is not None:
             fixing = rule.fixing_date
-            anchor = getattr(period, fixing.anchor)
+            anchor = period.fixing_anchor or getattr(period, fixing.anchor)
             fixing_day = _move_back(calendar, anchor, fixing.offset_days, fixing.unit)
             if calendar_days:
                 observation, following = fixing_day, fixing_day + one_day
