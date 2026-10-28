@@ -39,7 +39,10 @@ FlyingScotman/rub-fixed-income-core#29 (BACKLOG B#127), the floating part. Under
   lag, unpublished) until one starts `FLOATING_EXPLICIT_YEARS` (35) years after settlement;
   a leg whose last period has a `fixing_anchor` (below) continues cycle by cycle, the cycle
   being `index_tenor_years` in whole months, each period anchored on its cycle's reset, to
-  the first whole cycle that starts 35 years out. Then a tail `PerpetualTail(anchor, None,
+  the first whole cycle that starts 35 years out. Each new reset is the continued coupon
+  start nearest `add_months(previous reset, 12 N)`, so a 182- or 91-day schedule (whose
+  ten or twenty coupons end six days before five calendar years) and a month-end one reset
+  on the right coupon: every cycle holds its coupons. Then a tail `PerpetualTail(anchor, None,
   step)` (new: `amount=None`, `.floating`, `.coupon`, `.projected(last)`, `.with_amount`).
 - The cut: the last coupon is fixed 35 years out or later, where every curve core builds
   is flat-forward (from 30 years) and every bucket shock flat, so later coupons would be
@@ -50,6 +53,9 @@ FlyingScotman/rub-fixed-income-core#29 (BACKLOG B#127), the floating part. Under
   Z-spread, discount and projection bucket DV01, CS01, the Hessian, scenarios, the discount
   margin, `OfzBasisRiskEngine` and the horizon carry (#27) all move it with the projection
   curve. Published coupons stay cash; a cycle fixed in the past reads its history fixing.
+- `horizon_valuation` / `explain_horizon_pnl` check a tail as `BondRiskRequest` does: a
+  floating tail (`amount=None`) exactly on a floating leg, anchored on the last listed
+  payment date, no listed flow after it (`InvalidTerms`).
 - `value_portfolio` / `horizon_portfolio` / the assumed-book wrappers value it under
   `never_called()` (`horizon="perpetual"`, `horizon_date` the tail's anchor, ~35 years out).
   Yields, `to_call` and `to_worst` of a floating perpetual still need callable floaters

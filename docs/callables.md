@@ -144,9 +144,11 @@ continues the leg past its listed periods and adds a tail after them:
   notional, period margin and payment lag, unpublished, until one starts at least 35 years
   after settlement (`FLOATING_EXPLICIT_YEARS`). A listed period with a `fixing_anchor` (a
   coupon fixed once per reset cycle, [floating.md](floating.md)) is continued cycle by
-  cycle: the cycle is the index tenor (`index_tenor_years`, in whole months), each new
-  period is anchored on the last reset on or before its start (`add_months(anchor,
-  12 N k)`), and the leg ends with the first whole cycle that starts 35 years out. Each
+  cycle: the cycle is the index tenor (`index_tenor_years`, in whole months). Each new
+  reset is the continued coupon start nearest `add_months(previous reset, 12 N)` (a
+  182-day schedule's ten coupons end six days before five calendar years: the reset is
+  that coupon's start), every period is anchored on its cycle's reset, and the leg ends
+  with the first whole cycle that starts 35 years out. Each
   continued coupon is projected as any floating coupon; published coupons stay cash and
   realised fixings come from the history (a cycle fixed in the past for all its periods).
 - **The cut.** The last coupon is fixed 35 years out or later. Past 30 years from the curve

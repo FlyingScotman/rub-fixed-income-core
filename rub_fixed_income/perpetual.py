@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from functools import lru_cache
 from itertools import pairwise
@@ -247,9 +247,12 @@ def floating_perpetual_tail(
     :data:`FLOATING_EXPLICIT_YEARS` after settlement. A period with a ``fixing_anchor``
     (a coupon fixed once per reset cycle) is continued cycle by cycle: the cycle is the
     index tenor (``index_tenor_years``, whole months: a coupon reset every N years to the
-    N-year KBD), each new period is anchored on the last reset on or before its start,
-    and the leg ends with the first whole cycle that starts that far out. The tail (``amount=None``) continues the last
-    period's projected coupon at the same step from its payment date.
+    N-year KBD). Each reset falls on a coupon start: the continued period start nearest
+    ``add_months(previous reset, 12 N)`` (a 182-day schedule resets on the start six days
+    before five calendar years, so every cycle has its ten coupons), every period is
+    anchored on its cycle's reset, and the leg ends with the first whole cycle that starts
+    that far out. The tail (``amount=None``) continues the last period's projected coupon
+    at the same step from its payment date.
 
     The last coupon is thus fixed 35 years out or later, where every curve core builds is
     flat-forward (from 30 years after the curve date; bucket shocks are flat past 20
@@ -258,8 +261,6 @@ def floating_perpetual_tail(
     only by its accrual days: the tail pays the last coupon scaled to the mean step
     (:meth:`PerpetualTail.projected`).
     """
-    from dataclasses import replace
-
     periods = leg.periods
     future = [p for p in periods if p.payment_date > settlement]
     if not future:
@@ -289,23 +290,25 @@ def floating_perpetual_tail(
             )
     target = add_months(settlement, 12 * FLOATING_EXPLICIT_YEARS)
     added: list[FloatingCouponPeriod] = []
-    cycles = 0  # resets after the last listed anchor
     current = last
+    anchor = reset
+    # The next reset, nominally: snapped to the nearest coupon start when one comes.
+    nominal = None if reset is None else add_months(reset, cycle)
     k = 1
-    # Each condition reads the last period listed so far: until it starts (a reset leg:
-    # its cycle starts) 35 years out, and a reset leg ends with a whole cycle.
-    while (
-        (current.accrual_start if reset is None else add_months(reset, cycle * cycles)) < target
-    ) or (reset is not None and add_months(reset, cycle * (cycles + 1)) > current.accrual_end):
+    while True:
         if len(added) >= _MAX_CONTINUED_PERIODS:
             raise InvalidTerms("the floating leg cannot be continued to the explicit horizon")
         start = current.accrual_end
         end = _shifted(last.accrual_end, k, days, months)
-        anchor = None
-        if reset is not None:
-            while add_months(reset, cycle * (cycles + 1)) <= start:
-                cycles += 1
-            anchor = add_months(reset, cycle * cycles)
+        if anchor is None or nominal is None:
+            if current.accrual_start >= target:
+                break  # the last period starts 35 years out
+        elif abs((start - nominal).days) <= abs((end - nominal).days):
+            # This period starts the next cycle, unless the current one started 35 years
+            # out: the leg then ends with that whole cycle.
+            if anchor >= target:
+                break
+            anchor, nominal = start, add_months(start, cycle)
         current = replace(
             last,
             accrual_start=start,

@@ -222,3 +222,18 @@ def test_the_assumed_book_values_and_carries_a_never_called_perpetual_natively()
     per_bond = {r.position_id: r for r in carried.horizon.positions}["p-perp"].per_bond
     assert per_bond.redemption_horizon == "perpetual"
     assert per_bond.pv_start_rub == pytest.approx(row.dirty_price_rub, rel=1e-10)
+
+
+def test_the_tail_must_continue_the_listed_coupons() -> None:
+    bond, tail = never(perp())
+    horizon = date(2026, 12, 15)
+    early = replace(tail, anchor_date=date(2028, 6, 1))  # would drop listed coupons
+    with pytest.raises(InvalidTerms, match="last listed coupon"):
+        horizon_valuation(
+            bond, CURVE, CALENDAR, horizon_date=horizon, spread_bp=300.0, perpetual_tail=early
+        )
+    floating = replace(tail, amount=None)  # a fixed leg's tail has its amount
+    with pytest.raises(InvalidTerms, match="amount=None"):
+        horizon_valuation(
+            bond, CURVE, CALENDAR, horizon_date=horizon, spread_bp=300.0, perpetual_tail=floating
+        )

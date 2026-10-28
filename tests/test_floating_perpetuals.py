@@ -19,7 +19,8 @@ from __future__ import annotations
 
 import time
 from dataclasses import replace
-from datetime import date
+from datetime import date, timedelta
+from itertools import pairwise
 
 import pytest
 from floating_perpetual_data import (
@@ -361,6 +362,18 @@ def test_validation_and_what_stays_unsupported() -> None:
                 (CouponPeriod(date(2027, 6, 15), date(2027, 9, 15), date(2027, 9, 15), 30.0),)
             ),
         )
+    # The horizon carry checks the tail as the risk engine does.
+    with pytest.raises(InvalidTerms, match="amount=None"):
+        horizon_valuation(
+            bond,
+            kbd_discount_curve(PARAMS),
+            BusinessCalendar(version="weekdays"),
+            horizon_date=date(2026, 12, 15),
+            spread_bp=300.0,
+            fixings=snapshot().point_in_time_fixing("KEY_RATE"),
+            projection_curve=KEY_PROJECTION,
+            perpetual_tail=tail.with_amount(40.0),
+        )
     # A reset cycle is the index tenor in whole months.
     odd = replace(kbd_leg(), rule=replace(kbd_leg().rule, index_tenor_years=5.01))
     with pytest.raises(InvalidTerms, match="whole number of months"):
@@ -403,3 +416,44 @@ def test_the_assumed_book_values_a_floating_perpetual_natively() -> None:
     (row,) = result.portfolio.positions
     assert row.horizon == "perpetual"
     assert row.dirty_price_rub == pytest.approx(dirty(kbd_perpetual()), rel=1e-12)
+
+
+def _listed(dates: list[date]) -> FloatingCouponLeg:
+    periods = tuple(
+        FloatingCouponPeriod(start, end, end, 1000.0, fixing_anchor=dates[0])
+        for start, end in pairwise(dates)
+    )
+    return FloatingCouponLeg(kbd_leg().rule, periods, "KBD_5Y", "RUB_KBD")
+
+
+@pytest.mark.parametrize(
+    ("dates", "per_cycle"),
+    [
+        # MOEX 182-day coupons: five calendar years are 1826 days, ten coupons 1820.
+        ([date(2024, 12, 16) + timedelta(days=182 * k) for k in range(7)], 10),
+        # 91-day coupons (a quarterly schedule as MOEX lists it): twenty a cycle.
+        ([date(2024, 12, 16) + timedelta(days=91 * k) for k in range(9)], 20),
+        # Month ends: a cycle from 31 August, half-years clipped to 28 February.
+        ([add_months(date(2024, 8, 31), 6 * k) for k in range(6)], 10),
+    ],
+)
+def test_every_reset_cycle_starts_on_a_coupon_and_holds_its_coupons(
+    dates: list[date], per_cycle: int
+) -> None:
+    """Each reset is the coupon start nearest five calendar years after the previous one."""
+    continued, _ = floating_perpetual_tail(_listed(dates), SETTLE)
+    cycles: dict[date, list[FloatingCouponPeriod]] = {}
+    for period in continued.periods:
+        assert period.fixing_anchor is not None
+        cycles.setdefault(period.fixing_anchor, []).append(period)
+    anchors = sorted(cycles)
+    assert anchors[0] == dates[0] and len(anchors) >= 7
+    for previous, anchor in pairwise(anchors):
+        assert cycles[anchor][0].accrual_start == anchor  # the cycle's first coupon resets
+        nominal = add_months(previous, 60)
+        assert (
+            abs((anchor - nominal).days)
+            <= max((p.accrual_end - p.accrual_start).days for p in cycles[previous]) / 2
+        )
+    assert all(len(cycles[a]) == per_cycle for a in anchors)  # the last cycle is whole too
+    assert anchors[-1] >= add_months(SETTLE, 12 * FLOATING_EXPLICIT_YEARS)

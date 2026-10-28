@@ -203,6 +203,8 @@ def _setup(
         )
     if tail is not None and not instrument.is_perpetual:
         raise InvalidTerms("a perpetual tail continues a perpetual bond only")
+    if tail is not None:
+        _check_tail(instrument, tail)
     if horizon_date <= start_date:
         raise InvalidTerms("horizon date must be after the start date")
     settlement = calendar.add_business_days(start_date, instrument.settlement_lag_days)
@@ -272,6 +274,27 @@ def _setup(
         tail,
         offer,
     )
+
+
+def _check_tail(instrument: Instrument, tail: PerpetualTail) -> None:
+    """The tail continues the listed coupons, as ``BondRiskRequest`` requires."""
+    leg = instrument.coupon_leg
+    floating = isinstance(leg, FloatingCouponLeg)
+    if tail.floating != floating:
+        raise InvalidTerms(
+            "a floating leg's tail continues its projected coupon (amount=None); "
+            "a fixed leg's tail has an amount"
+        )
+    if leg is None or not leg.periods:
+        raise InvalidTerms("a perpetual tail continues listed coupons")
+    last = leg.periods[-1].payment_date
+    if tail.anchor_date != last:
+        raise InvalidTerms(
+            f"the perpetual tail is anchored on {tail.anchor_date}, the last listed coupon "
+            f"is paid {last}"
+        )
+    if any(f.payment_date > tail.anchor_date for f in instrument.cashflows()):
+        raise InvalidTerms("listed cashflows must not follow the perpetual tail's anchor")
 
 
 def _perpetual_put(instrument: Instrument, policy: HorizonPolicy, settlement: date) -> Offer | None:
