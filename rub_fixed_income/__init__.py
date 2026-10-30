@@ -412,6 +412,7 @@ from .ofz_futures import (
     ofz_futures_factor_risk,
     ofz_futures_horizon,
 )
+from .ois_tail import OIS_TAIL_MODELS, OisTail, extend_ois_request
 from .pass_through import (
     PREPAYMENT_MODEL_VERSION,
     CprSensitivity,
@@ -1293,3 +1294,6 @@ __all__ += [
     "OfzBasisRiskResult",
     "ofz_basis_factor_risk",
 ]
+
+# Issue #84: RUONIA OIS continued past its last quote (ValuationPolicy.ois_tail).
+__all__ += ["OIS_TAIL_MODELS", "OisTail", "extend_ois_request"]

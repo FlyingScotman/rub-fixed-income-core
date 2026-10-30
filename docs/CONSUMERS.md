@@ -220,6 +220,30 @@ rounds up (it could round down in float), so such a bond's accrued, dirty price 
 yields solved from its clean price can move by one kopeck; stored results on other dates
 and bonds are unchanged.
 
+**From 0.42.0: RUONIA OIS past its last quote** (FlyingScotman/rub-fixed-income-core#84).
+Nothing changes until the monitor opts in. For risk of RUONIA positions past 10Y that does not
+swing between the 7Y and 10Y buckets:
+
+- `ValuationPolicy(ois_tail=OisTail(ois_curve_id, kbd_curve_id))` with the RUONIA OIS curve
+  held as quotes (`CurveBootstrapRequest` under `rub_ruonia_ois_moex_v2`) and the KBD
+  (`rub_ofz_kbd_v3`, or v1/v2) the monitor already registers. On a date without KBD
+  parameters leave the KBD out of the snapshot (or `kbd_curve_id=None`): the tail is then a
+  flat zero rate. The rule taken is in `curves[].model_version` of the OIS curve
+  (`...+ois-tail-kbd-par-spread-v1` or `...+ois-tail-flat-zero-v1`): keep it in the run
+  history;
+- the OIS calendar must resolve 15Y and 20Y plus the spot lag (as for 0.39.0);
+- the job ID changes with the field, and so do the numbers of every position on that OIS
+  curve with flows past the last quote: PV slightly (the tail curve differs past 10Y), RUONIA
+  buckets 7Y/10Y move to 15Y/20Y+ (risk to the synthetic quotes, which follow the KBD).
+  Positions with all flows before the last quote keep their numbers up to the 10Y swap's
+  payment lag (about 1e-9 in DF). Mark the change of tail in the run history;
+- with `ofz_basis` set `ois_tail` on the same OIS ID and the same KBD ID (else
+  `INVALID_TERMS` at policy construction): OFZ rows keep their RUONIA and basis ladders, and
+  KBD floaters discounted on RUONIA then continue the discount by the same rule as the
+  projection (FlyingScotman/trading-desk-monitor#467).
+
+ and what consumers should move to
+
 ## Deprecations in 0.12.0 and what consumers should move to
 
 Nothing is removed before 1.0. Each call below now emits a `DeprecationWarning` (hidden by

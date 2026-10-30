@@ -36,7 +36,8 @@ RUONIA bucket bump swings the long KBD by several bp of the opposite sign (resea
 The extended request differs from the OIS curve's own whenever a tenor is added, so its shocked
 curves are separate :class:`ShockedCurveCache` entries (22 for first order, 220 more for the full
 RUONIA Hessian per job); OIS positions keep the plain request. With no tenor to add the extended
-request is the plain one and the curves are shared.
+request is the plain one and the curves are shared: so it is under ``ValuationPolicy.ois_tail``
+(issue #84, :mod:`rub_fixed_income.ois_tail`), which extends the OIS entry itself by this rule.
 
 :class:`OfzBasisRiskEngine` gives the risk of a bond on the KBD in these coordinates: by
 bump-and-reprice (any bond the engine prices: fixed, perpetual tail, single-curve floaters on the
@@ -57,7 +58,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field, replace
-from datetime import date, timedelta
+from datetime import date
 from typing import Final, Literal, cast
 
 import numpy as np
@@ -71,7 +72,7 @@ from ._analytic_risk import (
     supports_analytic,
 )
 from ._money import finite_money, positive_money
-from ._par_overlay import PAR_FIRST_BUCKET, PAR_YEARS
+from ._par_overlay import PAR_FIRST_BUCKET
 from ._risk_common import (
     _ZERO_SHOCK,
     RISK_BUCKETS,
@@ -88,9 +89,9 @@ from ._risk_common import (
 )
 from .canonical import canonical_sha256
 from .compatibility import price_cashflows
-from .dates import add_months
 from .discount import CurveBootstrapRequest, DiscountCurve, DiscountFactorCurve, OisQuote
 from .errors import InvalidTerms
+from .ois_tail import annual_par_yield, kbd_tail_quotes, tenor_maturity
 from .perpetual import PerpetualTail
 from .risk import (
     BondRiskEngine,
@@ -153,41 +154,9 @@ class OfzBasisIds:
             raise InvalidTerms("the KBD, OIS and basis IDs must differ")
 
 
-def _annual_par_yield(curve: DiscountCurve, maturity: date) -> float:
-    """Par yield of an annual-coupon bond on ``curve`` from its curve date to ``maturity``.
-
-    Coupon dates roll yearly from the curve date, unadjusted; a roll date within 180 days
-    before ``maturity`` is dropped (a long last period). Accrual on the curve's time day count.
-    """
-    start = curve.curve_date
-    day_count = curve.convention.time_day_count
-    dates: list[date] = []
-    k = 1
-    while (roll := add_months(start, 12 * k)) < maturity - timedelta(days=_STUB_DAYS):
-        dates.append(roll)
-        k += 1
-    dates.append(maturity)
-    previous = [start, *dates[:-1]]
-    annuity = math.fsum(
-        day_count.year_fraction(a, b) * curve.discount_factor(b) for a, b in zip(previous, dates)
-    )
-    return (1.0 - curve.discount_factor(maturity)) / annuity
-
-
-def _tenor_maturity(request: CurveBootstrapRequest, years: int) -> date:
-    """Where a ``years``-year OIS quote of ``request``'s convention matures."""
-    ois = request.convention.ois_swap
-    if ois is None:
-        return add_months(request.curve_date, 12 * years)
-    from .tenors import resolve_tenor
-
-    return resolve_tenor(
-        request.curve_date,
-        f"{years}Y",
-        ois.calendar,
-        spot_lag_days=ois.spot_lag_business_days,
-        business_day_convention=ois.business_day_convention,
-    ).end_date
+# Moved to ``ois_tail`` (issue #84), which the plain OIS tail shares; the names stay here.
+_annual_par_yield = annual_par_yield
+_tenor_maturity = tenor_maturity
 
 
 @dataclass(frozen=True)
@@ -271,15 +240,8 @@ class OfzBasisCurve:
         ois = cast(CurveBootstrapRequest, _snapshot_curve(self.ois))
         object.__setattr__(self, "kbd", kbd)
         object.__setattr__(self, "ois", ois)
-        last = ois.quotes[-1]
-        synthetic = []
-        spread = _annual_par_yield(kbd, last.maturity) - last.par_rate
-        for years in PAR_YEARS:
-            maturity = _tenor_maturity(ois, years)
-            if maturity > last.maturity:
-                par = finite_money(_annual_par_yield(kbd, maturity) - spread, "synthetic OIS quote")
-                synthetic.append(OisQuote(f"{years}Y", maturity, par))
-        object.__setattr__(self, "synthetic_quotes", tuple(synthetic))
+        synthetic, spread = kbd_tail_quotes(kbd, ois)
+        object.__setattr__(self, "synthetic_quotes", synthetic)
         object.__setattr__(self, "tail_spread", spread if synthetic else None)
         extended = ois if not synthetic else replace(ois, quotes=(*ois.quotes, *synthetic))
         object.__setattr__(self, "extended", _snapshot_curve(extended))

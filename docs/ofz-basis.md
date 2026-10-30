@@ -255,8 +255,11 @@ Use the closed form (`risk_method` and `second_order_method` `"analytic"`): the 
 - OIS positions keep the plain request. If the desk wants OIS swaps to see the same
   extended curve (one OIS curve for everything), set the OIS entry to the extended
   request: their curves and keys are then shared, at the price of changing their numbers
-  slightly near 10Y (payment lags past the last node read the 15Y node).
+  slightly near 10Y (payment lags past the last node read the 15Y node). Since 0.42.0
+  (issue #84) `ValuationPolicy(ois_tail=OisTail(ois_id, kbd_id))` does this in the core:
+  every position on the OIS curve reads the ZX-extended request, and KBD floaters discounted
+  on RUONIA continue discount and projection by one rule.
 - `rub_ofz_kbd_v2` (annual-zero buckets) composes the same way; only v3 is accepted now.
 - KBD floaters discounted on RUONIA (issue #90) read the plain request for the discount and
   the extended one inside the projection; if the desk sets OIS positions on the extended
-  request (above), both legs read one curve.
+  request (above), both legs read one curve; `ois_tail` (0.42.0) is that setting.
