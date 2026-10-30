@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.41.1 — Exact-decimal pro rata accrued interest of fixed legs
+
+FlyingScotman/rub-fixed-income-core#16 (BACKLOG B#116). **Model change:** results can move
+by one kopeck of accrued interest, and through it the dirty price, yields and spreads solved
+from a clean price.
+
+- `accrued_interest` (and so `Instrument.accrued` of a `FixedCouponLeg`, the OFZ pro rata
+  rule) computes `coupon * elapsed / period days` in exact decimal arithmetic from the
+  coupon's shortest decimal form before rounding half-up to the kopeck, as the floater path
+  has done since 0.33.0. The float product could fall a hair below an exact half kopeck and
+  round down: a coupon of 77.49 RUB, 13 days into a 182-day period, is 5.535 exactly and now
+  accrues 5.54 (was 5.53). `quantum=None` still returns the unrounded float.
+- Only values within float error of a half kopeck can change; every other accrued value is
+  the same. Serialised instruments and their hashes are unchanged.
+- Tests (`tests/test_fixed_accrued_exact.py`): the half-kopeck case above, and 2 000 random
+  coupons and periods against a decimal reference.
+
 ## 0.41.0 — Never-called perpetuals: horizon P&L, coupon formulas
 
 ### Horizon P&L of a never-called perpetual (#27)

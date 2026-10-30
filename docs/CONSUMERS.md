@@ -214,6 +214,12 @@ Nothing changes for books without perpetuals. For the monitor's B#128 (no call b
   `to_worst` yet (#28). Cost: 0.4–0.6 s with the Hessian for KBD-reset and key-rate
   perpetuals, about 2.7 s for a quarterly RUONIA one.
 
+**From 0.41.1: exact-decimal fixed accrued** (FlyingScotman/rub-fixed-income-core#16).
+Nothing to change but the pin. `FixedCouponLeg` accrued interest of an exact half kopeck now
+rounds up (it could round down in float), so such a bond's accrued, dirty price and the
+yields solved from its clean price can move by one kopeck; stored results on other dates
+and bonds are unchanged.
+
 ## Deprecations in 0.12.0 and what consumers should move to
 
 Nothing is removed before 1.0. Each call below now emits a `DeprecationWarning` (hidden by

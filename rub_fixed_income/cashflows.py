@@ -108,7 +108,8 @@ def accrued_interest(
     """Linear accrued interest per bond from split cashflows.
 
     ``coupon * elapsed_days / period_days`` for the coupon period containing the
-    settlement date, rounded half-up to ``quantum`` (``None`` keeps the raw value).
+    settlement date, computed in exact decimal arithmetic from the coupon's shortest
+    decimal form and rounded half-up to ``quantum`` (``None`` keeps the raw float value).
     Settlement on the period end gives 0: the buyer does not receive that coupon
     (MOEX convention, as :func:`rub_fixed_income.analytics.accrued_interest_rub`).
     Flows without an accrual period (plain ``BondCashflow`` or principal-only) are
@@ -132,7 +133,10 @@ def accrued_interest(
             raw = finite_money(flow.coupon * elapsed / period, "accrued interest result")
             if quantum is None:
                 return raw
-            return float(Decimal(str(raw)).quantize(quantum, ROUND_HALF_UP))
+            # Exact decimal pro rata (#16), as the floater path: a float product can fall a
+            # hair below a half kopeck (77.49 * 13 / 182 = 5.535 is 5.534999... in binary).
+            exact = Decimal(repr(flow.coupon)) * elapsed / period
+            return float(exact.quantize(quantum, ROUND_HALF_UP))
     if settlement_date >= max(f.accrual_end for f in periods if f.accrual_end is not None):
         return 0.0
     raise InvalidTerms("no coupon accrual period contains the settlement date")
