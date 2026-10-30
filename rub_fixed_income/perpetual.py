@@ -90,6 +90,7 @@ _CURVE_DAYS = 365 * TAIL_CURVE_YEARS + 8
 _FORWARD_SPAN_DAYS = 3650
 _FLAT_TOLERANCE = 1e-9
 _SHOCK_TERMS_MEMO_SIZE = 64
+_NORMAL_MIN = float(np.finfo(float).tiny)
 
 
 @dataclass(frozen=True)
@@ -378,7 +379,9 @@ def _sum_with_remainder(terms: np.ndarray) -> float:
     if not np.all(np.isfinite(terms)):
         return math.inf
     total = float(np.sum(terms))  # pairwise summation: about 1e-16 relative
-    if terms.size >= 2 and terms[-1] > 0.0:
+    # Terms that underflowed to subnormals (a high spread over 600 years) end equal, a ratio
+    # of 1 that is not divergence: they and their remainder are below 1e-307 (issue #84).
+    if terms.size >= 2 and terms[-1] >= _NORMAL_MIN:
         ratio = float(terms[-1] / terms[-2])
         if not ratio < 1.0:
             return math.inf

@@ -24,6 +24,7 @@ import math
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
+from dataclasses import fields as dataclass_fields
 from datetime import date, datetime
 from itertools import pairwise
 from typing import Literal, cast
@@ -86,6 +87,7 @@ from .local_risk import (
     prepare_local_bond_risk,
 )
 from .ofz_basis import OFZ_BASIS_CURVE_BASIS, OfzBasisCurve, OfzBasisIds, OfzBasisRiskEngine
+from .ois_tail import OIS_TAIL_MODELS, OisTail, OisTailRule, extend_ois_request
 from .perpetual import PerpetualTail, perpetual_yield
 from .portfolio_instruments import PortfolioInstrument
 from .portfolio_products import (
@@ -323,6 +325,16 @@ class ValuationPolicy:
     (named, else the shock's; a floater's projection by its projection shift) and the basis by
     ``curve_shifts_bp`` of the basis ID (held when not named); naming the KBD itself is
     refused for these bonds. Every other position is valued as without it.
+
+    ``ois_tail`` (issue #84, omitted at its default None) continues the RUONIA OIS quotes of
+    ``OisTail.ois_curve_id`` past the last quote with synthetic par quotes at 15Y and 20Y
+    (``ois_tail``): a constant par spread to the KBD ``OisTail.kbd_curve_id`` (the ZX tail of
+    ``ofz_basis``), or a flat zero rate when no KBD is named or the snapshot lacks it. Every
+    position reads the extended request (OIS swaps, bonds and floaters discounted or projected
+    on it, the RUONIA + basis view), so RUONIA bucket risk past the last quote follows its own
+    tail buckets instead of the last segment's forward; the rule used ends the curve's
+    ``CurveUse.model_version``. With ``ofz_basis`` on the same OIS curve the two KBD IDs must
+    agree (the discount and the projection then continue alike).
     """
 
     discount_curve_id: str
@@ -355,10 +367,23 @@ class ValuationPolicy:
     risk_method: Literal["bump", "analytic"] = field(default="bump", metadata=OMIT_IF_DEFAULT)
     quote_curve_risk: bool = field(default=False, metadata=OMIT_IF_DEFAULT)
     ofz_basis: OfzBasisIds | None = field(default=None, metadata=OMIT_IF_DEFAULT)
+    ois_tail: OisTail | None = field(default=None, metadata=OMIT_IF_DEFAULT)
 
     def __post_init__(self) -> None:
         if self.ofz_basis is not None and not isinstance(self.ofz_basis, OfzBasisIds):
             raise TypeError("ofz_basis must be OfzBasisIds or None")
+        if self.ois_tail is not None:
+            if not isinstance(self.ois_tail, OisTail):
+                raise TypeError("ois_tail must be OisTail or None")
+            if (
+                self.ofz_basis is not None
+                and self.ofz_basis.ois_curve_id == self.ois_tail.ois_curve_id
+                and self.ofz_basis.kbd_curve_id != self.ois_tail.kbd_curve_id
+            ):
+                raise InvalidTerms(
+                    "ois_tail must continue the OIS curve of ofz_basis on its KBD: "
+                    "the kbd_curve_id fields differ"
+                )
         pairs = tuple(sorted(self.exercise_assumptions, key=lambda p: p[0]))
         for instrument_id, assumption in pairs:
             if not isinstance(instrument_id, str) or not instrument_id:
@@ -886,6 +911,68 @@ class _OfzBasisJob:
         return self.view
 
 
+class _OisTailSnapshot(MarketSnapshot):
+    """A snapshot whose OIS curve ``tail.ois_curve_id`` reads as its quotes extended past the
+    last one (``ValuationPolicy.ois_tail``, issue #84). Built on first read; a rejection (a
+    curve that is not OIS quotes, a calendar that does not reach 20Y) is raised on every read,
+    so the positions on that curve are rejected with it."""
+
+    def curve(self, curve_id: str) -> CurveEntry:
+        entry = super().curve(curve_id)
+        tail = cast(OisTail, self.__dict__["_ois_tail"])
+        if curve_id != tail.ois_curve_id:
+            return entry
+        memo = self.__dict__.get("_ois_tail_entry")
+        if memo is None:
+            try:
+                memo = self._extended(entry, tail)
+            except CoreRejection as exc:
+                memo = exc
+            object.__setattr__(self, "_ois_tail_entry", memo)
+        if isinstance(memo, CoreRejection):
+            raise memo
+        return cast(tuple[CurveEntry, OisTailRule], memo)[0]
+
+    def _extended(self, entry: CurveEntry, tail: OisTail) -> tuple[CurveEntry, OisTailRule]:
+        spec = get_curve_spec(entry.spec_id)
+        if spec.kind is not CurveKind.OIS_BOOTSTRAP or not isinstance(
+            entry.curve, CurveBootstrapRequest
+        ):
+            raise InvalidTerms(f"ois_tail: curve {entry.curve_id} must hold RUONIA OIS quotes")
+        kbd: DiscountCurve | None = None
+        if tail.kbd_curve_id is not None:
+            try:
+                kbd_entry = super().curve(tail.kbd_curve_id)
+            except MissingMarketData:
+                kbd_entry = None
+            if kbd_entry is not None:
+                if get_curve_spec(kbd_entry.spec_id).kind is not CurveKind.KBD_PARAMETRIC:
+                    raise InvalidTerms(f"ois_tail: curve {tail.kbd_curve_id} is not a KBD")
+                kbd = cast(DiscountCurve, _build_curve(kbd_entry, self.business_date).curve)
+        request, rule = extend_ois_request(entry.curve, kbd)
+        return replace(entry, curve=request), rule
+
+    @property
+    def ois_tail_rule(self) -> tuple[str, OisTailRule] | None:
+        """The OIS curve ID and the rule its tail took, once it was read."""
+        memo = self.__dict__.get("_ois_tail_entry")
+        if memo is None or isinstance(memo, CoreRejection):
+            return None
+        tail = cast(OisTail, self.__dict__["_ois_tail"])
+        return tail.ois_curve_id, cast(tuple[CurveEntry, OisTailRule], memo)[1]
+
+
+def _with_ois_tail(snapshot: MarketSnapshot, tail: OisTail | None) -> MarketSnapshot:
+    """``snapshot`` read through ``tail`` (``ValuationPolicy.ois_tail``), or as given."""
+    if tail is None:
+        return snapshot
+    tailed = _OisTailSnapshot(
+        **{f.name: getattr(snapshot, f.name) for f in dataclass_fields(snapshot) if f.init}
+    )
+    object.__setattr__(tailed, "_ois_tail", tail)
+    return tailed
+
+
 def _build_curve(entry: CurveEntry, business_date: date, quote_risk: bool = False) -> _BuiltCurve:
     """The curve of ``entry`` as the engines read it. Par-yield proxy quotes are built
     here, or with ``quote_risk`` (``ValuationPolicy.quote_curve_risk``) passed on as the
@@ -1053,6 +1140,9 @@ def value_portfolio(
             "scenarios": list(scenarios),
         }
     )
+    # Every curve read below goes through the OIS tail (issue #84); the job ID hashes the
+    # snapshot as given and the policy that names the tail.
+    snapshot = _with_ois_tail(snapshot, policy.ois_tail)
     built: dict[str, _BuiltCurve | CoreRejection] = {}
     cache = ShockedCurveCache() if curve_cache is None else curve_cache
     valuations: list[PositionValuation] = []
@@ -1202,6 +1292,10 @@ def value_portfolio(
     )
     for key, use in context.used_curves.items():
         used_curves.setdefault(key, use)
+    tail_rule = snapshot.ois_tail_rule if isinstance(snapshot, _OisTailSnapshot) else None
+    if tail_rule is not None and tail_rule[0] in used_curves:
+        spec_id, model_version = used_curves[tail_rule[0]]
+        used_curves[tail_rule[0]] = (spec_id, f"{model_version}+{OIS_TAIL_MODELS[tail_rule[1]]}")
     curves_used = tuple(
         CurveUse(curve_id, spec_id, model_version, get_curve_spec(spec_id).proxy)
         for curve_id, (spec_id, model_version) in sorted(used_curves.items())
@@ -2454,6 +2548,7 @@ def horizon_portfolio(
     if horizon_date <= snapshot.business_date:
         raise InvalidTerms("horizon date must be after the snapshot business date")
     fx_rule = fx_horizon_rule(fx_horizon)
+    snapshot = _with_ois_tail(snapshot, policy.ois_tail)
     exercised_memo: dict[str, ExercisedBond | CoreRejection] = {}
     every = {i.instrument_id: i for i in instruments}
     by_id = {k: i for k, i in every.items() if isinstance(i, Instrument)}

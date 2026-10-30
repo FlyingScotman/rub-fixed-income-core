@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.42.0 — RUONIA OIS continued past its last quote
+
+FlyingScotman/rub-fixed-income-core#84. The OIS curve bootstrapped from quotes to 10Y
+extrapolated flat-forward from its 9Y–10Y segment, and bucket risk in its quotes moves those
+quotes by the bucket hats: the 10Y bucket changed the last segment's forward strongly and
+carried it over the whole tail. Every position discounted or projected on RUONIA past 10Y
+(corporates, floaters, perpetuals, long swaps) had 7Y/10Y bucket risk of hundreds of RUB/bp
+with opposite signs and a visible diagonal gamma; the sum was right.
+
+- `ValuationPolicy(ois_tail=OisTail(ois_curve_id, kbd_curve_id=None))`, off by default:
+  the OIS quotes of `ois_curve_id` are extended with synthetic par quotes at each v3 par tenor
+  past the last quote (15Y and 20Y after 10Y), fixed at the base and moved by the 15Y / 20Y+
+  bucket hats like any quote (new module `ois_tail`, `extend_ois_request`):
+  - `kbd` rule (the owner's guide of 2026-10-25): `KBD par(T) − s_tail` with the par spread
+    `s_tail` at the last real quote, the ZX tail of the RUONIA + basis view (#83) to the bit;
+  - `flat_zero` rule, the fallback without a KBD (none named, or none in the snapshot): par
+    rates of the base curve continued at the last node's zero rate.
+  Every position reads the extended request: OIS swaps, bonds and floaters discounted or
+  projected on that curve, and the RUONIA + basis view. The OIS curve's
+  `CurveUse.model_version` ends `+ois-tail-kbd-par-spread-v1` or `+ois-tail-flat-zero-v1`.
+- With `ofz_basis` the KBD floater's discount now continues by the same rule as its
+  projection (review of 2026-10-29): the discount reads the extended request, so
+  `OfzBasisCurve` adds no tenor and both legs share one shocked OIS curve. `ofz_basis` and
+  `ois_tail` on the same OIS curve must name the same KBD (else `InvalidTerms`).
+- Prior policies, job IDs and results are unchanged: the field is omitted at its default,
+  and `rub_ruonia_ois_moex_v2` / `rub_ruonia_ois_legacy_v1` build as before. The OIS
+  calendar must resolve 20Y plus the spot lag (as for #83); a shorter one is
+  `CALENDAR_OUT_OF_RANGE` for the positions on that curve.
+- Fix (found here): a never-called perpetual's tail sum treated two last terms that had
+  underflowed to equal subnormals (a high spread over 600 years) as a divergent stream, which
+  could stop the Z-spread search's lower bound short (`Z-spread root is not bracketed`).
+  Subnormal last terms now add no remainder; finite results are unchanged.
+- Synthetic numbers (`ofz_basis_data`, RUB/bp per 1 mn, RUONIA buckets 7Y / 10Y / 15Y / 20Y+):
+  a 15Y fixed corporate on RUONIA +408 / −864 / −4 / 0 → −2 / +1 / −457 / −1 (sum −466 both);
+  RUONIA 10Y +10 bp −8 536 → +13 RUB. A never-called KBD-reset perpetual discounted on
+  RUONIA in RUONIA + basis: +354 / −564 / −49 / +384 → +35 / +1 / −13 / +103 (sum −138 both);
+  RUONIA 10Y +10 bp −5 459 → +22 RUB; the basis ladder unchanged.
+- Tests (`tests/test_ois_tail.py`): the kbd rule equals the ZX quotes; the flat-zero tail is
+  flat; the 15Y bond and the perpetual above (bucket swing, full revaluation); the fallback
+  and its record; default policies byte for byte; horizon; validation; the subnormal sum.
+
 ## 0.41.1 — Exact-decimal pro rata accrued interest of fixed legs
 
 FlyingScotman/rub-fixed-income-core#16 (BACKLOG B#116). **Model change:** results can move

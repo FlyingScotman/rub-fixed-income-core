@@ -547,6 +547,16 @@ default, so earlier policies, job IDs and results keep their bytes.
 | `OfzBasisIds(kbd_curve_id, ois_curve_id, basis_id)`; `ValuationPolicy(..., ofz_basis=None)` | Opt-in: `value_portfolio` reports every bond discounted on `kbd_curve_id` (0.40.0, issue #90: and every floater discounted on `ois_curve_id` and projected off `kbd_curve_id`) in RUONIA + basis (row `curve_basis` as above, model flag `ruonia_basis`); closed form per `risk_method` / `second_order_method`. Scenarios: RUONIA by the OIS curve's shift (named or the shock's), the basis by `curve_shifts_bp` of `basis_id` (held when not named); naming `kbd_curve_id` is `INVALID_TERMS` for those bonds. A non-v3 KBD or an OIS curve without quotes: `INVALID_TERMS` for those bonds. |
 | `basis_view(...)` | Unchanged numbers; documented as the variant-P approximation (RUONIA ≡ basis bucket by bucket). |
 
+## RUONIA OIS past its last quote (0.42.0, issue #84)
+
+Off by default: the policy field is omitted at its default, so earlier policies, job IDs and
+results keep their bytes.
+
+| Name | Description |
+| --- | --- |
+| `OisTail(ois_curve_id, kbd_curve_id=None)`; `ValuationPolicy(..., ois_tail=None)` | Opt-in: every position reads the OIS quotes of `ois_curve_id` extended with synthetic par quotes at the v3 par tenors past the last quote (15Y, 20Y): `KBD par − s_tail` on `kbd_curve_id` (the ZX tail of `ofz_basis`), or a flat zero rate when no KBD is named or in the snapshot. `CurveUse.model_version` of the OIS curve ends `+<OIS_TAIL_MODELS[rule]>`. With `ofz_basis` on the same OIS curve the KBD IDs must agree. A curve that is not OIS quotes: `INVALID_TERMS` for its positions. |
+| `extend_ois_request(request, kbd) -> (request, rule)`; `OIS_TAIL_MODELS` | The extended request and the rule (`"kbd"` or `"flat_zero"`); a request already reaching 20Y is returned as given. |
+
 ## Desk-monitor additions (0.33.0)
 
 Why each exists and what the desk should call: [the review](reviews/CORE_REVIEW_FOR_DESK_MONITOR.md),
