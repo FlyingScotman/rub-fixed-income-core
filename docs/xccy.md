@@ -26,7 +26,12 @@ structure: exchange of notionals in two currencies, interim interest payments in
 currency, reverse exchange at the end. The NFA 2011 standard terms say the same in
 6.1–6.4.
 
-- **RUB leg.** Fixed, or floating on `RUB-RUONIA-OIS-COMPOUND`.
+- **RUB leg.** Fixed, or floating on one of:
+  - `RUB-RUONIA-OIS-COMPOUND`;
+  - any other `CompoundedIndex` the caller states (for example a RUB overnight index with
+    its own bases); core registers no formula for it, the conventions are the caller's;
+  - the calendar-day arithmetic average of the key rate, `RUB_KEY_RATE_AVERAGE`
+    (`AveragedIndex`), as the exchange key-rate swap in `swaps.py`.
 - **Foreign leg.** Fixed, or floating on an explicit compounded overnight index of its
   currency (for example `RUSFARCNY`).
 - **Spread.** On either floating leg. It is added simply:
@@ -45,7 +50,8 @@ currency, reverse exchange at the end. The NFA 2011 standard terms say the same 
 | `NotionalExchange(payment_date, amount)` | Received by the leg's receiver when positive, paid when negative (the initial exchange). |
 | `XccyLeg(currency, side, day_count, periods, exchanges=(), fixed_rate=None, index=None, spread=0.0)` | `side` is `receive` or `pay`, for the position. Give exactly one of `fixed_rate` and `index`. A fixed leg has no spread. |
 | `CompoundedIndex(name, weight_basis, annualization_basis)` | `rate = (prod(1 + r_i * n_i / W) - 1) * A / d`. The bases are `nfa_act`, `act_365f` or `act_360` (see below). |
-| `XccySwap(trade_id, rub_leg, foreign_leg, mark_to_market_resets=False)` | Opposite sides. A RUB index other than RUONIA raises `UnsupportedProduct`. |
+| `AveragedIndex(name, fixing_index="key_rate", rate_day_count=ACT_365_FIXED)` | RUB leg only (`InvalidTerms` on a foreign leg). `avg = sum_d r(d) / days`, the sum over the calendar days of `[start, end)`; the coupon is `N * (avg + spread) * DCF`. No compounding. |
+| `XccySwap(trade_id, rub_leg, foreign_leg, mark_to_market_resets=False)` | Opposite sides. RUONIA on the foreign leg is `InvalidTerms`. |
 
 `RUONIA_OIS_COMPOUND = CompoundedIndex("RUB-RUONIA-OIS-COMPOUND", "nfa_act", "nfa_act")`
 is NFA amendments No. 1 (2021), 8.4(б):
@@ -70,6 +76,9 @@ These are the rules of `swaps.py`:
   - a `FixingHistory` for RUONIA;
   - `IndexFixings(index, valuation_date, fixings, calendar, snapshot_id)` for a foreign
     index, which needs every observed business day.
+- The RUB leg takes `rub_fixings` by its index: `FixingHistory("ruonia")` for RUONIA,
+  `FixingHistory("key_rate")` for `AveragedIndex`, `IndexFixings` of the leg's index for
+  another `CompoundedIndex`. Any other type or index is rejected.
 - A missing fixing raises `MissingMarketData` and is never filled.
 - From the first unobserved day `c` to the period end `e`, the projection curve gives
   `DF(c) / DF(e)`. This is exact for business-day boundaries, whatever the bases.
@@ -364,10 +373,22 @@ On the quote basis, a cold job rebuilds about 140 OIS curves and 530 XCCY curves
 Seeding persisted OIS curves (`ShockedCurveCache.seed`) removes the OIS part. XCCY
 curves are not persisted yet.
 
+### Averaged key rate (0.43.0)
+
+`r(d)` is the key rate in force on each calendar day (the rows of the history are by
+effective date). Known days come from `FixingHistory("key_rate")`; the semantics are those
+of `swaps._arithmetic_known`. Projected days sum the projection curve's overnight forwards
+`(DF(d) / DF(d + 1) - 1) / tau(d, d + 1)`, with `tau` on `rate_day_count`. On the curve
+`rub_key_rate_projection_v1` (calendar nodes, Act/365F) these are exactly the key-rate path.
+`rub_projection_curve` is required (`MissingMarketData` otherwise); `XccyInstrument`
+requires `rub_projection_curve_id`. Compounding the key rate would overstate the coupon by
+about 1.3 percentage points at a 16 % rate, hence a separate index kind. The horizon keeps
+today's forwards up to the horizon and the rolled curve after it. Results of RUONIA legs
+and `XCCY_MODEL_VERSION` do not change.
+
 ## Not covered
 
-- Mark-to-market (resettable) notionals; RUB indices other than RUONIA (KEYRATE,
-  RUSFAR); lookback, lockout or observation shift; compounded spreads (the NCC
+- Mark-to-market (resettable) notionals; lookback, lockout or observation shift; compounded spreads (the NCC
   parameters list "с учётом Спреда" variants); the 0.0001 % rounding of settled RUONIA
   indices and the 2-decimal rounding of amounts.
 - Bootstrapping from basis quotes of RUONIA plus a spread against a CNY floating index

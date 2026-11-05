@@ -43,7 +43,7 @@ from .rate_futures import (
 )
 from .repo import RepoTrade
 from .swaps import InterestRateSwap
-from .xccy import XccySwap
+from .xccy import AveragedIndex, XccySwap
 
 __all__ = [
     "CdsInstrument",
@@ -198,7 +198,10 @@ class XccyInstrument:
     discount factors of the currency, a curve implied from FX swaps, or a
     ``cny_ruonia_xccy_v1`` entry holding XCCY par quotes (risk on the quote basis). A
     floating RUB leg projects on ``rub_projection_curve_id`` (``None``: the discount
-    curve) with RUONIA fixings ``rub_fixing_id``; a floating foreign leg needs
+    curve) with RUONIA fixings ``rub_fixing_id``; a RUB leg on another compounded index
+    takes snapshot index fixings under ``rub_fixing_id``, a RUB leg on the averaged key rate
+    needs ``rub_projection_curve_id`` (``rub_key_rate_projection_v1``) and key-rate
+    fixings; a floating foreign leg needs
     ``foreign_projection_curve_id`` and, once started, ``foreign_fixing_id`` (snapshot
     index fixings).
     """
@@ -231,6 +234,13 @@ class XccyInstrument:
             self.rub_projection_curve_id is not None or self.rub_fixing_id is not None
         ):
             raise InvalidTerms("a fixed RUB leg takes no projection curve or fixings")
+        if isinstance(self.swap.rub_leg.index, AveragedIndex) and (
+            self.rub_projection_curve_id is None
+        ):
+            raise InvalidTerms(
+                "an averaged key-rate RUB leg needs rub_projection_curve_id "
+                "(a rub_key_rate_projection_v1 curve)"
+            )
         foreign_floating = self.swap.foreign_leg.index is not None
         if foreign_floating and self.foreign_projection_curve_id is None:
             raise InvalidTerms("a floating foreign leg needs foreign_projection_curve_id")

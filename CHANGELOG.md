@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.43.0 — XCCY RUB leg on any compounded index and on the average key rate
+
+FlyingScotman/rub-fixed-income-core#64 (KEYRATE and RUSFAR RUB legs).
+
+- `XccySwap` no longer rejects a RUB index other than RUONIA. The RUB leg floats on any
+  `CompoundedIndex` (fixings: `IndexFixings` of that index; projection: any RUB curve or the
+  discount curve) or on the new `AveragedIndex`, `RUB_KEY_RATE_AVERAGE`: the arithmetic
+  calendar-day average of the key rate, as the exchange key-rate swap. Known days come from
+  `FixingHistory("key_rate")`, projected days from the overnight forwards of
+  `rub_projection_curve` (`rub_key_rate_projection_v1`), required for this leg. No formula
+  for any RUB index is registered in core: conventions are the caller's.
+- `value_portfolio` / `horizon_portfolio`: the key-rate leg projects on a key-rate projection
+  curve (`XccyInstrument.rub_projection_curve_id` required) with `rub_fixing_id` of key-rate
+  fixings; another compounded index reads snapshot `index_fixings`.
+- `XccyRiskRequest.rub_fixings` accepts `IndexFixings`; a history of the wrong index or type
+  is rejected.
+- RUONIA swaps: values, job IDs, `XCCY_MODEL_VERSION` and goldens are unchanged.
+
 ## 0.42.0 — RUONIA OIS continued past its last quote
 
 FlyingScotman/rub-fixed-income-core#84. The OIS curve bootstrapped from quotes to 10Y

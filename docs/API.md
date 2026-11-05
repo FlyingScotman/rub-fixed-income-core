@@ -228,8 +228,8 @@ Money is signed RUB of PV; foreign flows are converted by covered parity at spot
 
 | Name | Description |
 | --- | --- |
-| `XccySwap(trade_id, rub_leg, foreign_leg, mark_to_market_resets=False)` | Opposite-side legs. Resets and RUB indices other than RUONIA raise `UnsupportedProduct`. `.currency`. |
-| `XccyLeg(currency, side, day_count, periods, exchanges=(), fixed_rate=None, index=None, spread=0.0)` | `side` `receive`/`pay`; exactly one of `fixed_rate` and `index`; `spread` decimal, simple (NFA 7.3(а)). `.sign`, `.is_floating`. |
+| `XccySwap(trade_id, rub_leg, foreign_leg, mark_to_market_resets=False)` | Opposite-side legs. Resets raise `UnsupportedProduct`; the RUB leg may float on any `CompoundedIndex` or on `RUB_KEY_RATE_AVERAGE` (`AveragedIndex`, 0.43.0, see [xccy](xccy.md)). `.currency`. |
+| `XccyLeg(currency, side, day_count, periods, exchanges=(), fixed_rate=None, index=None, spread=0.0)` | `index` is a `CompoundedIndex` or, on the RUB leg, an `AveragedIndex`; `side` `receive`/`pay`; exactly one of `fixed_rate` and `index`; `spread` decimal, simple (NFA 7.3(а)). `.sign`, `.is_floating`. |
 | `XccyPeriod(accrual_start, accrual_end, payment_date, notional, known_amount=None)`, `NotionalExchange(payment_date, amount)` | Interest period with its notional (a published `known_amount` is frozen); a notional payment, + received by the leg's receiver. |
 | `CompoundedIndex(name, weight_basis, annualization_basis)`, `RUONIA_OIS_COMPOUND` | `(prod(1 + r_i n_i / W) - 1) * A / d`; bases `nfa_act` (365, or 366 with a leap day in the period), `act_365f`, `act_360`. `RUONIA_OIS_COMPOUND` is NFA 8.4(б). |
 | `IndexFixings(index, valuation_date, fixings, calendar, snapshot_id)` | Fixings of a foreign index; RUONIA uses `FixingHistory`. |

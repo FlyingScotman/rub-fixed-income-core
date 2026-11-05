@@ -173,8 +173,12 @@ from .swaps import (
     swap_factor_risk,
 )
 from .xccy import (
+    RUONIA_OIS_COMPOUND,
     XCCY_CURVE_MODEL_VERSION,
     XCCY_MODEL_VERSION,
+    AveragedIndex,
+    CompoundedIndex,
+    IndexFixings,
     XccyCurveBootstrapRequest,
     XccyCurveCache,
     XccyCurveRole,
@@ -1526,10 +1530,14 @@ def _xccy_engine(
     _check_position(position, currency)
     spot, settlement = ctx.fx_spot(currency)
     rub_d = ctx.discount_curve(instrument.rub_discount_curve_id, "RUB")
+    rub_index = swap.rub_leg.index
     rub_p = (
         None
         if instrument.rub_projection_curve_id is None
-        else ctx.projection(instrument.rub_projection_curve_id, "ruonia").curve
+        else ctx.projection(
+            instrument.rub_projection_curve_id,
+            "key_rate" if isinstance(rub_index, AveragedIndex) else "ruonia",
+        ).curve
     )
     foreign_id, foreign_d, fallback_from = _xccy_foreign_discount(
         ctx, instrument.foreign_discount_curve_id, currency, spot
@@ -1539,11 +1547,13 @@ def _xccy_engine(
         if instrument.foreign_projection_curve_id is None
         else ctx.discount_curve(instrument.foreign_projection_curve_id, currency)
     )
-    rub_fixings = (
-        None
-        if instrument.rub_fixing_id is None
-        else ctx.snapshot.point_in_time_fixing(instrument.rub_fixing_id)
-    )
+    rub_fixings: FixingHistory | IndexFixings | None
+    if instrument.rub_fixing_id is None:
+        rub_fixings = None
+    elif isinstance(rub_index, CompoundedIndex) and rub_index.name != RUONIA_OIS_COMPOUND.name:
+        rub_fixings = ctx.snapshot.index_fixing(instrument.rub_fixing_id)
+    else:
+        rub_fixings = ctx.snapshot.point_in_time_fixing(instrument.rub_fixing_id)
     foreign_fixings = (
         None
         if instrument.foreign_fixing_id is None

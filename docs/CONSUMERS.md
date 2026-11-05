@@ -220,6 +220,13 @@ rounds up (it could round down in float), so such a bond's accrued, dirty price 
 yields solved from its clean price can move by one kopeck; stored results on other dates
 and bonds are unchanged.
 
+**From 0.43.0: RUB leg of a cross-currency swap on any compounded index or the average key rate**
+(FlyingScotman/rub-fixed-income-core#64). Nothing changes for RUONIA swaps (same bytes, same
+job IDs). New: `XccyLeg.index` may be another `CompoundedIndex` (RUB fixings are then
+`IndexFixings`, in a snapshot `index_fixings` under `rub_fixing_id`) or `RUB_KEY_RATE_AVERAGE`
+(`FixingHistory("key_rate")`, `rub_projection_curve_id` of a `rub_key_rate_projection_v1` curve
+is required). Only the pin changes for other consumers.
+
 **From 0.42.0: RUONIA OIS past its last quote** (FlyingScotman/rub-fixed-income-core#84).
 Nothing changes until the monitor opts in. For risk of RUONIA positions past 10Y that does not
 swing between the 7Y and 10Y buckets:
