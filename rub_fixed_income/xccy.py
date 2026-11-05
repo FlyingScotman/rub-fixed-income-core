@@ -1758,6 +1758,12 @@ class XccyRiskEngine:
                     "basis_day_count": req.basis_day_count.value,
                     "rub_fixings": _fixings_identity(req.rub_fixings),
                     "foreign_fixings": _fixings_identity(req.foreign_fixings),
+                    # only when given: it decides the horizon; absent, bytes as before
+                    **(
+                        {}
+                        if req.rub_key_rate_curve is None
+                        else {"rub_key_rate_curve": req.rub_key_rate_curve}
+                    ),
                 }
             ),
         )

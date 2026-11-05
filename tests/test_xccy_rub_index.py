@@ -579,6 +579,32 @@ def test_horizon_needs_the_forward_curve_and_a_matching_projection() -> None:
         xccy_horizon(wrong, horizon_date=h, horizon_spot_value_date=spot_h)
 
 
+def test_key_rate_curve_enters_the_identity_only_when_given() -> None:
+    s = swap(RUB_KEY_RATE_AVERAGE)
+
+    def curve(decision: date) -> KeyRateForwardCurve:
+        return KeyRateForwardCurve(
+            C,
+            0.16,
+            decision,
+            (
+                KeyRateForwardSegment(decision, date(2027, 6, 1), 0.16, "6M"),
+                KeyRateForwardSegment(date(2027, 6, 1), date(2029, 1, 1), 0.13, "2Y"),
+            ),
+        )
+
+    early, late = curve(STEP), curve(STEP + timedelta(days=10))
+    proj = key_rate_projection_curve(early, RU, rate_day_count=ACT365, observation_days="calendar")
+    assert proj == key_rate_projection_curve(
+        late, RU, rate_day_count=ACT365, observation_days="calendar"
+    )  # one daily path
+    plain = XccyRiskEngine(request(s, rub_projection_curve=proj)).base_id
+    a = XccyRiskEngine(request(s, rub_projection_curve=proj, rub_key_rate_curve=early)).base_id
+    b = XccyRiskEngine(request(s, rub_projection_curve=proj, rub_key_rate_curve=late)).base_id
+    assert len({plain, a, b}) == 3
+    assert XccyRiskEngine(request(s, rub_projection_curve=proj)).base_id == plain
+
+
 def test_key_rate_curve_field_validation() -> None:
     with pytest.raises(InvalidTerms, match="averaged key-rate"):
         request(swap(RUONIA_OIS_COMPOUND), rub_key_rate_curve=FORWARD)
