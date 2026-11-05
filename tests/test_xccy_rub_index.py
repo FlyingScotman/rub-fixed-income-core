@@ -14,6 +14,7 @@ from datetime import UTC, date, datetime, timedelta
 import pytest
 from portfolio_v3_book import BUSINESS_DATE, CAL
 from test_fx_portfolio_v036 import RUB_CURVE, built, market, pos, run
+from test_xccy import bootstrap_request
 
 from rub_fixed_income import (
     RUB_KEY_RATE_AVERAGE,
@@ -57,6 +58,7 @@ RU = BusinessCalendar(
     date(2034, 12, 31),
 )
 R_RUB = 0.15
+RUB_PROJ = DiscountCurve.flat(C, 0.155)
 S = 11.2
 SPOT_DATE = date(2026, 10, 16)
 RUB = DiscountCurve.flat(C, R_RUB)
@@ -425,48 +427,59 @@ def test_unknown_rub_index_no_longer_raises_unsupported() -> None:
 # --- Horizon --------------------------------------------------------------------------------
 
 
-def test_horizon_of_an_averaged_leg_keeps_todays_forwards_up_to_the_horizon() -> None:
-    s = swap(RUB_KEY_RATE_AVERAGE)
-    req = request(s, rub_projection_curve=KEY_PROJ)
-    h = C + timedelta(days=30)
+def test_horizon_of_an_averaged_leg_holds_the_decision_date() -> None:
+    # three levels: 16 % to the decision, 14 % to 1 June (tenor-held), 12 % after
+    pillar = date(2027, 6, 1)
+    forward = KeyRateForwardCurve(
+        C,
+        0.16,
+        STEP,
+        (
+            KeyRateForwardSegment(STEP, pillar, 0.14, "1Y"),
+            KeyRateForwardSegment(pillar, date(2029, 1, 1), 0.12, "5Y"),
+        ),
+    )
+    proj = key_rate_projection_curve(
+        forward, RU, rate_day_count=ACT365, observation_days="calendar"
+    )
+    start, end = SPOT_DATE, date(2027, 8, 16)
+    req = request(swap(RUB_KEY_RATE_AVERAGE, end=end), rub_projection_curve=proj)
+    twin_req = request(swap(None, end=end))
+    shift = 30
+    h = C + timedelta(days=shift)
     spot_h = h + timedelta(days=1)
     valuation = xccy_horizon(req, horizon_date=h, horizon_spot_value_date=spot_h)
+    twin = xccy_horizon(twin_req, horizon_date=h, horizon_spot_value_date=spot_h)
     assert valuation.received_rub == 0.0
-    # hand: the first 30 days (from the period start) at today's path, the rest on the
-    # path rolled by 30 days
-    start, end = SPOT_DATE, date(2027, 4, 16)
-    total = 0.0
-    day = start
-    while day < end:
-        if day < h:
-            total += FORWARD.rate_at(day)
-        else:
-            total += FORWARD.rate_at(day - timedelta(days=30))
-        day += timedelta(days=1)
-    avg = total / (end - start).days
-    alpha = (end - start).days / 360.0
-    coupon = -N_RUB * (avg + 0.002) * alpha
-    rolled_rub = DiscountCurve.flat(h, R_RUB)
+    days = (end - start).days
+    alpha = days / 360.0
     pay = end + timedelta(days=1)
-    rub_pv = coupon * rolled_rub.discount_factor(pay) - N_RUB * rolled_rub.discount_factor(end)
-    foreign = N_CNY * 0.0
-    del foreign
-    base = XccyRiskEngine(req)
-    flows = base.cashflows()
-    assert flows  # sanity
-    # the RUB leg of the rolled PV: compare through the difference with a fixed-leg twin
-    twin = swap(None)
-    twin_req = request(twin)
-    twin_val = xccy_horizon(twin_req, horizon_date=h, horizon_spot_value_date=spot_h)
-    twin_pv = XccyRiskEngine(twin_req)
+
+    def rolled_rate(day: date) -> float:
+        # the decision stays on its date, the pillar end moves by the horizon
+        if day < STEP:
+            return 0.16
+        return 0.14 if day < pillar + timedelta(days=shift) else 0.12
+
+    today = sum(forward.rate_at(d) for d in (start + timedelta(days=i) for i in range(days)))
+    rolled = sum(
+        forward.rate_at(d) if d < h else rolled_rate(d)
+        for d in (start + timedelta(days=i) for i in range(days))
+    )
     twin_coupon = -N_RUB * 0.16 * alpha
-    twin_rub = twin_coupon * rolled_rub.discount_factor(pay) - N_RUB * rolled_rub.discount_factor(
-        end
+    coupon_today = -N_RUB * (today / days + 0.002) * alpha
+    coupon_rolled = -N_RUB * (rolled / days + 0.002) * alpha
+    # pv_forward: today's amounts, curves read forward (flat RUB curve: DF(t) / DF(h))
+    read_forward = df(R_RUB, pay) / df(R_RUB, h)
+    assert valuation.pv_forward_rub - twin.pv_forward_rub == pytest.approx(
+        (coupon_today - twin_coupon) * read_forward, rel=1e-9
     )
-    assert valuation.pv_rolled_rub - twin_val.pv_rolled_rub == pytest.approx(
-        rub_pv - twin_rub, rel=1e-9
+    # pv_rolled: the path after the horizon rolled with the decision date held
+    rolled_df = math.exp(-R_RUB * (pay - h).days / 365.0)
+    assert valuation.pv_rolled_rub - twin.pv_rolled_rub == pytest.approx(
+        (coupon_rolled - twin_coupon) * rolled_df, rel=1e-9
     )
-    assert twin_pv.base_pv_rub
+    assert coupon_rolled != pytest.approx(coupon_today, rel=1e-6)
 
 
 def test_horizon_after_the_payment_pays_todays_amount() -> None:
@@ -481,6 +494,57 @@ def test_horizon_after_the_payment_pays_todays_amount() -> None:
     assert valuation.received_rub == pytest.approx(
         coupon + exchange + sum(f.amount for f in foreign) * S, rel=1e-6
     )
+
+
+def test_projection_curve_must_cover_the_period_and_the_horizon() -> None:
+    short = KeyRateForwardCurve(C, 0.16, STEP, ())
+    short_proj = key_rate_projection_curve(
+        short, RU, rate_day_count=ACT365, observation_days="calendar"
+    )
+    with pytest.raises(MissingMarketData, match="does not cover"):
+        XccyRiskEngine(request(swap(RUB_KEY_RATE_AVERAGE), rub_projection_curve=short_proj))
+    ok = swap(RUB_KEY_RATE_AVERAGE, end=date(2026, 12, 16))
+    req = request(ok, rub_projection_curve=short_proj)
+    with pytest.raises(MissingMarketData, match="ends before the horizon"):
+        xccy_horizon(
+            req, horizon_date=date(2026, 12, 20), horizon_spot_value_date=date(2026, 12, 21)
+        )
+
+
+def test_bootstrapped_foreign_curve_ignores_the_key_rate_projection() -> None:
+    boot = bootstrap_request()
+    fixed = XccyRiskEngine(request(swap(None), foreign_discount_curve=boot))
+    averaged = XccyRiskEngine(
+        request(
+            swap(RUB_KEY_RATE_AVERAGE), foreign_discount_curve=boot, rub_projection_curve=KEY_PROJ
+        )
+    )
+    high = XccyRiskEngine(
+        request(
+            swap(RUB_KEY_RATE_AVERAGE),
+            foreign_discount_curve=boot,
+            rub_projection_curve=DiscountCurve.flat(C, 0.30),
+        )
+    )
+    probe = date(2027, 10, 15)
+    want = fixed._bases["foreign_discount"].discount_factor(probe)
+    assert averaged._bases["foreign_discount"].discount_factor(probe) == want
+    assert high._bases["foreign_discount"].discount_factor(probe) == want
+    # the projection role is the leg's own: bumping it leaves the foreign curve alone
+    zero = _zero()
+    bumped = (5.0,) * len(zero)
+    moved = averaged.reprice(XccyScenario(rub_projection_shifts_bp=bumped))
+    assert moved.foreign_rates_pnl_rub == 0.0
+    # a RUONIA swap still projects the quotes on its own projection curve
+    ruonia = XccyRiskEngine(
+        request(
+            swap(RUONIA_OIS_COMPOUND), foreign_discount_curve=boot, rub_projection_curve=RUB_PROJ
+        )
+    )
+    plain = XccyRiskEngine(request(swap(RUONIA_OIS_COMPOUND), foreign_discount_curve=boot))
+    assert ruonia._bases["foreign_discount"].discount_factor(probe) != plain._bases[
+        "foreign_discount"
+    ].discount_factor(probe)
 
 
 # --- value_portfolio ----------------------------------------------------------------------
@@ -583,8 +647,6 @@ def test_instrument_rules_for_the_new_legs() -> None:
 
 
 def test_non_ruonia_compounded_leg_reads_snapshot_index_fixings() -> None:
-    from portfolio_v3_book import TOM
-
     start, end = date(2026, 10, 1), date(2027, 4, 1)
     cal = CAL
     rows = tuple(
@@ -599,4 +661,3 @@ def test_non_ruonia_compounded_leg_reads_snapshot_index_fixings() -> None:
     result = run(snap, [inst], [pos("p", "XR", 1.0, "CNY")])
     assert result.coverage.status == "complete", result.coverage.rejections
     assert not any(role == "rub_projection" for role, _ in result.xccy_swaps[0].curve_ids)
-    assert TOM

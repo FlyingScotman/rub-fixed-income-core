@@ -382,14 +382,20 @@ of `swaps._arithmetic_known`. Projected days sum the projection curve's overnigh
 `rub_key_rate_projection_v1` (calendar nodes, Act/365F) these are exactly the key-rate path.
 `rub_projection_curve` is required (`MissingMarketData` otherwise); `XccyInstrument`
 requires `rub_projection_curve_id`. Compounding the key rate would overstate the coupon by
-about 1.3 percentage points at a 16 % rate, hence a separate index kind. The horizon keeps
-today's forwards up to the horizon and the rolled curve after it. Results of RUONIA legs
+about 1.3 percentage points at a 16 % rate over a year-long period, hence a separate index kind. The horizon keeps
+today's forwards up to the horizon and, after it, the projection curve rolled as the key-rate
+swap's horizon does (`roll_key_rate_curve`, BACKLOG #109): the next decision date stays on
+its date, the tenor-held segment ends move by the horizon. The path is read back from the
+curve's daily forwards. A period ending after the last node of the projection curve, or a
+horizon on or after it, is `MissingMarketData`, as for the key-rate swap. The foreign curve
+bootstrapped from RUONIA quotes never projects on the key-rate (or any non-RUONIA) curve:
+its quote legs use the RUB discount curve, and no `rub_projection` risk flows through it. Results of RUONIA legs
 and `XCCY_MODEL_VERSION` do not change.
 
 ## Not covered
 
-- Mark-to-market (resettable) notionals; lookback, lockout or observation shift; compounded spreads (the NCC
-  parameters list "с учётом Спреда" variants); the 0.0001 % rounding of settled RUONIA
+- Mark-to-market (resettable) notionals; lookback, lockout or observation shift;
+  compounded spreads (the NCC parameters list "с учётом Спреда" variants); the 0.0001 % rounding of settled RUONIA
   indices and the 2-decimal rounding of amounts.
 - Bootstrapping from basis quotes of RUONIA plus a spread against a CNY floating index
   (MOEX `XCCY/BASIS` with `RUSFARCNY`). Only CNY fixed par quotes are bootstrapped.

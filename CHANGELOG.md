@@ -16,6 +16,10 @@ FlyingScotman/rub-fixed-income-core#64 (KEYRATE and RUSFAR RUB legs).
   fixings; another compounded index reads snapshot `index_fixings`.
 - `XccyRiskRequest.rub_fixings` accepts `IndexFixings`; a history of the wrong index or type
   is rejected.
+- The foreign curve bootstrapped from RUONIA quotes projects the quotes' RUONIA legs on the
+  RUONIA projection curve only for a RUONIA swap; a swap with another RUB index leaves it out of
+  the bootstrap and of the `rub_projection` risk.
+- Horizon of the key-rate leg rolls the path as the key-rate swap (`roll_key_rate_curve`).
 - RUONIA swaps: values, job IDs, `XCCY_MODEL_VERSION` and goldens are unchanged.
 
 ## 0.42.0 — RUONIA OIS continued past its last quote

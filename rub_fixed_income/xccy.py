@@ -37,7 +37,7 @@ from datetime import date, timedelta
 from itertools import pairwise
 from typing import ClassVar, Literal, cast
 
-from ._curve_views import FxHorizon, roll_curve
+from ._curve_views import FxHorizon, roll_curve, roll_key_rate_curve
 from ._curve_views import fx_horizon as _check_fx_horizon
 from ._money import finite_money, positive_money
 from ._quote_curves import QuoteCurve
@@ -67,8 +67,9 @@ from .dates import BusinessCalendar
 from .discount import CurveBootstrapRequest, DiscountCurve, DiscountFactorCurve
 from .errors import InvalidTerms, MissingMarketData, UnsupportedProduct
 from .factors import FactorRisk, HessianEntry, fx_factor, ir_factor
-from .floating import FixingHistory
+from .floating import FixingHistory, key_rate_projection_curve
 from .fx_futures import FxFuturesScenario
+from .key_rate import KeyRateForwardCurve, KeyRateForwardSegment
 from .tenors import parse_tenor, resolve_tenor
 
 __all__ = [
@@ -238,7 +239,8 @@ RUB_KEY_RATE_AVERAGE = AveragedIndex("RUB-KEYRATE-AVERAGE")
 
 @dataclass(frozen=True)
 class IndexFixings:
-    """Published fixings of a foreign overnight index, dated before ``valuation_date``.
+    """Published fixings of an overnight index, dated before ``valuation_date``: a foreign
+    leg's index, or the RUB leg's when it floats on a compounded index other than RUONIA.
 
     Every business day of ``calendar`` that a remaining period observes before the
     valuation date must have its fixing; a missing one raises ``MissingMarketData``
@@ -683,6 +685,43 @@ def _forward_sum(curve: DiscountFactorCurve, start: date, end: date, day_count: 
         previous = current
         day = following
     return math.fsum(total)
+
+
+def _roll_key_projection(curve: DiscountCurve, horizon: date, day_count: DayCount) -> DiscountCurve:
+    """A key-rate projection curve moved to ``horizon`` with the decision date held, as the
+    key-rate swap's horizon (``roll_key_rate_curve``, BACKLOG #109).
+
+    The path is read back from the curve's daily overnight forwards: runs of equal rates
+    are the current interval and the segments, whose ends move by the horizon.
+    """
+    end = curve.nodes[-1][0]
+    runs: list[tuple[float, date]] = []
+    day = curve.curve_date
+    while day < end:
+        following = day + timedelta(days=1)
+        rate = (curve.discount_factor(day) / curve.discount_factor(following) - 1.0) / (
+            day_count.year_fraction(day, following)
+        )
+        if runs and abs(runs[-1][0] - rate) <= 1e-12:
+            runs[-1] = (runs[-1][0], following)
+        else:
+            runs.append((rate, following))
+        day = following
+    current_rate, current_end = runs[0]
+    segments: list[KeyRateForwardSegment] = []
+    start = current_end
+    for rate, stop in runs[1:]:
+        segments.append(KeyRateForwardSegment(start, stop, rate, "path"))
+        start = stop
+    path = KeyRateForwardCurve(curve.curve_date, current_rate, current_end, tuple(segments))
+    if path.horizon_date <= horizon:
+        raise MissingMarketData("key-rate projection curve ends before the horizon")
+    return key_rate_projection_curve(
+        roll_key_rate_curve(path, horizon),
+        BusinessCalendar(),
+        rate_day_count=day_count,
+        observation_days="calendar",
+    )
 
 
 def _known_growth(
@@ -1650,6 +1689,14 @@ class XccyRiskEngine:
         valuation = req.valuation_date
         swap = req.swap
         object.__setattr__(self, "_rub_flows", _leg_flows(swap.rub_leg, valuation, req.rub_fixings))
+        for flow in self._rub_flows:
+            if flow.averaged and flow.proj_end is not None:
+                nodes = bases["rub_projection"].nodes
+                if nodes and flow.proj_end > nodes[-1][0]:  # a flat curve has no end
+                    raise MissingMarketData(
+                        "the key-rate projection curve does not cover the float period to "
+                        f"{flow.proj_end.isoformat()}"
+                    )
         foreign_flows = _leg_flows(swap.foreign_leg, valuation, req.foreign_fixings)
         if not foreign_flows and not self._rub_flows:
             raise InvalidTerms(f"{swap.trade_id}: every flow has settled; nothing to value")
@@ -1749,13 +1796,29 @@ class XccyRiskEngine:
         if not isinstance(source, XccyCurveBootstrapRequest):  # built, or par-yield quotes
             base = _base_curve(source, self.curve_cache)
             return _shock_curve(source, base, own, self.curve_cache)
+        # The quotes' RUB legs float on RUONIA: they project on the RUONIA projection curve
+        # of a RUONIA swap, else on the RUB discount curve. The projection curve of another
+        # RUB index (RUSFAR, the key rate) never enters the bootstrap, nor its risk channel.
+        rub_index = req.swap.rub_leg.index
+        own_projection = rub_index is None or (
+            isinstance(rub_index, CompoundedIndex) and rub_index.name == _RUONIA_INDEX
+        )
         rub_d = self._shift(shifts, "rub_discount")
-        rub_p = self._shift(shifts, "rub_projection")
-        sources = (source, req.rub_discount_curve, req.rub_projection_curve)
+        rub_p = self._shift(shifts, "rub_projection") if own_projection else _ZERO_SHOCK
+        sources = (
+            source,
+            req.rub_discount_curve,
+            req.rub_projection_curve if own_projection else None,
+        )
 
         def build() -> DiscountCurve:
             discount, projection = self._rub_curves(shifts)
-            return _bootstrap(source, discount, projection, _shocked_rates(source, own))
+            return _bootstrap(
+                source,
+                discount,
+                projection if own_projection else discount,
+                _shocked_rates(source, own),
+            )
 
         return self.xccy_cache.get(sources, (rub_d, rub_p, own), build)
 
@@ -2132,7 +2195,11 @@ class XccyRiskEngine:
             lambda t: foreign_d.discount_factor(t) / foreign_h,
         )
         rolled_rub_d = roll_curve(rub_d, horizon_date)
-        rolled_rub_p = rolled_rub_d if rub_p is rub_d else roll_curve(rub_p, horizon_date)
+        rub_index = req.swap.rub_leg.index
+        if isinstance(rub_index, AveragedIndex) and rub_p.nodes:
+            rolled_rub_p = _roll_key_projection(rub_p, horizon_date, rub_index.rate_day_count)
+        else:
+            rolled_rub_p = rolled_rub_d if rub_p is rub_d else roll_curve(rub_p, horizon_date)
         rolled_foreign_d = roll_curve(foreign_d, horizon_date)
         rolled_foreign_p = None if foreign_p is None else roll_curve(foreign_p, horizon_date)
         pv_rolled = at_horizon(
