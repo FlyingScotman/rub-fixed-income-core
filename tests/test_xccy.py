@@ -929,13 +929,12 @@ def test_typed_rejections() -> None:
     swap = off_market()
     with pytest.raises(UnsupportedProduct, match="mark-to-market"):
         replace(swap, mark_to_market_resets=True)
-    with pytest.raises(UnsupportedProduct):
-        replace(
-            swap,
-            rub_leg=replace(
-                swap.rub_leg, index=CompoundedIndex("KEYRATE-AVERAGE", "act_365f", "act_365f")
-            ),
-        )
+    replace(  # any compounded RUB index is modelled since 0.43.0
+        swap,
+        rub_leg=replace(
+            swap.rub_leg, index=CompoundedIndex("RUB-OTHER-COMPOUND", "act_365f", "act_365f")
+        ),
+    )
     with pytest.raises(InvalidTerms):
         replace(swap, rub_leg=replace(swap.rub_leg, side="receive"))
     with pytest.raises(InvalidTerms):

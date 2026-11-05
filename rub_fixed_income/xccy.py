@@ -4,9 +4,12 @@ A cross-currency swap has one RUB leg and one foreign-currency leg, each a "bond
 its currency: its receiver pays the notional at the start (initial exchange), receives
 fixed or floating coupons and the notional back at the end (final exchange), with
 optional intermediate exchanges as the notional amortizes. The RUB leg is fixed or
-floats on compounded RUONIA (``RUB-RUONIA-OIS-COMPOUND``); the foreign leg is fixed or
-floats on an explicit compounded overnight index of its currency. Known fixings and
-published amounts never move under shocks.
+floats on compounded RUONIA (``RUB-RUONIA-OIS-COMPOUND``), on any other
+:class:`CompoundedIndex` the caller states (for example a RUB overnight index with its own
+compounding bases) or on the calendar-day arithmetic average of the key rate
+(:class:`AveragedIndex`, as the exchange key-rate swap in ``swaps``); the foreign leg is
+fixed or floats on an explicit compounded overnight index of its currency. Known fixings
+and published amounts never move under shocks.
 
 Valuation, all in RUB, for a curve date ``c`` and a spot rate ``S`` for value date ``s``::
 
@@ -34,7 +37,7 @@ from datetime import date, timedelta
 from itertools import pairwise
 from typing import ClassVar, Literal, cast
 
-from ._curve_views import FxHorizon, roll_curve
+from ._curve_views import FxHorizon, roll_curve, roll_key_rate_curve
 from ._curve_views import fx_horizon as _check_fx_horizon
 from ._money import finite_money, positive_money
 from ._quote_curves import QuoteCurve
@@ -52,7 +55,7 @@ from ._risk_common import (
     _snapshot_curve,
 )
 from ._solver import bisect
-from .canonical import _Canonical, _precanonical, canonical_sha256
+from .canonical import OMIT_IF_DEFAULT, _Canonical, _precanonical, canonical_sha256
 from .conventions import (
     CurveConvention,
     DayCount,
@@ -64,17 +67,20 @@ from .dates import BusinessCalendar
 from .discount import CurveBootstrapRequest, DiscountCurve, DiscountFactorCurve
 from .errors import InvalidTerms, MissingMarketData, UnsupportedProduct
 from .factors import FactorRisk, HessianEntry, fx_factor, ir_factor
-from .floating import FixingHistory
+from .floating import FixingHistory, key_rate_projection_curve
 from .fx_futures import FxFuturesScenario
+from .key_rate import KeyRateForwardCurve
 from .tenors import parse_tenor, resolve_tenor
 
 __all__ = [
+    "RUB_KEY_RATE_AVERAGE",
     "RUONIA_OIS_COMPOUND",
     "XCCY_CURVE_MODEL_VERSION",
     "XCCY_HORIZON_MODEL_VERSION",
     "XCCY_MODEL_VERSION",
     "XCCY_QUOTE_SPEC_ID",
     "XCCY_SECOND_ORDER_MODEL_VERSION",
+    "AveragedIndex",
     "CompoundedIndex",
     "IndexFixings",
     "NotionalExchange",
@@ -204,8 +210,37 @@ RUONIA_OIS_COMPOUND = CompoundedIndex(_RUONIA_INDEX, "nfa_act", "nfa_act")
 
 
 @dataclass(frozen=True)
+class AveragedIndex:
+    """The calendar-day arithmetic average of the key rate (RUB leg only).
+
+    ``avg = sum_{d in [start, end)} r(d) / (end - start).days`` where ``r(d)`` is the
+    key rate in force on calendar day ``d`` (known: ``FixingHistory("key_rate")``, rows
+    by effective date; projected: the overnight forward of the projection curve,
+    ``(DF(d) / DF(d + 1) - 1) / tau(d, d + 1)`` with ``tau`` on ``rate_day_count``). The
+    coupon is ``notional * (avg + spread) * leg day count``: the exchange key-rate swap's
+    average (``swaps``), with no compounding.
+    """
+
+    name: str
+    fixing_index: Literal["key_rate"] = "key_rate"
+    rate_day_count: DayCount = DayCount.ACT_365_FIXED
+
+    def __post_init__(self) -> None:
+        _text(self.name, "index name")
+        if self.fixing_index != "key_rate":
+            raise InvalidTerms("an averaged index is of the key rate")
+        if not isinstance(self.rate_day_count, DayCount):
+            raise TypeError("rate_day_count must be a DayCount")
+
+
+RUB_KEY_RATE_AVERAGE = AveragedIndex("RUB-KEYRATE-AVERAGE")
+"""The key rate averaged arithmetically over calendar days (MOEX IRS KEYRATE terms)."""
+
+
+@dataclass(frozen=True)
 class IndexFixings:
-    """Published fixings of a foreign overnight index, dated before ``valuation_date``.
+    """Published fixings of an overnight index, dated before ``valuation_date``: a foreign
+    leg's index, or the RUB leg's when it floats on a compounded index other than RUONIA.
 
     Every business day of ``calendar`` that a remaining period observes before the
     valuation date must have its fixing; a missing one raises ``MissingMarketData``
@@ -320,7 +355,7 @@ class XccyLeg:
     periods: tuple[XccyPeriod, ...]
     exchanges: tuple[NotionalExchange, ...] = ()
     fixed_rate: float | None = None
-    index: CompoundedIndex | None = None
+    index: CompoundedIndex | AveragedIndex | None = None
     spread: float = 0.0
 
     def __post_init__(self) -> None:
@@ -344,8 +379,10 @@ class XccyLeg:
             raise InvalidTerms("a leg is either fixed (fixed_rate) or floating (index)")
         if self.fixed_rate is not None:
             object.__setattr__(self, "fixed_rate", finite_money(self.fixed_rate, "fixed rate"))
-        if self.index is not None and not isinstance(self.index, CompoundedIndex):
-            raise TypeError("index must be a CompoundedIndex")
+        if self.index is not None and not isinstance(self.index, (CompoundedIndex, AveragedIndex)):
+            raise TypeError("index must be a CompoundedIndex or an AveragedIndex")
+        if isinstance(self.index, AveragedIndex) and self.currency != "RUB":
+            raise InvalidTerms("an averaged key-rate index applies to a RUB leg only")
         spread = finite_money(self.spread, "spread")
         if self.fixed_rate is not None and spread != 0.0:
             raise InvalidTerms("a fixed leg has no spread; fold it into the fixed rate")
@@ -366,7 +403,8 @@ class XccyLeg:
 class XccySwap:
     """A RUB leg and a foreign leg of opposite sides.
 
-    The RUB leg is fixed or floats on ``RUB-RUONIA-OIS-COMPOUND``. Notionals are fixed by
+    The RUB leg is fixed or floats on ``RUB-RUONIA-OIS-COMPOUND``, on another compounded
+    index or on the averaged key rate. Notionals are fixed by
     the terms (per period, with explicit exchanges); a mark-to-market notional reset is
     not modelled and raises ``UnsupportedProduct``.
     """
@@ -391,11 +429,6 @@ class XccySwap:
             raise InvalidTerms("foreign_leg must be in a currency other than RUB")
         if self.rub_leg.side == self.foreign_leg.side:
             raise InvalidTerms("the two legs of a cross-currency swap have opposite sides")
-        rub_index = self.rub_leg.index
-        if rub_index is not None and rub_index.name != _RUONIA_INDEX:
-            raise UnsupportedProduct(
-                f"RUB floating index {rub_index.name!r} is not modelled; only {_RUONIA_INDEX}"
-            )
         foreign_index = self.foreign_leg.index
         if foreign_index is not None and foreign_index.name == _RUONIA_INDEX:
             raise InvalidTerms("RUONIA is a RUB index; the foreign leg needs its own index")
@@ -601,6 +634,11 @@ class _Flow:
 
     A fixed flow has ``coef = 0``; a floating coupon's projection runs over
     ``[proj_start, proj_end)`` (absent once every observation is known).
+
+    An ``averaged`` flow (key-rate arithmetic average) is ``amount = const + coef *
+    sum_d f_d`` with ``f_d`` the overnight forward of each calendar day of
+    ``[proj_start, proj_end)`` on ``rate_day_count``; ``const`` holds the spread and the
+    known days, ``coef = sign * notional * alpha / days of the period``, ``known`` is unused.
     """
 
     kind: FlowKind
@@ -612,6 +650,77 @@ class _Flow:
     known: float
     proj_start: date | None
     proj_end: date | None
+    averaged: bool = False
+    rate_day_count: DayCount = DayCount.ACT_365_FIXED
+
+
+def _known_average_sum(period: XccyPeriod, fixings: Fixings) -> tuple[float, date]:
+    """Sum of the key rate in force on each period day before the valuation date, and where
+    projection starts (the semantics of ``swaps._arithmetic_known``)."""
+    history = cast(FixingHistory, fixings)
+    rates = []
+    day = period.accrual_start
+    last = min(period.accrual_end, history.valuation_date)
+    while day < last:
+        try:
+            rate, _ = history.rate(day)
+        except LookupError as exc:
+            raise MissingMarketData(str(exc)) from None
+        rates.append(rate)
+        day += timedelta(days=1)
+    return math.fsum(rates), day
+
+
+def _forward_sum(curve: DiscountFactorCurve, start: date, end: date, day_count: DayCount) -> float:
+    """Sum of the curve's overnight forwards over the calendar days of ``[start, end)``."""
+    if start >= end:
+        return 0.0
+    total = []
+    day = start
+    previous = curve.discount_factor(day)
+    while day < end:
+        following = day + timedelta(days=1)
+        current = curve.discount_factor(following)
+        total.append((previous / current - 1.0) / day_count.year_fraction(day, following))
+        previous = current
+        day = following
+    return math.fsum(total)
+
+
+def _roll_key_projection(
+    forward: KeyRateForwardCurve,
+    projection: DiscountCurve,
+    horizon: date,
+    day_count: DayCount,
+) -> DiscountCurve:
+    """The key-rate projection curve moved to ``horizon`` by the key-rate swap's rule:
+    ``roll_key_rate_curve`` on the forward curve (the decision date held, BACKLOG #109), then
+    the projection curve rebuilt from the rolled path.
+
+    The projection curve must be the one built from ``forward`` (``InvalidTerms`` if its
+    daily forwards differ from the forward curve's path).
+    """
+    if forward.horizon_date <= horizon:
+        raise MissingMarketData("key-rate projection curve ends before the horizon")
+    end = min(projection.nodes[-1][0], forward.horizon_date)
+    day = forward.curve_date
+    while day < end:
+        following = day + timedelta(days=1)
+        rate = (projection.discount_factor(day) / projection.discount_factor(following) - 1.0) / (
+            day_count.year_fraction(day, following)
+        )
+        if abs(rate - forward.rate_at(day)) > 1e-9:
+            raise InvalidTerms(
+                "rub_key_rate_curve is not the forward curve of rub_projection_curve "
+                f"(they differ on {day.isoformat()})"
+            )
+        day = following
+    return key_rate_projection_curve(
+        roll_key_rate_curve(forward, horizon),
+        BusinessCalendar(),
+        rate_day_count=day_count,
+        observation_days="calendar",
+    )
 
 
 def _known_growth(
@@ -677,6 +786,49 @@ def _leg_flows(leg: XccyLeg, valuation: date, fixings: Fixings | None) -> tuple[
                     None,
                 )
             )
+            continue
+        if isinstance(leg.index, AveragedIndex):
+            days = (period.accrual_end - period.accrual_start).days
+            coef = sign * period.notional * alpha / days
+            const = sign * period.notional * leg.spread * alpha
+            total, start = 0.0, period.accrual_start
+            if period.accrual_start < valuation:
+                if fixings is None:
+                    raise MissingMarketData(
+                        f"the {leg.currency} period from {period.accrual_start.isoformat()} has "
+                        "started; its fixing history is required"
+                    )
+                total, start = _known_average_sum(period, fixings)
+            if start >= period.accrual_end:
+                rows.append(
+                    _Flow(
+                        "coupon",
+                        period.payment_date,
+                        period,
+                        "fixed_by_history",
+                        const + coef * total,
+                        0.0,
+                        1.0,
+                        None,
+                        None,
+                    )
+                )
+            else:
+                rows.append(
+                    _Flow(
+                        "coupon",
+                        period.payment_date,
+                        period,
+                        "projected" if start == period.accrual_start else "partially_projected",
+                        const + coef * total,
+                        coef,
+                        1.0,
+                        start,
+                        period.accrual_end,
+                        True,
+                        leg.index.rate_day_count,
+                    )
+                )
             continue
         index = cast(CompoundedIndex, leg.index)
         coef = (
@@ -747,6 +899,10 @@ def _amount(flow: _Flow, projection: DiscountFactorCurve | None) -> float:
     if flow.proj_start is None or flow.proj_end is None:
         return flow.const
     assert projection is not None
+    if flow.averaged:
+        return flow.const + flow.coef * _forward_sum(
+            projection, flow.proj_start, flow.proj_end, flow.rate_day_count
+        )
     ratio = projection.discount_factor(flow.proj_start) / projection.discount_factor(flow.proj_end)
     return flow.const + flow.coef * (flow.known * ratio - 1.0)
 
@@ -763,6 +919,11 @@ def _rolled_amount(
     assert today is not None and rolled is not None
     start, end = flow.proj_start, flow.proj_end
     middle = min(max(start, horizon), end)
+    if flow.averaged:
+        return flow.const + flow.coef * (
+            _forward_sum(today, start, middle, flow.rate_day_count)
+            + _forward_sum(rolled, middle, end, flow.rate_day_count)
+        )
     growth = flow.known
     if start < middle:
         growth *= today.discount_factor(start) / today.discount_factor(middle)
@@ -1105,7 +1266,8 @@ class XccyRiskRequest:
 
     - ``spot_rate`` is RUB per one foreign unit for value date ``spot_value_date``.
     - ``rub_discount_curve`` discounts RUB flows; ``rub_projection_curve`` projects
-      RUONIA (``None``: the discount curve, one set of factors). Each is a
+      the RUB leg's index (``None``: the discount curve, one set of factors; required
+      for an averaged key-rate leg, on ``rub_key_rate_projection_v1``). Each is a
       ``DiscountCurve`` (``continuous_zero`` risk) or OIS quotes (``ois_quote``).
     - ``foreign_discount_curve`` is the foreign curve under RUB collateral: a
       ``DiscountCurve`` (zero-rate overlay) or an :class:`XccyCurveBootstrapRequest`
@@ -1115,7 +1277,14 @@ class XccyRiskRequest:
     - ``basis_bp``: continuous basis on the foreign flows from the spot date, as the FX
       forward basis (``fx_forwards``); 0 on an implied or bootstrapped foreign curve.
     - ``rub_fixings`` / ``foreign_fixings``: point-in-time fixings, required once a
-      floating period has started; dated the valuation date.
+      floating period has started; dated the valuation date. The RUB leg takes a
+      ``FixingHistory("ruonia")`` on RUONIA, a ``FixingHistory("key_rate")`` on an
+      :class:`AveragedIndex` and :class:`IndexFixings` of the leg's index on another
+      :class:`CompoundedIndex`.
+    - ``rub_key_rate_curve``: the key-rate forward curve behind the projection curve of an
+      averaged key-rate leg. Only the horizon needs it (the next decision date is rolled by
+      ``roll_key_rate_curve``, as in the key-rate swap); without it the horizon of a leg
+      on a projection curve with nodes is ``MissingMarketData``.
     """
 
     swap: XccySwap
@@ -1126,9 +1295,10 @@ class XccyRiskRequest:
     basis_bp: float
     rub_projection_curve: RubCurve | None = None
     foreign_projection_curve: RubCurve | None = None
-    rub_fixings: FixingHistory | None = None
+    rub_fixings: Fixings | None = None
     foreign_fixings: IndexFixings | None = None
     basis_day_count: DayCount = DayCount.ACT_365_FIXED
+    rub_key_rate_curve: KeyRateForwardCurve | None = field(default=None, metadata=OMIT_IF_DEFAULT)
 
     def __post_init__(self) -> None:
         swap = self.swap
@@ -1169,11 +1339,34 @@ class XccyRiskRequest:
             foreign.spot_rate != self.spot_rate or foreign.spot_value_date != self.spot_value_date
         ):
             raise InvalidTerms("the bootstrapped curve's spot must be the request's spot")
+        rub_index = swap.rub_leg.index
+        if self.rub_key_rate_curve is not None:
+            if not isinstance(rub_index, AveragedIndex):
+                raise InvalidTerms("rub_key_rate_curve belongs to an averaged key-rate RUB leg")
+            if not isinstance(self.rub_key_rate_curve, KeyRateForwardCurve):
+                raise TypeError("rub_key_rate_curve must be a KeyRateForwardCurve")
+            if self.rub_key_rate_curve.curve_date != valuation:
+                raise InvalidTerms("rub_key_rate_curve must be dated the valuation date")
+        if isinstance(rub_index, AveragedIndex) and self.rub_projection_curve is None:
+            raise MissingMarketData(
+                "an averaged key-rate leg needs rub_projection_curve (rub_key_rate_projection_v1)"
+            )
         if self.rub_fixings is not None:
-            if not isinstance(self.rub_fixings, FixingHistory):
-                raise TypeError("rub_fixings must be a FixingHistory")
-            if self.rub_fixings.index != "ruonia":
-                raise InvalidTerms("rub_fixings must be a RUONIA history")
+            if isinstance(rub_index, AveragedIndex):
+                if not isinstance(self.rub_fixings, FixingHistory):
+                    raise TypeError("rub_fixings must be a FixingHistory")
+                if self.rub_fixings.index != rub_index.fixing_index:
+                    raise InvalidTerms("rub_fixings must be a key-rate history")
+            elif rub_index is None or rub_index.name == _RUONIA_INDEX:
+                if not isinstance(self.rub_fixings, FixingHistory):
+                    raise TypeError("rub_fixings must be a FixingHistory")
+                if self.rub_fixings.index != "ruonia":
+                    raise InvalidTerms("rub_fixings must be a RUONIA history")
+            else:
+                if not isinstance(self.rub_fixings, IndexFixings):
+                    raise TypeError("rub_fixings must be IndexFixings of the RUB leg's index")
+                if self.rub_fixings.index != rub_index.name:
+                    raise InvalidTerms("rub_fixings are not of the RUB leg's index")
             if self.rub_fixings.valuation_date != valuation:
                 raise InvalidTerms("rub_fixings must be dated the valuation date")
         if self.foreign_fixings is not None:
@@ -1507,6 +1700,14 @@ class XccyRiskEngine:
         valuation = req.valuation_date
         swap = req.swap
         object.__setattr__(self, "_rub_flows", _leg_flows(swap.rub_leg, valuation, req.rub_fixings))
+        for flow in self._rub_flows:
+            if flow.averaged and flow.proj_end is not None:
+                nodes = bases["rub_projection"].nodes
+                if nodes and flow.proj_end > nodes[-1][0]:  # a flat curve has no end
+                    raise MissingMarketData(
+                        "the key-rate projection curve does not cover the float period to "
+                        f"{flow.proj_end.isoformat()}"
+                    )
         foreign_flows = _leg_flows(swap.foreign_leg, valuation, req.foreign_fixings)
         if not foreign_flows and not self._rub_flows:
             raise InvalidTerms(f"{swap.trade_id}: every flow has settled; nothing to value")
@@ -1557,6 +1758,12 @@ class XccyRiskEngine:
                     "basis_day_count": req.basis_day_count.value,
                     "rub_fixings": _fixings_identity(req.rub_fixings),
                     "foreign_fixings": _fixings_identity(req.foreign_fixings),
+                    # only when given: it decides the horizon; absent, bytes as before
+                    **(
+                        {}
+                        if req.rub_key_rate_curve is None
+                        else {"rub_key_rate_curve": req.rub_key_rate_curve}
+                    ),
                 }
             ),
         )
@@ -1606,13 +1813,29 @@ class XccyRiskEngine:
         if not isinstance(source, XccyCurveBootstrapRequest):  # built, or par-yield quotes
             base = _base_curve(source, self.curve_cache)
             return _shock_curve(source, base, own, self.curve_cache)
+        # The quotes' RUB legs float on RUONIA: they project on the RUONIA projection curve
+        # of a RUONIA swap, else on the RUB discount curve. The projection curve of another
+        # RUB index (RUSFAR, the key rate) never enters the bootstrap, nor its risk channel.
+        rub_index = req.swap.rub_leg.index
+        own_projection = rub_index is None or (
+            isinstance(rub_index, CompoundedIndex) and rub_index.name == _RUONIA_INDEX
+        )
         rub_d = self._shift(shifts, "rub_discount")
-        rub_p = self._shift(shifts, "rub_projection")
-        sources = (source, req.rub_discount_curve, req.rub_projection_curve)
+        rub_p = self._shift(shifts, "rub_projection") if own_projection else _ZERO_SHOCK
+        sources = (
+            source,
+            req.rub_discount_curve,
+            req.rub_projection_curve if own_projection else None,
+        )
 
         def build() -> DiscountCurve:
             discount, projection = self._rub_curves(shifts)
-            return _bootstrap(source, discount, projection, _shocked_rates(source, own))
+            return _bootstrap(
+                source,
+                discount,
+                projection if own_projection else discount,
+                _shocked_rates(source, own),
+            )
 
         return self.xccy_cache.get(sources, (rub_d, rub_p, own), build)
 
@@ -1989,7 +2212,18 @@ class XccyRiskEngine:
             lambda t: foreign_d.discount_factor(t) / foreign_h,
         )
         rolled_rub_d = roll_curve(rub_d, horizon_date)
-        rolled_rub_p = rolled_rub_d if rub_p is rub_d else roll_curve(rub_p, horizon_date)
+        rub_index = req.swap.rub_leg.index
+        if isinstance(rub_index, AveragedIndex) and rub_p.nodes:
+            if req.rub_key_rate_curve is None:
+                raise MissingMarketData(
+                    "horizon of a key-rate leg needs the key-rate forward curve "
+                    "(rub_key_rate_curve)"
+                )
+            rolled_rub_p = _roll_key_projection(
+                req.rub_key_rate_curve, rub_p, horizon_date, rub_index.rate_day_count
+            )
+        else:
+            rolled_rub_p = rolled_rub_d if rub_p is rub_d else roll_curve(rub_p, horizon_date)
         rolled_foreign_d = roll_curve(foreign_d, horizon_date)
         rolled_foreign_p = None if foreign_p is None else roll_curve(foreign_p, horizon_date)
         pv_rolled = at_horizon(
