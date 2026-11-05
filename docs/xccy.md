@@ -385,9 +385,17 @@ requires `rub_projection_curve_id`. Compounding the key rate would overstate the
 about 1.3 percentage points at a 16 % rate over a year-long period, hence a separate index kind. The horizon keeps
 today's forwards up to the horizon and, after it, the projection curve rolled as the key-rate
 swap's horizon does (`roll_key_rate_curve`, BACKLOG #109): the next decision date stays on
-its date, the tenor-held segment ends move by the horizon. The path is read back from the
-curve's daily forwards. A period ending after the last node of the projection curve, or a
-horizon on or after it, is `MissingMarketData`, as for the key-rate swap. The foreign curve
+its date, the tenor-held segment ends move by the horizon. The decision date is not
+recoverable from the projection curve (a decision to the same rate leaves no trace), so the
+horizon takes the forward curve it was built from: `XccyRiskRequest.rub_key_rate_curve`
+(`KeyRateForwardCurve`), in `value_portfolio` `XccyInstrument.rub_key_rate_curve_id`, a
+`rub_key_rate_swap_v1` entry. The result agrees with the key-rate swap's roll to 1e-12; a
+projection curve that is not that forward curve is `InvalidTerms`. A projection curve with
+nodes and no forward curve make the horizon `MissingMarketData` (valuation and risk need
+neither); a flat projection curve has no decision and rolls as a plain curve.
+A period ending after the last node of the projection curve is `MissingMarketData`; so is a
+horizon on or after the end of the forward curve, even when every flow after the horizon is
+known, as for the key-rate swap. The foreign curve
 bootstrapped from RUONIA quotes never projects on the key-rate (or any non-RUONIA) curve:
 its quote legs use the RUB discount curve, and no `rub_projection` risk flows through it. Results of RUONIA legs
 and `XCCY_MODEL_VERSION` do not change.

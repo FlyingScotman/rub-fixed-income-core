@@ -1559,6 +1559,12 @@ def _xccy_engine(
         if instrument.foreign_fixing_id is None
         else ctx.snapshot.index_fixing(instrument.foreign_fixing_id)
     )
+    key_forward: KeyRateForwardCurve | None = None
+    if instrument.rub_key_rate_curve_id is not None:
+        key_source = ctx.key_rate_curve(instrument.rub_key_rate_curve_id)
+        key_forward = (
+            key_source if isinstance(key_source, KeyRateForwardCurve) else key_source.curve()
+        )
     basis = ctx.fx_basis(currency, foreign_id)
     request = XccyRiskRequest(
         swap,
@@ -1572,6 +1578,7 @@ def _xccy_engine(
         rub_fixings=rub_fixings,
         foreign_fixings=foreign_fixings,
         basis_day_count=basis.day_count,
+        rub_key_rate_curve=key_forward,
     )
     engine = XccyRiskEngine(request, ctx.curve_cache, ctx.xccy_cache)
     return engine, spot, settlement, foreign_id, fallback_from

@@ -12,7 +12,7 @@ from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
-from portfolio_v3_book import BUSINESS_DATE, CAL
+from portfolio_v3_book import BUSINESS_DATE, CAL, POLICY
 from test_fx_portfolio_v036 import RUB_CURVE, built, market, pos, run
 from test_xccy import bootstrap_request
 
@@ -43,11 +43,14 @@ from rub_fixed_income import (
     XccyScenario,
     XccySwap,
     from_dict,
+    horizon_portfolio,
     key_rate_projection_curve,
     notional_exchanges,
     to_dict,
     xccy_horizon,
 )
+from rub_fixed_income._curve_views import roll_key_rate_curve
+from rub_fixed_income.xccy import _roll_key_projection
 
 C = date(2026, 10, 15)
 RU = BusinessCalendar(
@@ -443,7 +446,9 @@ def test_horizon_of_an_averaged_leg_holds_the_decision_date() -> None:
         forward, RU, rate_day_count=ACT365, observation_days="calendar"
     )
     start, end = SPOT_DATE, date(2027, 8, 16)
-    req = request(swap(RUB_KEY_RATE_AVERAGE, end=end), rub_projection_curve=proj)
+    req = request(
+        swap(RUB_KEY_RATE_AVERAGE, end=end), rub_projection_curve=proj, rub_key_rate_curve=forward
+    )
     twin_req = request(swap(None, end=end))
     shift = 30
     h = C + timedelta(days=shift)
@@ -484,7 +489,7 @@ def test_horizon_of_an_averaged_leg_holds_the_decision_date() -> None:
 
 def test_horizon_after_the_payment_pays_todays_amount() -> None:
     s = swap(RUB_KEY_RATE_AVERAGE, end=date(2026, 12, 16))
-    req = request(s, rub_projection_curve=KEY_PROJ)
+    req = request(s, rub_projection_curve=KEY_PROJ, rub_key_rate_curve=FORWARD)
     h = date(2026, 12, 21)
     valuation = xccy_horizon(req, horizon_date=h, horizon_spot_value_date=h + timedelta(days=1))
     flows = [f for f in XccyRiskEngine(req).cashflows() if f.leg == "rub"]
@@ -504,10 +509,88 @@ def test_projection_curve_must_cover_the_period_and_the_horizon() -> None:
     with pytest.raises(MissingMarketData, match="does not cover"):
         XccyRiskEngine(request(swap(RUB_KEY_RATE_AVERAGE), rub_projection_curve=short_proj))
     ok = swap(RUB_KEY_RATE_AVERAGE, end=date(2026, 12, 16))
-    req = request(ok, rub_projection_curve=short_proj)
+    req = request(ok, rub_projection_curve=short_proj, rub_key_rate_curve=short)
     with pytest.raises(MissingMarketData, match="ends before the horizon"):
         xccy_horizon(
             req, horizon_date=date(2026, 12, 20), horizon_spot_value_date=date(2026, 12, 21)
+        )
+
+
+DECISION = STEP
+ROLL_CURVES = {
+    "step": KeyRateForwardCurve(
+        C,
+        0.16,
+        DECISION,
+        (
+            KeyRateForwardSegment(DECISION, date(2027, 6, 1), 0.14, "6M"),
+            KeyRateForwardSegment(date(2027, 6, 1), date(2029, 1, 1), 0.12, "2Y"),
+        ),
+    ),
+    # the rate after the decision equals the current one, then another
+    "hold_at_decision": KeyRateForwardCurve(
+        C,
+        0.16,
+        DECISION,
+        (
+            KeyRateForwardSegment(DECISION, date(2027, 6, 1), 0.16, "6M"),
+            KeyRateForwardSegment(date(2027, 6, 1), date(2029, 1, 1), 0.13, "2Y"),
+        ),
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(ROLL_CURVES))
+@pytest.mark.parametrize("shift", [30, 70, 260])
+def test_rolled_key_path_equals_the_key_rate_swap_roll(name: str, shift: int) -> None:
+    forward = ROLL_CURVES[name]
+    proj = key_rate_projection_curve(
+        forward, RU, rate_day_count=ACT365, observation_days="calendar"
+    )
+    h = C + timedelta(days=shift)
+    mine = _roll_key_projection(forward, proj, h, ACT365)
+    reference = roll_key_rate_curve(forward, h)
+    for start, days in ((h, 200), (h + timedelta(days=15), 120)):
+        end = start + timedelta(days=days)
+        total = 0.0
+        day = start
+        while day < end:
+            total += (
+                mine.discount_factor(day) / mine.discount_factor(day + timedelta(days=1)) - 1.0
+            ) * 365.0
+            day += timedelta(days=1)
+        assert total / days == pytest.approx(reference.arithmetic_average(start, end), abs=1e-12)
+
+
+def test_horizon_needs_the_forward_curve_and_a_matching_projection() -> None:
+    s = swap(RUB_KEY_RATE_AVERAGE)
+    h = C + timedelta(days=30)
+    spot_h = h + timedelta(days=1)
+    no_forward = request(s, rub_projection_curve=KEY_PROJ)
+    assert XccyRiskEngine(no_forward).base_pv_rub  # valuation and risk need no forward curve
+    with pytest.raises(MissingMarketData, match="key-rate forward curve"):
+        xccy_horizon(no_forward, horizon_date=h, horizon_spot_value_date=spot_h)
+    # a flat projection curve has no decision date to hold
+    flat = request(s, rub_projection_curve=FLAT_PROJ.__class__.flat(C, 0.16))
+    assert xccy_horizon(flat, horizon_date=h, horizon_spot_value_date=spot_h)
+    other = ROLL_CURVES["step"]
+    wrong = request(s, rub_projection_curve=KEY_PROJ, rub_key_rate_curve=other)
+    with pytest.raises(InvalidTerms, match="not the forward curve"):
+        xccy_horizon(wrong, horizon_date=h, horizon_spot_value_date=spot_h)
+
+
+def test_key_rate_curve_field_validation() -> None:
+    with pytest.raises(InvalidTerms, match="averaged key-rate"):
+        request(swap(RUONIA_OIS_COMPOUND), rub_key_rate_curve=FORWARD)
+    with pytest.raises(InvalidTerms, match="dated the valuation date"):
+        request(
+            swap(RUB_KEY_RATE_AVERAGE),
+            rub_projection_curve=KEY_PROJ,
+            rub_key_rate_curve=replace(FORWARD, curve_date=C - timedelta(days=1)),
+        )
+    with pytest.raises(TypeError):
+        request(
+            swap(RUB_KEY_RATE_AVERAGE), rub_projection_curve=KEY_PROJ, rub_key_rate_curve=KEY_PROJ
         )
 
 
@@ -635,6 +718,45 @@ def test_value_portfolio_prices_the_key_rate_leg_with_projection_risk() -> None:
     # without the history the position is rejected, not guessed
     missing = run(portfolio_market(fixings=()), [inst], [pos("p", "XKEY", 1.0, "CNY")])
     assert missing.coverage.rejections[0].code == "MISSING_MARKET_DATA"
+
+
+def test_horizon_portfolio_reads_the_key_rate_forward_curve_of_the_snapshot() -> None:
+    start, end = date(2026, 9, 1), date(2027, 3, 1)
+    forward = KeyRateForwardCurve(
+        BUSINESS_DATE,
+        0.16,
+        STEP,
+        (KeyRateForwardSegment(STEP, date(2029, 1, 1), 0.14, "1Y"),),
+    )
+    snap = portfolio_market()
+    snap = replace(
+        snap, curves=(*snap.curves, CurveEntry("KEY_FWD", "rub_key_rate_swap_v1", forward))
+    )
+    swap_ = portfolio_swap(start, end)
+    positions = [pos("p", "XKEY", 1.0, "CNY")]
+    h = date(2026, 11, 16)
+
+    def carry(inst: XccyInstrument) -> object:
+        return horizon_portfolio(
+            snapshot=snap,
+            instruments=[inst],
+            positions=positions,
+            policy=POLICY,
+            horizon_date=h,
+        )
+
+    base = {"rub_projection_curve_id": "KEY_PROJ", "rub_fixing_id": "KEY_RATE"}
+    with_curve = XccyInstrument(
+        "XKEY", swap_, "RUB_OIS", "CNY_DF", rub_key_rate_curve_id="KEY_FWD", **base
+    )
+    result = carry(with_curve)
+    assert result.coverage.status == "complete", result.coverage.rejections  # type: ignore[attr-defined]
+    without = carry(XccyInstrument("XKEY", swap_, "RUB_OIS", "CNY_DF", **base))
+    assert without.coverage.rejections[0].code == "MISSING_MARKET_DATA"  # type: ignore[attr-defined]
+    with pytest.raises(InvalidTerms, match="averaged key-rate"):
+        XccyInstrument("X", swap(RUSFAR), "RUB_OIS", "CNY_DF", rub_key_rate_curve_id="KEY_FWD")
+    # RUONIA and other instruments serialize as before: the new field is omitted at its default
+    assert "rub_key_rate_curve_id" not in to_dict(XccyInstrument("X", swap(RUSFAR), "A", "B"))
 
 
 def test_instrument_rules_for_the_new_legs() -> None:

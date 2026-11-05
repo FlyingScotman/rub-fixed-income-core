@@ -55,7 +55,7 @@ from ._risk_common import (
     _snapshot_curve,
 )
 from ._solver import bisect
-from .canonical import _Canonical, _precanonical, canonical_sha256
+from .canonical import OMIT_IF_DEFAULT, _Canonical, _precanonical, canonical_sha256
 from .conventions import (
     CurveConvention,
     DayCount,
@@ -69,7 +69,7 @@ from .errors import InvalidTerms, MissingMarketData, UnsupportedProduct
 from .factors import FactorRisk, HessianEntry, fx_factor, ir_factor
 from .floating import FixingHistory, key_rate_projection_curve
 from .fx_futures import FxFuturesScenario
-from .key_rate import KeyRateForwardCurve, KeyRateForwardSegment
+from .key_rate import KeyRateForwardCurve
 from .tenors import parse_tenor, resolve_tenor
 
 __all__ = [
@@ -687,37 +687,36 @@ def _forward_sum(curve: DiscountFactorCurve, start: date, end: date, day_count: 
     return math.fsum(total)
 
 
-def _roll_key_projection(curve: DiscountCurve, horizon: date, day_count: DayCount) -> DiscountCurve:
-    """A key-rate projection curve moved to ``horizon`` with the decision date held, as the
-    key-rate swap's horizon (``roll_key_rate_curve``, BACKLOG #109).
+def _roll_key_projection(
+    forward: KeyRateForwardCurve,
+    projection: DiscountCurve,
+    horizon: date,
+    day_count: DayCount,
+) -> DiscountCurve:
+    """The key-rate projection curve moved to ``horizon`` by the key-rate swap's rule:
+    ``roll_key_rate_curve`` on the forward curve (the decision date held, BACKLOG #109), then
+    the projection curve rebuilt from the rolled path.
 
-    The path is read back from the curve's daily overnight forwards: runs of equal rates
-    are the current interval and the segments, whose ends move by the horizon.
+    The projection curve must be the one built from ``forward`` (``InvalidTerms`` if its
+    daily forwards differ from the forward curve's path).
     """
-    end = curve.nodes[-1][0]
-    runs: list[tuple[float, date]] = []
-    day = curve.curve_date
+    if forward.horizon_date <= horizon:
+        raise MissingMarketData("key-rate projection curve ends before the horizon")
+    end = min(projection.nodes[-1][0], forward.horizon_date)
+    day = forward.curve_date
     while day < end:
         following = day + timedelta(days=1)
-        rate = (curve.discount_factor(day) / curve.discount_factor(following) - 1.0) / (
+        rate = (projection.discount_factor(day) / projection.discount_factor(following) - 1.0) / (
             day_count.year_fraction(day, following)
         )
-        if runs and abs(runs[-1][0] - rate) <= 1e-12:
-            runs[-1] = (runs[-1][0], following)
-        else:
-            runs.append((rate, following))
+        if abs(rate - forward.rate_at(day)) > 1e-9:
+            raise InvalidTerms(
+                "rub_key_rate_curve is not the forward curve of rub_projection_curve "
+                f"(they differ on {day.isoformat()})"
+            )
         day = following
-    current_rate, current_end = runs[0]
-    segments: list[KeyRateForwardSegment] = []
-    start = current_end
-    for rate, stop in runs[1:]:
-        segments.append(KeyRateForwardSegment(start, stop, rate, "path"))
-        start = stop
-    path = KeyRateForwardCurve(curve.curve_date, current_rate, current_end, tuple(segments))
-    if path.horizon_date <= horizon:
-        raise MissingMarketData("key-rate projection curve ends before the horizon")
     return key_rate_projection_curve(
-        roll_key_rate_curve(path, horizon),
+        roll_key_rate_curve(forward, horizon),
         BusinessCalendar(),
         rate_day_count=day_count,
         observation_days="calendar",
@@ -1282,6 +1281,10 @@ class XccyRiskRequest:
       ``FixingHistory("ruonia")`` on RUONIA, a ``FixingHistory("key_rate")`` on an
       :class:`AveragedIndex` and :class:`IndexFixings` of the leg's index on another
       :class:`CompoundedIndex`.
+    - ``rub_key_rate_curve``: the key-rate forward curve behind the projection curve of an
+      averaged key-rate leg. Only the horizon needs it (the next decision date is rolled by
+      ``roll_key_rate_curve``, as in the key-rate swap); without it the horizon of a leg
+      on a projection curve with nodes is ``MissingMarketData``.
     """
 
     swap: XccySwap
@@ -1295,6 +1298,7 @@ class XccyRiskRequest:
     rub_fixings: Fixings | None = None
     foreign_fixings: IndexFixings | None = None
     basis_day_count: DayCount = DayCount.ACT_365_FIXED
+    rub_key_rate_curve: KeyRateForwardCurve | None = field(default=None, metadata=OMIT_IF_DEFAULT)
 
     def __post_init__(self) -> None:
         swap = self.swap
@@ -1336,6 +1340,13 @@ class XccyRiskRequest:
         ):
             raise InvalidTerms("the bootstrapped curve's spot must be the request's spot")
         rub_index = swap.rub_leg.index
+        if self.rub_key_rate_curve is not None:
+            if not isinstance(rub_index, AveragedIndex):
+                raise InvalidTerms("rub_key_rate_curve belongs to an averaged key-rate RUB leg")
+            if not isinstance(self.rub_key_rate_curve, KeyRateForwardCurve):
+                raise TypeError("rub_key_rate_curve must be a KeyRateForwardCurve")
+            if self.rub_key_rate_curve.curve_date != valuation:
+                raise InvalidTerms("rub_key_rate_curve must be dated the valuation date")
         if isinstance(rub_index, AveragedIndex) and self.rub_projection_curve is None:
             raise MissingMarketData(
                 "an averaged key-rate leg needs rub_projection_curve (rub_key_rate_projection_v1)"
@@ -2197,7 +2208,14 @@ class XccyRiskEngine:
         rolled_rub_d = roll_curve(rub_d, horizon_date)
         rub_index = req.swap.rub_leg.index
         if isinstance(rub_index, AveragedIndex) and rub_p.nodes:
-            rolled_rub_p = _roll_key_projection(rub_p, horizon_date, rub_index.rate_day_count)
+            if req.rub_key_rate_curve is None:
+                raise MissingMarketData(
+                    "horizon of a key-rate leg needs the key-rate forward curve "
+                    "(rub_key_rate_curve)"
+                )
+            rolled_rub_p = _roll_key_projection(
+                req.rub_key_rate_curve, rub_p, horizon_date, rub_index.rate_day_count
+            )
         else:
             rolled_rub_p = rolled_rub_d if rub_p is rub_d else roll_curve(rub_p, horizon_date)
         rolled_foreign_d = roll_curve(foreign_d, horizon_date)

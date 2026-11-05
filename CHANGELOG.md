@@ -19,7 +19,11 @@ FlyingScotman/rub-fixed-income-core#64 (KEYRATE and RUSFAR RUB legs).
 - The foreign curve bootstrapped from RUONIA quotes projects the quotes' RUONIA legs on the
   RUONIA projection curve only for a RUONIA swap; a swap with another RUB index leaves it out of
   the bootstrap and of the `rub_projection` risk.
-- Horizon of the key-rate leg rolls the path as the key-rate swap (`roll_key_rate_curve`).
+- Horizon of the key-rate leg rolls the path as the key-rate swap (`roll_key_rate_curve`, the
+  decision date held). It needs the forward curve behind the projection curve:
+  `XccyRiskRequest.rub_key_rate_curve` and `XccyInstrument.rub_key_rate_curve_id` (a
+  `rub_key_rate_swap_v1` entry; both optional, omitted from serialization at their default).
+  Without it the horizon of a leg on a projection curve with nodes is `MissingMarketData`.
 - RUONIA swaps: values, job IDs, `XCCY_MODEL_VERSION` and goldens are unchanged.
 
 ## 0.42.0 — RUONIA OIS continued past its last quote
