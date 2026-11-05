@@ -619,12 +619,14 @@ from .trade_grid import (
     lookup_trade_metric,
 )
 from .xccy import (
+    RUB_KEY_RATE_AVERAGE,
     RUONIA_OIS_COMPOUND,
     XCCY_CURVE_MODEL_VERSION,
     XCCY_HORIZON_MODEL_VERSION,
     XCCY_MODEL_VERSION,
     XCCY_QUOTE_SPEC_ID,
     XCCY_SECOND_ORDER_MODEL_VERSION,
+    AveragedIndex,
     CompoundedIndex,
     IndexFixings,
     NotionalExchange,
@@ -1074,11 +1076,13 @@ __all__ += [
 
 # Package 7: cross-currency swaps against RUB (CNY/RUB vs RUONIA).
 __all__ += [
+    "RUB_KEY_RATE_AVERAGE",
     "RUONIA_OIS_COMPOUND",
     "XCCY_CURVE_MODEL_VERSION",
     "XCCY_MODEL_VERSION",
     "XCCY_QUOTE_SPEC_ID",
     "XCCY_SECOND_ORDER_MODEL_VERSION",
+    "AveragedIndex",
     "CompoundedIndex",
     "IndexFixings",
     "NotionalExchange",

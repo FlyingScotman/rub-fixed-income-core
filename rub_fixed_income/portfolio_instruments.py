@@ -23,10 +23,11 @@ valuation adapter and a row type in :mod:`rub_fixed_income.portfolio_products`.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 
 from ._money import positive_money
+from .canonical import OMIT_IF_DEFAULT
 from .cds import CdsContract
 from .conventions import DayCount
 from .domain import Instrument, ProductType
@@ -43,7 +44,7 @@ from .rate_futures import (
 )
 from .repo import RepoTrade
 from .swaps import InterestRateSwap
-from .xccy import XccySwap
+from .xccy import AveragedIndex, XccySwap
 
 __all__ = [
     "CdsInstrument",
@@ -198,7 +199,11 @@ class XccyInstrument:
     discount factors of the currency, a curve implied from FX swaps, or a
     ``cny_ruonia_xccy_v1`` entry holding XCCY par quotes (risk on the quote basis). A
     floating RUB leg projects on ``rub_projection_curve_id`` (``None``: the discount
-    curve) with RUONIA fixings ``rub_fixing_id``; a floating foreign leg needs
+    curve) with RUONIA fixings ``rub_fixing_id``; a RUB leg on another compounded index
+    takes snapshot index fixings under ``rub_fixing_id``, a RUB leg on the averaged key rate
+    needs ``rub_projection_curve_id`` (``rub_key_rate_projection_v1``) and key-rate
+    fixings, and for its horizon ``rub_key_rate_curve_id`` (the ``rub_key_rate_swap_v1`` entry
+    with the forward curve the projection was built from); a floating foreign leg needs
     ``foreign_projection_curve_id`` and, once started, ``foreign_fixing_id`` (snapshot
     index fixings).
     """
@@ -211,6 +216,7 @@ class XccyInstrument:
     foreign_projection_curve_id: str | None = None
     rub_fixing_id: str | None = None
     foreign_fixing_id: str | None = None
+    rub_key_rate_curve_id: str | None = field(default=None, metadata=OMIT_IF_DEFAULT)
 
     def __post_init__(self) -> None:
         _text(self.instrument_id, "instrument_id")
@@ -223,14 +229,26 @@ class XccyInstrument:
             "foreign_projection_curve_id",
             "rub_fixing_id",
             "foreign_fixing_id",
+            "rub_key_rate_curve_id",
         ):
             _optional(getattr(self, name), name)
+        if self.rub_key_rate_curve_id is not None and not isinstance(
+            self.swap.rub_leg.index, AveragedIndex
+        ):
+            raise InvalidTerms("rub_key_rate_curve_id belongs to an averaged key-rate RUB leg")
         if self.rub_projection_curve_id == self.rub_discount_curve_id:
             raise InvalidTerms("a single-curve RUB leg names no separate projection curve")
         if self.swap.rub_leg.index is None and (
             self.rub_projection_curve_id is not None or self.rub_fixing_id is not None
         ):
             raise InvalidTerms("a fixed RUB leg takes no projection curve or fixings")
+        if isinstance(self.swap.rub_leg.index, AveragedIndex) and (
+            self.rub_projection_curve_id is None
+        ):
+            raise InvalidTerms(
+                "an averaged key-rate RUB leg needs rub_projection_curve_id "
+                "(a rub_key_rate_projection_v1 curve)"
+            )
         foreign_floating = self.swap.foreign_leg.index is not None
         if foreign_floating and self.foreign_projection_curve_id is None:
             raise InvalidTerms("a floating foreign leg needs foreign_projection_curve_id")
