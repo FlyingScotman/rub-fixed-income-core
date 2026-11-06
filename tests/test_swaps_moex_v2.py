@@ -184,6 +184,13 @@ def test_legacy_conventions_keep_their_identity_bytes() -> None:
         swap = replace(swap, convention=convention)
         before = asdict(swap)
         del before["convention"]["float_compounding"]
+        for leg_date in (  # 0.44.0 leg dates, left out while None
+            "fixed_effective_date",
+            "fixed_termination_date",
+            "float_effective_date",
+            "float_termination_date",
+        ):
+            del before[leg_date]
         assert canonical_json_bytes(swap) == canonical_json_bytes(before)
         assert "float_compounding" not in to_dict(convention)
         assert ":compound=" not in convention.identifier

@@ -75,7 +75,7 @@ def _optional(value: object, label: str) -> None:
 
 @dataclass(frozen=True)
 class SwapInstrument:
-    """A seasoned RUONIA OIS or key-rate swap (BACKLOG #55).
+    """A seasoned RUONIA OIS or key-rate swap (BACKLOG #55), each leg on its own dates.
 
     - ``calendar_id``: the snapshot calendar the schedule is generated on;
     - ``discount_curve_id``: a RUB nominal curve (OIS quotes, a built OIS curve or caller
