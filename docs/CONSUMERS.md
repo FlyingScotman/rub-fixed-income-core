@@ -220,6 +220,25 @@ rounds up (it could round down in float), so such a bond's accrued, dirty price 
 yields solved from its clean price can move by one kopeck; stored results on other dates
 and bonds are unchanged.
 
+**From 0.44.0: IRS legs on their own dates** (FlyingScotman/rub-fixed-income-core#106, for
+FlyingScotman/trading-desk-monitor#605). Swaps on common dates are unchanged (same bytes, same
+`base_id`, job IDs and results). `InterestRateSwap` takes four optional dates, all `None` by
+default and left out of serialization while `None`:
+
+- `fixed_effective_date`, `fixed_termination_date`: the fixed leg's adjusted start and
+  unadjusted end;
+- `float_effective_date`, `float_termination_date`: the same for the float leg.
+
+The monitor passes each leg's dates as they are in the trade, in any of the forms (for example
+the fixed leg's dates as `effective_date` / `termination_date` and the float leg's as `float_*`).
+The swap stores one form: the common dates become the fixed leg's and only differing float leg
+dates are kept, so the identity (`base_id`, job IDs) does not depend on how the trade was written. No alignment is needed or done: each
+leg rolls its schedule from its own dates, and a leg that has not started (forward or split
+start) needs no fixings, its first period projected on the curve. `SwapInstrument`,
+`value_portfolio` and `horizon_portfolio` take such swaps as they are; the fixed and float leg
+PVs of `SwapPositionValuation` are each leg's on its own schedule. Only the pin changes for
+other consumers.
+
 **From 0.43.0: RUB leg of a cross-currency swap on any compounded index or the average key rate**
 (FlyingScotman/rub-fixed-income-core#64). Nothing changes for RUONIA swaps (same bytes, same
 job IDs). New: `XccyLeg.index` may be another `CompoundedIndex` (RUB fixings are then

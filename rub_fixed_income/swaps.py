@@ -329,6 +329,18 @@ class InterestRateSwap:
     ``effective_date`` is the (adjusted) accrual start, ``termination_date`` the
     **unadjusted** end the schedule rolls from. ``float_spread`` is added simply
     over the float accrual factor, not compounded.
+
+    Each leg is valued on its own dates. ``fixed_effective_date`` /
+    ``fixed_termination_date`` and ``float_effective_date`` / ``float_termination_date``
+    (same meaning: adjusted start, unadjusted end) give one leg dates of its own, for
+    legs that start or end on different days, a forward-starting leg included; a leg
+    that names none takes ``effective_date`` / ``termination_date``, the common dates.
+    One leg's dates are never aligned to the other's. One form per swap: the stored common
+    dates are the fixed leg's, and only float leg dates that differ from them are stored
+    (``fixed_*`` are always None after construction), so the same swap written either way
+    has the same bytes and ``base_id``; a swap on common dates keeps its canonical bytes and
+    hashes as before. Legs need not overlap in time (a float leg may start after the fixed
+    one ends).
     """
 
     swap_id: str
@@ -340,6 +352,10 @@ class InterestRateSwap:
     convention: SwapConvention
     float_spread: float = 0.0
     currency: str = "RUB"
+    fixed_effective_date: date | None = field(default=None, metadata=OMIT_IF_DEFAULT)
+    fixed_termination_date: date | None = field(default=None, metadata=OMIT_IF_DEFAULT)
+    float_effective_date: date | None = field(default=None, metadata=OMIT_IF_DEFAULT)
+    float_termination_date: date | None = field(default=None, metadata=OMIT_IF_DEFAULT)
 
     def __post_init__(self) -> None:
         if not isinstance(self.swap_id, str) or not self.swap_id.strip():
@@ -356,6 +372,31 @@ class InterestRateSwap:
                 raise TypeError(f"{name} must be a date")
         if self.termination_date <= self.effective_date:
             raise InvalidTerms("termination date must follow the effective date")
+        for leg in ("fixed", "float"):
+            for kind, common in (
+                ("effective_date", self.effective_date),
+                ("termination_date", self.termination_date),
+            ):
+                name = f"{leg}_{kind}"
+                value = getattr(self, name)
+                if value is None:
+                    continue
+                if not isinstance(value, date):
+                    raise TypeError(f"{name} must be a date or None")
+                if value == common:
+                    object.__setattr__(self, name, None)
+            start, end = self.leg_dates(leg)
+            if end <= start:
+                raise InvalidTerms(f"{leg} leg termination date must follow its effective date")
+        # one form per swap: the common dates are the fixed leg's, the float leg keeps its own only
+        # where they differ (the same swap written either way has the same bytes and identity)
+        fixed, floating = self.leg_dates("fixed"), self.leg_dates("float")
+        object.__setattr__(self, "effective_date", fixed[0])
+        object.__setattr__(self, "termination_date", fixed[1])
+        object.__setattr__(self, "fixed_effective_date", None)
+        object.__setattr__(self, "fixed_termination_date", None)
+        object.__setattr__(self, "float_effective_date", None if floating[0] == fixed[0] else floating[0])
+        object.__setattr__(self, "float_termination_date", None if floating[1] == fixed[1] else floating[1])
         if not isinstance(self.convention, SwapConvention):
             raise TypeError("convention must be a SwapConvention")
 
@@ -398,6 +439,29 @@ class InterestRateSwap:
     def fixed_sign(self) -> float:
         return -1.0 if self.side == "payer" else 1.0
 
+    def leg_dates(self, leg: SwapLeg) -> tuple[date, date]:
+        """``(effective, unadjusted termination)`` of ``leg``: its own dates or the common ones."""
+        if leg == "fixed":
+            start, end = self.fixed_effective_date, self.fixed_termination_date
+        elif leg == "float":
+            start, end = self.float_effective_date, self.float_termination_date
+        else:
+            raise InvalidTerms("leg must be fixed or float")
+        return (
+            self.effective_date if start is None else start,
+            self.termination_date if end is None else end,
+        )
+
+    @property
+    def common_dates(self) -> bool:
+        """True when both legs run on the common ``effective_date`` / ``termination_date``."""
+        return (
+            self.fixed_effective_date,
+            self.fixed_termination_date,
+            self.float_effective_date,
+            self.float_termination_date,
+        ) == (None, None, None, None)
+
 
 @dataclass(frozen=True)
 class SwapPeriod:
@@ -414,9 +478,10 @@ class SwapSchedule:
 
 
 def _leg_periods(
-    swap: InterestRateSwap, leg: SwapLegSchedule, calendar: BusinessCalendar
+    swap: InterestRateSwap, name: SwapLeg, leg: SwapLegSchedule, calendar: BusinessCalendar
 ) -> tuple[SwapPeriod, ...]:
-    start, end = swap.effective_date, swap.termination_date
+    """One leg's periods, rolled from that leg's own dates."""
+    start, end = swap.leg_dates(name)
     months = leg.frequency_months
     unadjusted: list[date]
     if leg.single_period_up_to_months is not None and end <= add_months(
@@ -457,12 +522,12 @@ def _leg_periods(
 
 
 def swap_schedule(swap: InterestRateSwap, calendar: BusinessCalendar) -> SwapSchedule:
-    """Both legs' periods from the swap's convention on ``calendar``."""
+    """Both legs' periods from the swap's convention on ``calendar``, each on its own dates."""
     if not isinstance(calendar, BusinessCalendar):
         raise TypeError("calendar must be a BusinessCalendar")
     return SwapSchedule(
-        _leg_periods(swap, swap.convention.fixed_leg, calendar),
-        _leg_periods(swap, swap.convention.float_leg, calendar),
+        _leg_periods(swap, "fixed", swap.convention.fixed_leg, calendar),
+        _leg_periods(swap, "float", swap.convention.float_leg, calendar),
     )
 
 
@@ -478,6 +543,8 @@ class SwapRiskRequest:
     KRS quotes and a recalibration. ``projection_curve=None`` projects RUONIA
     on the discount curve (single curve, one set of factors). ``fixings`` is
     required once a remaining period has started; its valuation date is the curves'.
+    A float leg that has not started (its own later effective date) takes none: its
+    first period is projected on the curve.
     """
 
     swap: InterestRateSwap

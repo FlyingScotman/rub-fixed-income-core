@@ -15,7 +15,7 @@ curves and a point-in-time fixing snapshot.
 
 ## Terms and conventions
 
-`InterestRateSwap(swap_id, side, notional, fixed_rate, effective_date, termination_date, convention, float_spread=0.0, currency="RUB")`
+`InterestRateSwap(swap_id, side, notional, fixed_rate, effective_date, termination_date, convention, float_spread=0.0, currency="RUB", fixed_effective_date=None, fixed_termination_date=None, float_effective_date=None, float_termination_date=None)`
 
 - `side`: `payer` pays fixed and receives float; `receiver` does the reverse.
 - `notional` is RUB and constant. Amortizing notionals are not modelled.
@@ -25,6 +25,18 @@ curves and a point-in-time fixing snapshot.
 - `effective_date` is the adjusted accrual start.
 - `termination_date` is the **unadjusted** end. The schedule rolls from it, and
   its own adjustment gives the last accrual end.
+- **Each leg runs on its own dates** (0.44.0, FlyingScotman/rub-fixed-income-core#106).
+  `fixed_effective_date` / `fixed_termination_date` and `float_effective_date` /
+  `float_termination_date` (adjusted start, unadjusted end, as above) give a leg dates of its
+  own: legs ending on different days, or one leg starting later (a forward or split start).
+  A leg date left at `None` is the common `effective_date` / `termination_date`. Each leg's
+  schedule rolls from its own dates (its stubs and the single-period rule too); one leg's
+  dates are never aligned to the other's. A swap is stored in one form: the common dates become
+  the fixed leg's, only float leg dates that differ are kept, so the same swap written either way
+  has one identity, and a common-date swap keeps its bytes, hashes and results. Legs need not
+  overlap in time.
+  `swap.leg_dates("fixed" | "float")` returns a leg's `(effective, unadjusted termination)`;
+  `swap.common_dates` is True when no leg has dates of its own.
 - Any currency other than RUB raises `UnsupportedProduct`. Cross-currency swaps
   are package 7.
 - `InterestRateSwap.from_tenor(..., trade_date, tenor, calendar, convention)`
@@ -73,7 +85,7 @@ bootstrap's quotes (`tests/test_swaps_moex_v2.py`).
 Any other spec raises: `UnknownCurveSpec` for an unregistered ID,
 `UnsupportedProduct` for a non-swap spec.
 
-`swap_schedule(swap, calendar)` returns both legs' `SwapPeriod`s
+`swap_schedule(swap, calendar)` returns both legs' `SwapPeriod`s, each leg on its own dates
 (`accrual_start`, `accrual_end`, `payment_date`, `accrual_factor`). A bounded
 calendar rejects dates outside its range.
 
@@ -98,7 +110,9 @@ calendar rejects dates outside its range.
     quotes, a `KeyRateCurveRequest` (`key_rate_quote` basis: shift the quotes,
     then recalibrate), is required.
 - `fixings` is a [`FixingHistory`](floating.md) of the swap's index, used read-only.
-  It is required as soon as a remaining float period has started. A RUONIA gap,
+  It is required as soon as a remaining float period has started. A float leg that has
+  not started (a later `float_effective_date`) needs none: its first period is projected
+  on the curve from the leg's own start. A RUONIA gap,
   or no fixing on or before a needed day, raises `MissingMarketData`. Fixings
   are never filled.
 

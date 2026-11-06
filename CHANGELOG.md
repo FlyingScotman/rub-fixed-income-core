@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.44.0 — IRS legs on their own dates
+
+FlyingScotman/rub-fixed-income-core#106 (owner's decision of 2026-11-06: each leg is valued on
+its own dates, a forward or split start of one leg included; one leg's dates are never aligned
+to the other's).
+
+- `InterestRateSwap` takes `fixed_effective_date`, `fixed_termination_date`,
+  `float_effective_date` and `float_termination_date` (optional, `None` by default): a leg's
+  own adjusted start and unadjusted end. A leg date left at `None` is the common
+  `effective_date` / `termination_date`, which stay the shorthand for legs on common dates. A
+  swap is stored in one form: the common dates become the fixed leg's and only float leg dates
+  that differ are kept (`fixed_*` are `None` after construction), so the same swap written either
+  way has the same bytes and `base_id`. Each leg's end
+  must follow its start (`InvalidTerms`). New `InterestRateSwap.leg_dates(leg)` and
+  `InterestRateSwap.common_dates`.
+- `swap_schedule` rolls each leg from its own dates (stubs and the single-period rule
+  included). `SwapRiskEngine` values each leg on its schedule: PV, the fixed and float leg PVs,
+  accrued (each leg from its own start), par rate and annuity (the fixed leg's), bucket DV01,
+  scenarios, the Hessian and horizon carry. A float leg that has not started takes no fixings
+  (a fixing history is not required for it); its first period is projected on the curve from
+  the leg's start. `SwapInstrument`, `value_portfolio` and `horizon_portfolio` take these swaps
+  unchanged.
+- Swaps on common dates: bytes, `base_id`, job IDs, results and `SWAP_MODEL_VERSION` are
+  unchanged (the new fields are left out of serialization while `None`; a pinned regression
+  test holds PV, leg PVs, par rate, DV01 and `base_id` of the seasoned OIS).
+- Tests (`tests/test_swaps_leg_dates.py`): legs ending one day apart and a float leg starting a
+  month after the fixed leg, each leg against a hand valuation of its own schedule and against
+  the common-date swap on that leg's dates; a float leg starting before the fixed leg needs its
+  fixings; a key-rate swap with a forward-starting float leg; risk, scenario and carry
+  identities; validation and round trip; the portfolio and horizon paths.
+
 ## 0.43.0 — XCCY RUB leg on any compounded index and on the average key rate
 
 FlyingScotman/rub-fixed-income-core#64 (KEYRATE and RUSFAR RUB legs).
