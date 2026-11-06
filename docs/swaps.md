@@ -31,8 +31,10 @@ curves and a point-in-time fixing snapshot.
   own: legs ending on different days, or one leg starting later (a forward or split start).
   A leg date left at `None` is the common `effective_date` / `termination_date`. Each leg's
   schedule rolls from its own dates (its stubs and the single-period rule too); one leg's
-  dates are never aligned to the other's. A leg date equal to the common date is stored as
-  `None`, so a swap has one form and a common-date swap keeps its bytes, hashes and results.
+  dates are never aligned to the other's. A swap is stored in one form: the common dates become
+  the fixed leg's, only float leg dates that differ are kept, so the same swap written either way
+  has one identity, and a common-date swap keeps its bytes, hashes and results. Legs need not
+  overlap in time.
   `swap.leg_dates("fixed" | "float")` returns a leg's `(effective, unadjusted termination)`;
   `swap.common_dates` is True when no leg has dates of its own.
 - Any currency other than RUB raises `UnsupportedProduct`. Cross-currency swaps

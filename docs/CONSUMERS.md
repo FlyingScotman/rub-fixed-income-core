@@ -229,9 +229,10 @@ default and left out of serialization while `None`:
   unadjusted end;
 - `float_effective_date`, `float_termination_date`: the same for the float leg.
 
-The monitor passes each leg's dates as they are in the trade: e.g. the fixed leg's dates as
-`effective_date` / `termination_date` and the float leg's as `float_*` (a date equal to the
-common one may be passed too; it is stored as `None`). No alignment is needed or done: each
+The monitor passes each leg's dates as they are in the trade, in any of the forms (for example
+the fixed leg's dates as `effective_date` / `termination_date` and the float leg's as `float_*`).
+The swap stores one form: the common dates become the fixed leg's and only differing float leg
+dates are kept, so the identity (`base_id`, job IDs) does not depend on how the trade was written. No alignment is needed or done: each
 leg rolls its schedule from its own dates, and a leg that has not started (forward or split
 start) needs no fixings, its first period projected on the curve. `SwapInstrument`,
 `value_portfolio` and `horizon_portfolio` take such swaps as they are; the fixed and float leg

@@ -10,7 +10,9 @@ to the other's).
   `float_effective_date` and `float_termination_date` (optional, `None` by default): a leg's
   own adjusted start and unadjusted end. A leg date left at `None` is the common
   `effective_date` / `termination_date`, which stay the shorthand for legs on common dates. A
-  leg date equal to the common date is stored as `None` (one form per swap). Each leg's end
+  swap is stored in one form: the common dates become the fixed leg's and only float leg dates
+  that differ are kept (`fixed_*` are `None` after construction), so the same swap written either
+  way has the same bytes and `base_id`. Each leg's end
   must follow its start (`InvalidTerms`). New `InterestRateSwap.leg_dates(leg)` and
   `InterestRateSwap.common_dates`.
 - `swap_schedule` rolls each leg from its own dates (stubs and the single-period rule

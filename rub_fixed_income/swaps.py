@@ -335,9 +335,12 @@ class InterestRateSwap:
     (same meaning: adjusted start, unadjusted end) give one leg dates of its own, for
     legs that start or end on different days, a forward-starting leg included; a leg
     that names none takes ``effective_date`` / ``termination_date``, the common dates.
-    One leg's dates are never aligned to the other's. A leg date equal to the common date
-    is stored as None (one form per swap, so identities are unchanged), and every leg
-    date left at None keeps the swap's canonical bytes and hashes as before.
+    One leg's dates are never aligned to the other's. One form per swap: the stored common
+    dates are the fixed leg's, and only float leg dates that differ from them are stored
+    (``fixed_*`` are always None after construction), so the same swap written either way
+    has the same bytes and ``base_id``; a swap on common dates keeps its canonical bytes and
+    hashes as before. Legs need not overlap in time (a float leg may start after the fixed
+    one ends).
     """
 
     swap_id: str
@@ -385,6 +388,15 @@ class InterestRateSwap:
             start, end = self.leg_dates(leg)
             if end <= start:
                 raise InvalidTerms(f"{leg} leg termination date must follow its effective date")
+        # one form per swap: the common dates are the fixed leg's, the float leg keeps its own only
+        # where they differ (the same swap written either way has the same bytes and identity)
+        fixed, floating = self.leg_dates("fixed"), self.leg_dates("float")
+        object.__setattr__(self, "effective_date", fixed[0])
+        object.__setattr__(self, "termination_date", fixed[1])
+        object.__setattr__(self, "fixed_effective_date", None)
+        object.__setattr__(self, "fixed_termination_date", None)
+        object.__setattr__(self, "float_effective_date", None if floating[0] == fixed[0] else floating[0])
+        object.__setattr__(self, "float_termination_date", None if floating[1] == fixed[1] else floating[1])
         if not isinstance(self.convention, SwapConvention):
             raise TypeError("convention must be a SwapConvention")
 

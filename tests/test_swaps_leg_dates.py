@@ -144,6 +144,22 @@ def test_leg_dates_equal_to_the_common_dates_are_the_common_swap() -> None:
     assert same.valuation() == base.valuation()
 
 
+
+def test_the_same_split_swap_written_either_way_is_one_swap() -> None:
+    """One form per swap: common dates = the fixed leg's, so either writing has one identity."""
+    by_fixed = one_day_apart()
+    by_float = seasoned_ois(
+        termination_date=date(2028, 1, 18), fixed_termination_date=date(2028, 1, 17)
+    )
+    assert by_float == by_fixed
+    assert to_dict(by_float) == to_dict(by_fixed)
+    assert by_float.fixed_termination_date is None
+    assert by_float.termination_date == date(2028, 1, 17)
+    a = SwapRiskEngine(request(by_fixed, ruonia_history(VALUATION)))
+    b = SwapRiskEngine(request(by_float, ruonia_history(VALUATION)))
+    assert a.base_id == b.base_id
+    assert a.valuation() == b.valuation()
+
 # --- legs ending one day apart ---------------------------------------------------------
 
 
