@@ -238,7 +238,12 @@ monitor rejects today as `ndf_unsupported`, it passes one new leg field,
   `settlement_currency` the base or quote currency. From the fixing date the core reads both
   currencies' `FxFixing`s of that source (RUB per unit) and fixes the cross at
   `quote_units · R_base / R_quote`; a direct cross fixing goes in `fixing_rate` (quote per
-  `quote_units` base). Missing fixings after the fixing date are `MISSING_MARKET_DATA`;
+  `quote_units` base). That `fixing_rate` is checked against `quote_units · R_base / R_quote`
+  whenever the snapshot holds both RUB fixings of the leg's `fixing_source`, so for a cross
+  that fixes on a published cross rate name the cross rate's source in `fixing_source`, not
+  the RUB-fixing source (the monitor's default), or the run is `INVALID_TERMS`. Missing
+  fixings after the fixing date are `MISSING_MARKET_DATA`, naming the currency whose fixing
+  is missing;
 - still rejected (`INVALID_TERMS`, "not supported"): fixing terms on a cross NDF settled in
   RUB. Keep `ndf_unsupported` for that case only (or book the trade as its two X/RUB NDFs).
 

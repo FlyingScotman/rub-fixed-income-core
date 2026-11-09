@@ -1366,8 +1366,14 @@ def _fixed_cross_leg(
     if leg.fixing_date == ctx.business_date:
         return leg, "fixing_pending"
     source = "no fixing_source" if leg.fixing_source is None else leg.fixing_source
+    absent = (
+        (x, y)
+        if rates is None
+        else tuple(c for c, r in zip((x, y), rates, strict=True) if r is None)
+    )
+    names = " and ".join(absent)
     raise MissingFixing(
-        f"{trade.trade_id}: no {x} and {y} fixings ({source}) of "
+        f"{trade.trade_id}: no {names} fixing{'s' if len(absent) > 1 else ''} ({source}) of "
         f"{leg.fixing_date.isoformat()} in snapshot {ctx.snapshot.snapshot_id}"
     )
 

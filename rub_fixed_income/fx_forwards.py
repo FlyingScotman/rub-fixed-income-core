@@ -974,7 +974,8 @@ class FxForwardPointsHeldRisk:
     the discounting of each leg's ``N / q * (F - K)`` to its payment date is left, so an
     at-market forward has almost none. The default risk (``risk``) holds the foreign
     curve instead and lets the points move; foreign-curve, basis and spot risk are the
-    same in both. Fixed NDF legs read only the RUB curve and are identical in both.
+    same in both. Fixed RUB-settled NDF legs read only the RUB curve and are identical
+    in both; a fixed leg settled in the foreign currency reads the foreign curve.
     """
 
     base_id: str

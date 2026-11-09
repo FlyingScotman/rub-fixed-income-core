@@ -282,9 +282,10 @@ class FxCrossRiskRequest:
         if not isinstance(curve_date, date):
             return  # the per-currency requests reject the curve
         trade = self.instrument
+        if not _pair_settled(trade):
+            return  # the per-currency requests check the decomposition's legs
+        # On the pair-settled path they see only curve proxies: every leg is checked here.
         for leg in trade.legs:
-            if leg.settlement_currency is None:
-                continue  # checked by the per-currency requests on the decomposition
             if leg.settlement_date < curve_date or (
                 not leg.is_fixed and leg.value_date < curve_date
             ):

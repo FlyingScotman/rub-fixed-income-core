@@ -254,7 +254,9 @@ rate. The quanto term such a correlation would add is not modelled.
   `fx_cross_rub_legs` rejects it); `A_X` and `A_Y` are its parts linear in each spot, so
   `fx_delta_base`, `fx_delta_quote`, the RUB / base / quote buckets, both bases, the
   Hessian, points-held risk and the horizon keep their meaning. A fixed leg settled in Y
-  is a known Y amount (risk on the Y curve and Y basis, `FX|Y` only); in X likewise.
+  is a known Y amount (risk on the Y curve and Y basis, plus the spot-date terms of
+  converting at the Y spot when its spot date follows the curve date; `FX|Y` only); in X
+  likewise.
 - Leg rows report `settlement_currency` and `settlement_amount` (units of `Z` paid on `P`:
   projected at the forward, or known once fixed), both omitted for RUB settlement.
 

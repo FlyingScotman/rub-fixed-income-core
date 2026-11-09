@@ -16,7 +16,9 @@ without interest-rate risk).
   linear in the fixing; see `docs/fx-forwards.md`). PV, bucketed RUB and foreign curve risk,
   basis, FX delta (`fx_delta_foreign`, the OCP amount), scenarios, Hessian (PV stays linear
   in spot), points-held RUB risk and horizon all cover it. Once fixed it is a known foreign
-  amount: risk on the foreign (settlement) curve only, still an FX position.
+  amount: risk on the foreign (settlement) curve and basis, plus the spot-date terms of
+  converting at spot (a small RUB and foreign short-bucket pair when the spot date follows
+  the curve date); still an FX position.
 - Cross NDFs (`fx_crosses`): a cross leg may carry fixing terms when it settles in the base or
   quote currency (`fixing_rate`: the cross rate, quote per `quote_units` base). Unfixed,
   `PV = [N · V_X(T) − (N · K / q) · V_Y(T)] · V_Z(P) / V_Z(T)` on the three curves; fixed, the

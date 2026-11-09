@@ -18,6 +18,7 @@ from rub_fixed_income import (
     FxCrossRiskEngine,
     FxCrossRiskRequest,
     FxCrossScenario,
+    FxCrossSwap,
     FxFixing,
     FxForward,
     FxForwardInstrument,
@@ -71,7 +72,7 @@ def cross(settle: str | None, *, payment: date = P, **changes: object) -> FxCros
     return FxCrossForward("X-NDF", "USD", "CNY", 1.0, replace(terms, **changes))  # type: ignore[arg-type]
 
 
-def cross_engine(trade: FxCrossForward, **changes: object) -> FxCrossRiskEngine:
+def cross_engine(trade: FxCrossForward | FxCrossSwap, **changes: object) -> FxCrossRiskEngine:
     base = FxCrossRiskRequest(trade, SU, C, SC, C, RUB, USD, CNY, 0.0, 0.0)
     return FxCrossRiskEngine(replace(base, **changes))  # type: ignore[arg-type]
 
@@ -379,6 +380,22 @@ def test_cross_ndf_points_held_and_horizon() -> None:
     assert fixed.received_rub == pytest.approx(N * (1 - KX / 7.3) * SU, rel=1e-13)
 
 
+def test_pair_settled_swap_checks_its_deliverable_leg_too() -> None:
+    near = FxForwardLeg(C - timedelta(days=31), -N, 7.0)  # settled before the curve date
+    far = FxForwardLeg(T, N, KX, P, settlement_currency="CNY")
+    with pytest.raises(InvalidTerms, match="a leg settled before the curve date"):
+        cross_engine(FxCrossSwap("XS", "USD", "CNY", 1.0, near, far))
+    deliverable = FxCrossSwap("XS", "USD", "CNY", 1.0, near, FxForwardLeg(T, N, KX))
+    with pytest.raises(InvalidTerms, match="a leg settled before the curve date"):
+        cross_engine(deliverable)
+    # Outstanding: the swap is the sum of its legs, each valued on the pair-settled path.
+    live = FxCrossSwap("XS", "USD", "CNY", 1.0, replace(near, value_date=C + timedelta(5)), far)
+    parts = sum(
+        cross_engine(FxCrossForward("X", "USD", "CNY", 1.0, part)).base_pv_rub for part in live.legs
+    )
+    assert cross_engine(live).base_pv_rub == pytest.approx(parts, rel=1e-12)
+
+
 def test_cross_ndf_missing_and_settled_inputs() -> None:
     later = T  # after the fixing date, on the value date
     curves = {
@@ -488,7 +505,9 @@ def test_cross_ndf_in_value_portfolio_fixes_from_two_rub_fixings() -> None:
     one = market("USD", "CNY", fx_fixings=fixings[:1])
     missing = run(one, [_cross_inst(fixed_on)], [pos("x", "XN", 1.0, "USD")])
     rejection = missing.coverage.rejections[0]
-    assert rejection.code == "MISSING_MARKET_DATA" and "USD and CNY fixings" in rejection.message
+    assert rejection.code == "MISSING_MARKET_DATA" and "no CNY fixing (CBR)" in rejection.message
+    none = run(market("USD", "CNY"), [_cross_inst(fixed_on)], [pos("x", "XN", 1.0, "USD")])
+    assert "no USD and CNY fixings (CBR)" in none.coverage.rejections[0].message
     pending = run(market("USD", "CNY"), [_cross_inst(BUSINESS_DATE)], [pos("x", "XN", 1.0, "USD")])
     assert "fixing_pending" in pending.position_models[0].flags
 
