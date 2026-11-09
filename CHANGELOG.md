@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.45.0 — NDFs settled in a foreign currency and cross NDFs
+
+BACKLOG #135, for FlyingScotman/trading-desk-monitor#616 (NDFs in the open currency position
+without interest-rate risk).
+
+- `FxForwardLeg.settlement_currency` (optional, `None` by default, left out of serialization
+  while `None`; `"RUB"` is stored as `None`): the currency a cash-settled leg pays in. Only on
+  a leg with `payment_date`; an X/RUB trade settles in RUB or its foreign currency, a cross in
+  RUB, its base or its quote currency (`InvalidTerms` otherwise). `NdfConvention.leg` takes it.
+- X/RUB NDF settled in the foreign currency (an offshore USD/RUB NDF settled in USD): pays
+  `N · (1 − K / fixing)` foreign units on the payment date. `FxForwardRiskEngine` values it as
+  the deliverable exchange at the value date carried to the payment date on the foreign curve
+  (with the basis): exact under covered parity, no convexity adjustment (its RUB value is
+  linear in the fixing; see `docs/fx-forwards.md`). PV, bucketed RUB and foreign curve risk,
+  basis, FX delta (`fx_delta_foreign`, the OCP amount), scenarios, Hessian (PV stays linear
+  in spot), points-held RUB risk and horizon all cover it. Once fixed it is a known foreign
+  amount: risk on the foreign (settlement) curve only, still an FX position.
+- Cross NDFs (`fx_crosses`): a cross leg may carry fixing terms when it settles in the base or
+  quote currency (`fixing_rate`: the cross rate, quote per `quote_units` base). Unfixed,
+  `PV = [N · V_X(T) − (N · K / q) · V_Y(T)] · V_Z(P) / V_Z(T)` on the three curves; fixed, the
+  known amount on the settlement curve. `FxCrossRiskEngine` values such trades leg by leg and
+  keeps every result (RUB / base / quote buckets, both bases, both FX deltas, scenarios,
+  Hessian, points-held risk, horizon). `fx_cross_rub_legs` rejects them (no RUB-leg
+  decomposition). Fixing terms on a cross settled in RUB stay rejected (they need both RUB
+  fixings).
+- Leg results: `FxForwardLegValuation` and `FxCrossLegValuation` gain `settlement_currency` and
+  `settlement_amount` (units of the settlement currency paid; omitted at `None`);
+  `FxCrossLegValuation` also `fixing_date` and `fixing_rate`.
+- `value_portfolio` / `horizon_portfolio`: foreign-settled X/RUB NDFs are fixed from
+  `fx_fixings` as before; a cross NDF from both currencies' fixings of its source
+  (`q · R_X / R_Y`), or its own `fixing_rate` checked against them (`known_fixings`,
+  `fixing_pending`, `MISSING_MARKET_DATA` as for X/RUB NDFs). A fixed cross leg is
+  outstanding until its payment date. Leg rows scale `settlement_amount` by the quantity.
+- Deliverable forwards and swaps, RUB-settled NDFs and existing crosses: bytes, `base_id`,
+  results and model versions are unchanged (checked bit for bit against 0.44.0); job and
+  calculation IDs change only through `library_version`, as in every release.
+- Tests: `tests/test_ndf_settlement.py`.
+
 ## 0.44.0 — IRS legs on their own dates
 
 FlyingScotman/rub-fixed-income-core#106 (owner's decision of 2026-11-06: each leg is valued on

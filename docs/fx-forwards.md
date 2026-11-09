@@ -33,9 +33,11 @@ checks that the two modules agree.
 
 ## Inputs
 
-- `FxForwardLeg(value_date, notional_foreign, contract_rate, payment_date=None, fixing_date=None, fixing_source=None, fixing_rate=None)`.
+- `FxForwardLeg(value_date, notional_foreign, contract_rate, payment_date=None, fixing_date=None, fixing_source=None, fixing_rate=None, settlement_currency=None)`.
   The three NDF fields (0.36.0, omitted at None) belong to a cash-settled leg only; see
-  [NDF fixings](#ndf-fixings-backlog-49).
+  [NDF fixings](#ndf-fixings-backlog-49). `settlement_currency` (0.45.0, omitted at None;
+  `"RUB"` is stored as None) is the currency a cash-settled leg pays in; see
+  [NDFs settled in a foreign currency and cross NDFs](#ndfs-settled-in-a-foreign-currency-and-cross-ndfs-backlog-135).
 - `FxForward(trade_id, currency, quote_units, leg)`. An unsettled spot trade is a
   forward whose value date is its spot date.
 - `FxSwap(trade_id, currency, quote_units, near, far)`: legs of opposite sign, the
@@ -192,7 +194,91 @@ days after the fixing (the source's own spot lag: for example 1 for a rate set f
 tomorrow's settlement, or equal to `fixing_lag_days` when the rate is the spot for the
 payment date). `.leg(dates, notional, contract_rate, fixing_rate=None)` builds the leg.
 **No source or lag is built in**: they are trade terms (the firm's NDF confirmations).
-Only RUB settlement is modelled.
+`.leg(..., settlement_currency=None)` (0.45.0) sets the settlement currency.
+
+## NDFs settled in a foreign currency and cross NDFs (BACKLOG #135)
+
+0.45.0. `FxForwardLeg.settlement_currency` names the currency a cash-settled leg pays in:
+`None` (RUB, as before), the foreign currency of an X/RUB trade, or the base or quote
+currency of a cross. Let `V_C(t)` be the RUB value today of one unit of `C` paid on `t`
+under RUB collateral, on the same curves, spot and basis as every other leg:
+
+```text
+V_RUB(t) = DF_rub(t)
+V_C(t)   = S_C · DF_rub(s_C) / DF_C(s_C) · DF_C(t) · exp(b_C · τ(s_C, t))      (S_C per one unit)
+```
+
+so the covered-parity outright is `F_C(T) = V_C(T) / DF_rub(T)`. An NDF on the pair X/Y
+(Y = RUB for an X/RUB trade; `K` and the fixing `R` in Y per `q` units of X; `N` signed
+in X), fixed on the spot rate for its value date `T` and paid on `P` in `Z`, pays
+
+| settled in | amount paid on `P` |
+| --- | --- |
+| Y (RUB for X/RUB: the 0.36.0 NDF) | `N/q · (R − K)` Y |
+| X (an offshore USD/RUB NDF settled in USD) | `N · (1 − K / R)` X |
+| RUB, for a cross | `N/q · (R − K) · R_Y` RUB (needs the Y/RUB fixing `R_Y`; see below) |
+
+and, unfixed, is worth the deliverable exchange at `T` carried to `P` on `Z`'s curve:
+
+```text
+PV = [N · V_X(T) − (N · K / q) · V_Y(T)] · V_Z(P) / V_Z(T)
+```
+
+For an X/RUB leg settled in X this is `N/q · (F(T) − K) · DF_rub(T) · g(P) / g(T)`, with
+`g(t) = DF_for(t) · exp(b · τ(s, t))`; at `P = T` it equals the RUB-settled NDF and the
+deliverable forward, and at `K = F(T)` it is zero. Once fixed (`fixing_rate`) the amount
+is known and `PV = amount · V_Z(P)`.
+
+**No convexity adjustment, and why none is needed.** In settlement-currency units the
+payoff `N · (1 − K / R)` is not linear in `R`, but its RUB value is: at the fixing the X
+amount paid on `P` is worth `N · (1 − K / R) · R · F(P) / F(T)` RUB, and with deterministic
+rates `F(P) / F(T)` does not depend on the FX rate, so this is `N · (R − K) · F(P) / F(T)`.
+Pricing in the settlement currency's measure, where the forward of `1 / R` is exactly
+`1 / F(T)`, is therefore exact: the formula has no quanto or timing correction, PV stays
+linear in each spot (the FX delta is exact, the spot Hessian diagonal is zero) and the
+risk engine's structure is unchanged. What it leaves out is the module's model assumption
+for every forward: deterministic rates, i.e. no correlation between rates and the FX
+rate. The quanto term such a correlation would add is not modelled.
+
+**Risk path.** Both go through the existing engines, so their results keep every field:
+
+- X/RUB: `FxForwardRiskEngine`. The leg's foreign part `A = N/q · S · DF_rub(s) / DF_for(s) ·
+  g(P)` and RUB part `B = N/q · K · DF_rub(T) · g(P) / g(T)`; bucketed risk on the RUB and
+  the foreign curve (`IR|<rub>|*`, `IR|<foreign>|*`), basis, `fx_delta_foreign` (the OCP
+  amount: the foreign amount discounted to the spot date), scenarios, Hessian, points-held
+  RUB risk and horizon. A fixed leg is a known foreign amount: risk only on the foreign
+  (settlement) curve and the basis, plus the spot-date terms of converting at spot when the
+  spot date follows the curve date; it is still an FX position (`FX|<ccy>`).
+- Crosses: `FxCrossRiskEngine`. A trade with a leg settled in X or Y is valued leg by leg
+  on the three curves (such a leg is not a sum of two RUB-settled legs, so
+  `fx_cross_rub_legs` rejects it); `A_X` and `A_Y` are its parts linear in each spot, so
+  `fx_delta_base`, `fx_delta_quote`, the RUB / base / quote buckets, both bases, the
+  Hessian, points-held risk and the horizon keep their meaning. A fixed leg settled in Y
+  is a known Y amount (risk on the Y curve and Y basis, `FX|Y` only); in X likewise.
+- Leg rows report `settlement_currency` and `settlement_amount` (units of `Z` paid on `P`:
+  projected at the forward, or known once fixed), both omitted for RUB settlement.
+
+**Fixings.** `fixing_rate` is in the trade's quote units: RUB per `q` units for an X/RUB
+leg, the cross rate (Y per `q` units of X) for a cross leg. `value_portfolio` fixes an
+X/RUB leg from `MarketSnapshot.fx_fixings` as before. The snapshot holds RUB fixings only
+(`FxFixing`: RUB per one unit), so a cross leg is fixed from the base and the quote
+currency's fixings of its `fixing_source` on its fixing date, `R = q · R_X / R_Y`; a direct
+cross fixing (a published USD/CNY rate, say) is passed in `fixing_rate` and must agree with
+the snapshot's two fixings when both exist. Flags, pending and missing fixings are as for
+X/RUB NDFs (`known_fixings`, `fixing_pending`, `MISSING_MARKET_DATA` naming both
+currencies).
+
+**Not supported.** A cross NDF settled in RUB with fixing terms is rejected (`InvalidTerms`,
+"not supported"): its RUB amount needs both RUB fixings `R_X` and `R_Y`, and a leg carries
+one. A cash-settled cross without fixing terms is still valued in RUB (below), and such a
+trade is exactly its two X/RUB NDFs (each with its own fixing) that `fx_cross_rub_legs`
+decomposes it into.
+
+**Horizon.** A foreign-settled leg paid by the horizon receives its amount (at the fixing,
+or at the rule's rates for `T`) converted at the rule's rate for `P` (`"spot_held"`: today's
+spot, so `N/q · (S − K)` as a RUB-settled leg; `"forwards_realised"`: today's forwards). The
+other legs are valued on the views from the horizon spot, and with `"forwards_realised"`
+`pv_forward` is still today's PV of the legs paid after the horizon over `DF_rub(h)`.
 
 ## Crosses without RUB (`fx_crosses`, 0.36.0)
 
@@ -210,7 +296,9 @@ with each currency's own curve, spot (RUB per one unit) and basis: both legs are
 discounted on their own curves and no RUB amount is left. A deliverable cross with the
 spots on the curve date has no RUB rate risk at all. `payment_date` makes a leg
 cash-settled in RUB: `N/q · (F_XY(T) − K) · F_Y(T) · DF_rub(P)`, `F_XY = q · F_X / F_Y`.
-NDF fixings of crosses are rejected.
+Cross NDFs settled in the base or quote currency, with their fixings, are 0.45.0
+([above](#ndfs-settled-in-a-foreign-currency-and-cross-ndfs-backlog-135)); fixing terms on
+a cross settled in RUB are rejected.
 
 `fx_cross_rub_legs(trade, pivot_rate=1.0)` is the exact decomposition into an X/RUB and a
 Y/RUB trade whose RUB amounts cancel; `FxCrossRiskEngine(FxCrossRiskRequest(instrument,
@@ -323,6 +411,17 @@ desk = fx_forward_factor_risk(risk, "RUB_OIS", "CNY_FX_IMPLIED", engine.second_o
 - money-market parity round trips; value dates on a joint calendar; identity; input
   checks.
 
+`tests/test_ndf_settlement.py` (0.45.0, synthetic): a USD-settled USD/RUB NDF against a
+hand computation (with basis and a spot after the curve date), zero at the forward, equal
+to the RUB-settled NDF and the deliverable forward when paid on its value date; cross NDFs
+settled in either currency or projected in RUB against the deliverable cross carried on
+the settlement curve and the two-X/RUB-leg replication; forward-difference parallel risk
+equal to repricing on bumped curves (RUB, base, quote), bucket sums, analytic DV01s, exact
+FX deltas; fixed legs with risk only on the settlement curve; points-held and horizon
+identities; settled legs and missing fixings; the portfolio path (two RUB fixings make the
+cross fixing, a direct one is checked against them, missing curves, spots and fixings are
+`MISSING_MARKET_DATA`).
+
 `tests/test_moex_fx_swap_goldens.py` (MOEX ISS, `tests/fixtures/moex_fx_swaps`, see
 its README):
 
@@ -355,8 +454,10 @@ shared cache. Linux x86_64, Python 3.11, ms per position:
 
 ## Out of scope
 
-- **NDFs settled in a currency other than RUB** (an offshore USD-settled NDF pays
-  `N · (1 − K / fixing)` USD) and NDF fixings of crosses.
+- **Fixing terms on a cross NDF settled in RUB** (they need both RUB fixings; value the
+  two X/RUB NDFs), a direct cross fixing in the snapshot (`FxFixing` is RUB per unit:
+  pass it in `fixing_rate`), and a rates–FX correlation (quanto) term for NDFs settled in a
+  foreign currency.
 - **USD/RUB and EUR/RUB OTC spot lag and calendars**, and an end-of-month rule for FX
   tenors (BACKLOG #49): pass the confirmation's dates.
 - **Points-held risk as the factor basis**: it is reported beside the factors.

@@ -220,6 +220,28 @@ rounds up (it could round down in float), so such a bond's accrued, dirty price 
 yields solved from its clean price can move by one kopeck; stored results on other dates
 and bonds are unchanged.
 
+**From 0.45.0: NDFs settled in a foreign currency and cross NDFs** (BACKLOG #135, for
+FlyingScotman/trading-desk-monitor#616). Existing forwards, swaps, RUB-settled NDFs and
+crosses are unchanged (same bytes, `base_id` and results; job IDs move only with
+`library_version`). To value the NDFs the
+monitor rejects today as `ndf_unsupported`, it passes one new leg field,
+`FxForwardLeg(..., settlement_currency=<ccy>)` (`None` or `"RUB"`: RUB settlement, as now):
+
+- an X/RUB NDF settled in X (USD/RUB settled in USD): `FxForwardInstrument` as for a
+  RUB-settled NDF, the leg with `payment_date`, `fixing_date`, `fixing_source` and
+  `settlement_currency="USD"`; `contract_rate` and fixings stay RUB per `quote_units` USD.
+  The row's legs carry `settlement_currency` and `settlement_amount` (USD paid);
+  `fx_delta_foreign` stays the OCP amount; factor risk has `IR|<rub>|*` and
+  `IR|<foreign curve>|*`. Fixings come from `MarketSnapshot.fx_fixings` as today;
+- a cross NDF settled in its base or quote currency: `FxCrossInstrument` with an
+  `FxCrossForward` whose leg has `payment_date`, `fixing_date`, `fixing_source` and
+  `settlement_currency` the base or quote currency. From the fixing date the core reads both
+  currencies' `FxFixing`s of that source (RUB per unit) and fixes the cross at
+  `quote_units · R_base / R_quote`; a direct cross fixing goes in `fixing_rate` (quote per
+  `quote_units` base). Missing fixings after the fixing date are `MISSING_MARKET_DATA`;
+- still rejected (`INVALID_TERMS`, "not supported"): fixing terms on a cross NDF settled in
+  RUB. Keep `ndf_unsupported` for that case only (or book the trade as its two X/RUB NDFs).
+
 **From 0.44.0: IRS legs on their own dates** (FlyingScotman/rub-fixed-income-core#106, for
 FlyingScotman/trading-desk-monitor#605). Swaps on common dates are unchanged (same bytes, same
 `base_id`, job IDs and results). `InterestRateSwap` takes four optional dates, all `None` by

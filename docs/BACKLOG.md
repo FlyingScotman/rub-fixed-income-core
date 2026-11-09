@@ -692,9 +692,17 @@ basis scenarios (#103), FX fallbacks to proxies (#131).
      tracked in the private repository; the private adapter maps them to `trade_terms`.
      Core takes them as `NdfConvention` / leg terms (fixing source, fixing lag, fixing
      value date, settlement currency); the backend maps the source to `FxFixing.source`.
-135. **NDFs settled in a foreign currency and cross NDFs.** An offshore-style USD/RUB NDF
-     settles `N · (1 − K / fixing)` USD (a quanto-like ratio, not linear in the forward);
-     a cross NDF needs both fixings. Both are rejected today. P2, when the book has them.
+135. *(done, 0.45.0, for FlyingScotman/trading-desk-monitor#616)* **NDFs settled in a
+     foreign currency and cross NDFs.** `FxForwardLeg.settlement_currency`: an X/RUB NDF
+     settled in X pays `N · (1 − K / fixing)` X, a cross NDF settled in its base or quote
+     currency `N · (1 − K / R)` or `N/q · (R − K)`; unfixed, each is the deliverable exchange
+     at the value date carried to the payment date on the settlement currency's curve
+     (exact under covered parity: the RUB value is linear in the fixing, no convexity
+     term), fixed a known amount on that curve. Same engines and factors (`IR|` on every
+     curve read, `FX|` per currency, FX delta as the OCP amount); `value_portfolio` fixes a
+     cross from both RUB fixings of its source (`q · R_X / R_Y`) or a direct `fixing_rate`.
+     Not done: fixing terms on a cross settled in RUB (need both RUB fixings on one leg; value
+     the two X/RUB NDFs) and a rates–FX correlation term (`tests/test_ndf_settlement.py`).
 136. **Points-held risk as the factor basis.** Today the points-held RUB risk is a row
      field beside the factors; a points-held factor set (`IR|<rub>|*` with points held,
      the foreign curve as the points factor) would need its Hessian and an owner decision

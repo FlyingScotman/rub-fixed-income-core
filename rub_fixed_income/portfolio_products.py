@@ -85,6 +85,7 @@ from .factors import (
 from .floating import FixingHistory, FixingIndex
 from .fx_crosses import (
     FX_CROSS_RISK_MODEL_VERSION,
+    FxCrossForward,
     FxCrossHorizonValuation,
     FxCrossLegValuation,
     FxCrossRiskEngine,
@@ -1255,6 +1256,10 @@ def value_fx_forward(position: Position, instrument: object, ctx: ProductContext
             _money(leg.pv_rub * q, "leg PV"),
             leg.fixing_date,
             leg.fixing_rate,
+            leg.settlement_currency,
+            None
+            if leg.settlement_amount is None
+            else _money(leg.settlement_amount * q, "settlement amount"),
         )
         for leg in risk.legs
     )
@@ -1321,6 +1326,72 @@ class _FxCrossSetup:
     bases: tuple[FxBasis, FxBasis]
     curve_ids: tuple[str, str]
     fallbacks: tuple[str | None, str | None]
+    flags: tuple[str, ...] = ()
+
+
+def _fixed_cross_leg(
+    leg: FxForwardLeg, trade: FxCrossForward | FxCrossSwap, ctx: ProductContext
+) -> tuple[FxForwardLeg, str | None]:
+    """A cross NDF leg (0.45.0) with its fixing applied, and a model flag.
+
+    The snapshot holds RUB fixings only, so the cross fixing is
+    ``q * R_X / R_Y`` from the base and quote currencies' fixings of the leg's
+    ``fixing_source`` on its fixing date; a direct cross fixing is passed in
+    ``fixing_rate`` (it must agree with the snapshot's when both exist). Otherwise as
+    :func:`_fixed_leg`.
+    """
+    if leg.fixing_date is None or leg.fixing_date > ctx.business_date:
+        return leg, None
+    x, y = trade.base_currency, trade.quote_currency
+    rates = (
+        None
+        if leg.fixing_source is None
+        else tuple(ctx.fx_fixing(c, leg.fixing_source, leg.fixing_date) for c in (x, y))
+    )
+    rate = (
+        None
+        if rates is None or rates[0] is None or rates[1] is None
+        else trade.quote_units * rates[0].rub_per_unit / rates[1].rub_per_unit
+    )
+    if leg.fixing_rate is not None:
+        if rate is not None and not math.isclose(rate, leg.fixing_rate, rel_tol=1e-9):
+            raise InvalidTerms(
+                f"{trade.trade_id}: fixing_rate {leg.fixing_rate} differs from the "
+                f"{leg.fixing_source} {x} and {y} fixings' cross {rate} of "
+                f"{leg.fixing_date.isoformat()}"
+            )
+        return leg, "known_fixings"
+    if rate is not None:
+        return replace(leg, fixing_rate=rate), "known_fixings"
+    if leg.fixing_date == ctx.business_date:
+        return leg, "fixing_pending"
+    source = "no fixing_source" if leg.fixing_source is None else leg.fixing_source
+    raise MissingFixing(
+        f"{trade.trade_id}: no {x} and {y} fixings ({source}) of "
+        f"{leg.fixing_date.isoformat()} in snapshot {ctx.snapshot.snapshot_id}"
+    )
+
+
+def _fixed_cross_trade(
+    trade: FxCrossForward | FxCrossSwap, ctx: ProductContext
+) -> tuple[FxCrossForward | FxCrossSwap, tuple[str, ...]]:
+    flags: set[str] = set()
+    legs = []
+    for leg in trade.legs:
+        if leg.settlement_date < ctx.business_date:
+            legs.append(leg)
+            continue
+        fixed, flag = _fixed_cross_leg(leg, trade, ctx)
+        legs.append(fixed)
+        if flag is not None:
+            flags.add(flag)
+    if all(a is b for a, b in zip(legs, trade.legs, strict=True)):
+        return trade, tuple(sorted(flags))
+    if isinstance(trade, FxCrossSwap):
+        trade = replace(trade, near=legs[0], far=legs[1])
+    else:
+        trade = replace(trade, leg=legs[0])
+    return trade, tuple(sorted(flags))
 
 
 def _fx_cross_engine(
@@ -1330,13 +1401,16 @@ def _fx_cross_engine(
     trade = instrument.trade
     _check_position(position, instrument.currency)
     calendar = ctx.calendar(instrument.calendar_id)
+    trade, flags = _fixed_cross_trade(trade, ctx)
     for leg in trade.legs:
-        if leg.value_date < ctx.business_date or leg.settlement_date < ctx.business_date:
+        if leg.settlement_date < ctx.business_date or (
+            not leg.is_fixed and leg.value_date < ctx.business_date
+        ):
             raise SettledLeg(
                 f"{trade.trade_id}: a leg settled on {leg.value_date.isoformat()}; value only "
                 "outstanding legs (FxCrossSwap.far_leg_forward)"
             )
-        if not calendar.is_business_day(leg.value_date):
+        if not leg.is_fixed and not calendar.is_business_day(leg.value_date):
             raise InvalidTerms(
                 f"{trade.trade_id}: value date {leg.value_date.isoformat()} is not a business "
                 f"day of settlement calendar {instrument.calendar_id}"
@@ -1386,6 +1460,7 @@ def _fx_cross_engine(
         (bases[0], bases[1]),
         (ids[0], ids[1]),
         (fallbacks[0], fallbacks[1]),
+        flags,
     )
 
 
@@ -1408,6 +1483,9 @@ def value_fx_cross(position: Position, instrument: object, ctx: ProductContext) 
             base_notional=leg.base_notional * q,
             quote_notional=leg.quote_notional * q,
             pv_rub=_money(leg.pv_rub * q, "leg PV"),
+            settlement_amount=None
+            if leg.settlement_amount is None
+            else _money(leg.settlement_amount * q, "settlement amount"),
         )
         for leg in risk.legs
     )
@@ -1464,7 +1542,7 @@ def value_fx_cross(position: Position, instrument: object, ctx: ProductContext) 
         )
         return _money(engine.reprice(shock).total_pnl_rub * q, "FX cross scenario P&L")
 
-    flags = ["covered_parity", "fx_cross"]
+    flags = ["covered_parity", "fx_cross", *setup.flags]
     if any(f is not None for f in setup.fallbacks):
         flags.append("curve_fallback")
     curves = (engine.request.base_curve, engine.request.quote_curve)
