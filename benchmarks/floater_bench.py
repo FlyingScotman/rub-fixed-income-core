@@ -16,6 +16,9 @@ each in the modes ``first`` (PV, spread, first-order factors) and ``hessian``.
 Run from the repository root::
 
     uv run python benchmarks/floater_bench.py --positions 2000
+    uv run python benchmarks/floater_bench.py --positions 2000 --copies 40
+
+``--copies N`` holds every floater in N positions (see ``portfolio_bench.py``).
 """
 
 from __future__ import annotations
@@ -31,7 +34,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from portfolio_bench import AS_OF, BUSINESS_DATE, kbd_parameters, ois_request
+from portfolio_bench import AS_OF, BUSINESS_DATE, held_in_copies, kbd_parameters, ois_request
 
 from rub_fixed_income import (
     AccountingCategory,
@@ -107,12 +110,13 @@ def key_projection() -> CurveEntry:
 
 
 def book(
-    size: int, case: str
+    size: int, case: str, copies: int = 1
 ) -> tuple[list[Instrument], list[Position], list[BondPriceObservation]]:
+    """``size`` positions in ``ceil(size / copies)`` distinct floaters."""
     instruments, positions, quotes = [], [], []
     projection = {"ois": "RUB_OIS", "kbd+ois": "RUB_OIS", "kbd+key": "RUB_KEY"}[case]
     index = "key_rate" if case == "kbd+key" else "ruonia"
-    for i in range(size):
+    for i in range(-(-size // copies)):
         years = 1 + i % 7
         first = add_months(date(2026, 8, 20), -(i % 3)) + timedelta(days=i % 17)
         averaging = "arithmetic" if index == "key_rate" or i % 2 else "compounded"
@@ -165,7 +169,7 @@ def book(
                 instrument_id, 99.0 + (i % 11) * 0.2, "waprice", accrued_per_bond=4.0 + i % 7
             )
         )
-    return instruments, positions, quotes
+    return instruments, held_in_copies(positions, copies)[:size], quotes
 
 
 @dataclass(frozen=True)
@@ -181,8 +185,8 @@ class Timing:
         return 1000.0 * self.seconds / self.positions
 
 
-def run_case(case: str, mode: str, size: int) -> Timing:
-    instruments, positions, quotes = book(size, case)
+def run_case(case: str, mode: str, size: int, copies: int = 1) -> Timing:
+    instruments, positions, quotes = book(size, case, copies)
     ruonia, key = histories()
     snapshot = MarketSnapshot(
         f"floater-bench-{BUSINESS_DATE}",
@@ -221,17 +225,21 @@ def run_case(case: str, mode: str, size: int) -> Timing:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--positions", type=int, default=2000)
+    parser.add_argument("--copies", type=int, default=1, help="positions per floater")
     parser.add_argument("--json", type=Path, help="also write the timings as JSON")
     args = parser.parse_args(argv)
     size = args.positions
+    if args.copies < 1:
+        parser.error("--copies must be at least 1")
     timings = [
-        run_case(case, mode, size)
+        run_case(case, mode, size, args.copies)
         for case in ("ois", "kbd+ois", "kbd+key")
         for mode in ("first", "hessian")
     ]
     print(
         f"rub-fixed-income-core {__version__}, Python {platform.python_version()}, "
         f"{platform.system()} {platform.machine()}, {size} floater positions"
+        + (f" ({args.copies} per floater)" if args.copies > 1 else "")
     )
     print("| curves | mode | computed | total s | ms/position |")
     print("|---|---|---|---|---|")

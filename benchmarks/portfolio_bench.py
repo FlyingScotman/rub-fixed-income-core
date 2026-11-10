@@ -35,6 +35,11 @@ Run from the repository root::
     uv run python benchmarks/portfolio_bench.py --positions 2000 --cases mixed
     uv run python benchmarks/portfolio_bench.py --positions 50 --cases ruonia
     uv run python benchmarks/portfolio_bench.py --positions 2000 --cases kbd3,ofzbasis
+    uv run python benchmarks/portfolio_bench.py --positions 2000 --copies 40 --cases kbd,ois
+
+``--copies N`` holds every bond in N positions (other quantities and books; 2000 positions of
+50 bonds with 40): ``value_portfolio`` calibrates and differentiates the risk engine once per
+instrument and scales it by each quantity. The ``mixed`` case ignores it.
 
 The numbers are machine-dependent; the target is <= 10 ms per position amortised
 for OIS with the Hessian at 2k positions.
@@ -167,11 +172,29 @@ def foreign_curve(rate: float) -> DiscountCurve:
     return DiscountCurve(BUSINESS_DATE, nodes)
 
 
+def held_in_copies(positions: list[Position], copies: int) -> list[Position]:
+    """Every position again for each of ``copies`` holdings: other quantity (every fourth
+    short) and book, the same instrument."""
+    if copies == 1:
+        return positions
+    return [
+        replace(
+            p,
+            position_id=f"{p.position_id}-{k:03d}",
+            quantity=(p.quantity + 7.0 * k) * (-1.0 if k % 4 == 3 else 1.0),
+            book=f"BOOK{k % 5}",
+        )
+        for k in range(copies)
+        for p in positions
+    ]
+
+
 def book(
-    size: int, currencies: tuple[str, ...] = ("RUB",)
+    size: int, currencies: tuple[str, ...] = ("RUB",), copies: int = 1
 ) -> tuple[list[Instrument], list[Position], list[BondPriceObservation]]:
+    """``size`` positions in ``ceil(size / copies)`` distinct bonds."""
     instruments, positions, quotes = [], [], []
-    for i in range(size):
+    for i in range(-(-size // copies)):
         currency = currencies[i % len(currencies)]
         years = 1 + i % 15
         first = add_months(date(2026, 4, 15), -(i % 6))
@@ -222,7 +245,7 @@ def book(
             )
         )
         quotes.append(BondPriceObservation(instrument_id, 95.0 + (i % 11) * 0.5, "waprice"))
-    return instruments, positions, quotes
+    return instruments, held_in_copies(positions, copies)[:size], quotes
 
 
 def mixed_case(mode: str, size: int) -> Timing:
@@ -286,11 +309,13 @@ class Timing:
 
 
 def run_case(
-    curve: str, mode: str, size: int, cache: ShockedCurveCache | None = None
+    curve: str, mode: str, size: int, cache: ShockedCurveCache | None = None, copies: int = 1
 ) -> tuple[Timing, ShockedCurveCache]:
     foreign = curve == "fx"
     v3 = curve in ("kbd3", "ofzbasis", "ofzbasis-bump")
-    instruments, positions, quotes = book(size, tuple(sorted(FOREIGN)) if foreign else ("RUB",))
+    instruments, positions, quotes = book(
+        size, tuple(sorted(FOREIGN)) if foreign else ("RUB",), copies
+    )
     snapshot = MarketSnapshot(
         f"bench-{BUSINESS_DATE}",
         BUSINESS_DATE,
@@ -343,6 +368,9 @@ def run_case(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--positions", type=int, default=2000)
+    parser.add_argument(
+        "--copies", type=int, default=1, help="positions per bond (the mixed case ignores it)"
+    )
     parser.add_argument("--json", type=Path, help="also write the timings as JSON")
     parser.add_argument(
         "--cases",
@@ -351,6 +379,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     size = args.positions
+    if args.copies < 1:
+        parser.error("--copies must be at least 1")
     cases = tuple(c.strip() for c in args.cases.split(",") if c.strip())
     timings = []
     for curve in cases:
@@ -358,16 +388,17 @@ def main(argv: list[str] | None = None) -> int:
             if curve == "mixed":
                 timings.append(mixed_case(mode, size))
                 continue
-            timing, cache = run_case(curve, mode, size)
+            timing, cache = run_case(curve, mode, size, copies=args.copies)
             timings.append(timing)
             if curve in ("ois", "ruonia") and mode == "hessian":
                 warm_cache = ShockedCurveCache()
                 warm_cache.seed(cache.export())
-                warm, _ = run_case(curve, "warm", size, warm_cache)
+                warm, _ = run_case(curve, "warm", size, warm_cache, args.copies)
                 timings.append(warm)
     print(
         f"rub-fixed-income-core {__version__}, Python {platform.python_version()}, "
         f"{platform.system()} {platform.machine()}, {size} positions"
+        + (f" ({args.copies} per bond)" if args.copies > 1 else "")
     )
     print("| curve | mode | computed | total s | ms/position |")
     print("|---|---|---|---|---|")
