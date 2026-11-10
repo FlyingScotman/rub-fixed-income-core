@@ -10,10 +10,11 @@ from the discount curve; both then carry their own 11 bucket factors.
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
-from dataclasses import dataclass, field
+import struct
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field, fields
 from datetime import date
-from typing import Literal, cast
+from typing import Literal, TypeVar, cast
 
 from ._money import finite_money, non_negative_money, positive_money
 from ._quote_curves import QuoteCurve
@@ -31,6 +32,7 @@ from ._risk_common import (
     _curve_basis,
     _curve_identity,
     _overlay_shifts,
+    _scale_derivatives,
     _shifts,
     _shock_curve,
     _snapshot_curve,
@@ -90,6 +92,35 @@ ANALYTIC_RISK_MODEL_VERSION = "rub-fixed-cashflow-risk-analytic-v1"
 # Bounds on the per-engine memo of re-projected coupons (memory only, never numbers).
 _COUPON_MEMO_SIZE = 65_536
 _CURVE_MEMO_SIZE = 1024
+
+
+_T = TypeVar("_T")
+
+# Prices a job may hold for engines that share them (``_EngineFamilies``): memory only.
+_PRICE_MEMO_ROOM = 200_000
+
+
+class _FamilyMemo:
+    """What the engines of one instrument (they differ only in quantity) have computed.
+
+    A price is a pure function of the shocks once the engine is calibrated, so a sibling that
+    asks for a price its donor already computed gets the same float back; so does a closed-form
+    risk, which is per bond and meets the quantity only afterwards. Price keys are the exact
+    bytes of the shocks (a signed zero is not another zero's twin). ``room`` is shared by the
+    memos of a job: when it is used up prices are simply recomputed.
+    """
+
+    __slots__ = ("prices", "room", "units")
+
+    def __init__(self, room: list[int]) -> None:
+        self.prices: dict[bytes, float] = {}
+        self.units: dict[str, object] = {}
+        self.room = room
+
+    def clear(self) -> None:
+        self.room[0] += len(self.prices)
+        self.prices.clear()
+        self.units.clear()
 
 
 @dataclass(frozen=True)
@@ -342,6 +373,7 @@ class BondRiskEngine:
     _coupon_memo: dict[object, object] = field(
         init=False, repr=False, compare=False, default_factory=dict
     )
+    _family_memo: _FamilyMemo | None = field(init=False, repr=False, compare=False, default=None)
 
     def __post_init__(self) -> None:
         req = self.request
@@ -379,6 +411,11 @@ class BondRiskEngine:
             price, req.dirty_price_rub, rel_tol=1e-10, abs_tol=1e-8
         ):
             raise ValueError("base spread calibration failed to reprice the dirty price")
+        object.__setattr__(self, "base_id", self._identity_id(spread))
+
+    def _identity_id(self, spread: float) -> str:
+        """The ``base_id``: the hash of the inputs, the calibrated spread and the quantity."""
+        req = self.request
         identity: dict[str, object] = {
             "model": self.model_version,
             "curve_basis": self.curve_basis,
@@ -402,7 +439,7 @@ class BondRiskEngine:
             identity["projection_curve"] = _curve_identity(req.projection_curve)
         if req.perpetual_tail is not None:
             identity["perpetual_tail"] = req.perpetual_tail
-        object.__setattr__(self, "base_id", canonical_sha256(identity))
+        return canonical_sha256(identity)
 
     @property
     def curve_basis(self) -> str:
@@ -412,6 +449,45 @@ class BondRiskEngine:
     def two_curve(self) -> bool:
         """Whether coupons project off a curve separate from the discount curve."""
         return self.request.projection_curve is not None
+
+    def _shared(self, key: str, build: Callable[[], _T]) -> _T:
+        """``build()``, computed once for the engines of one instrument (they differ only in
+        quantity, which the caller applies afterwards)."""
+        memo = self._family_memo
+        if memo is None:
+            return build()
+        hit = memo.units.get(key)
+        if hit is None:
+            hit = memo.units[key] = build()
+        return cast(_T, hit)
+
+    def _same_inputs_but_quantity(
+        self, request: BondRiskRequest, curve_cache: ShockedCurveCache
+    ) -> bool:
+        """Whether an engine for ``request`` would be this one with another quantity."""
+        if curve_cache is not self.curve_cache:
+            return False
+        mine = self.request
+        for spec in fields(BondRiskRequest):
+            if spec.name == "quantity":
+                continue
+            ours, theirs = getattr(mine, spec.name), getattr(request, spec.name)
+            if ours is not theirs and ours != theirs:
+                return False
+        return True
+
+    def _sibling(self, request: BondRiskRequest) -> BondRiskEngine:
+        """This engine for ``request``, which differs from its own request only in quantity.
+
+        Everything calibrated (projected coupons, the base spread and price, the re-projection
+        plan and memos) depends on the other inputs alone and is shared; the quantity enters
+        only where the results multiply by it and in the identity, which is hashed again.
+        """
+        clone = object.__new__(type(self))
+        clone.__dict__.update(self.__dict__)
+        object.__setattr__(clone, "request", request)
+        object.__setattr__(clone, "base_id", clone._identity_id(self.spread_bp))
+        return clone
 
     def spread_bucket_risk(
         self, *, bump_bp: float = 1.0, risk: BondRiskResult | None = None
@@ -620,6 +696,33 @@ class BondRiskEngine:
         Single-curve, the shocked discount curve also projects and
         ``projection_shifts`` is ignored; two-curve, they shift the projection curve.
         """
+        memo = self._family_memo
+        if memo is None:
+            return self._compute_price(shifts, spread_shift, projection_shifts)
+        try:
+            key = struct.pack(
+                f"{len(shifts) + len(projection_shifts) + 2}d",
+                len(shifts),
+                *shifts,
+                spread_shift,
+                *projection_shifts,
+            )
+        except (struct.error, TypeError):
+            return self._compute_price(shifts, spread_shift, projection_shifts)
+        price = memo.prices.get(key)
+        if price is None:
+            price = self._compute_price(shifts, spread_shift, projection_shifts)
+            if memo.room[0] > 0:
+                memo.prices[key] = price
+                memo.room[0] -= 1
+        return price
+
+    def _compute_price(
+        self,
+        shifts: tuple[float, ...],
+        spread_shift: float,
+        projection_shifts: tuple[float, ...],
+    ) -> float:
         try:
             curve = self._shocked_curve(shifts)
             source = self.request.projection_curve
@@ -883,13 +986,22 @@ class BondRiskEngine:
         size = count + 1 + (count if self.two_curve else 0)
 
         def price(moves: list[float]) -> float:
+            # Straight to the pricer: the engines of an instrument share the differences, not
+            # the thousand prices behind them.
             if self.two_curve:
-                return self._price(tuple(moves[:count]), moves[-1], tuple(moves[count : 2 * count]))
-            return self._price(tuple(moves[:-1]), moves[-1])
+                return self._compute_price(
+                    tuple(moves[:count]), moves[-1], tuple(moves[count : 2 * count])
+                )
+            return self._compute_price(tuple(moves[:-1]), moves[-1], _ZERO_SHOCK)
 
-        gradient, hessian = _central_derivatives(
-            price, size, bump, self.base_price_rub, self.request.quantity
+        # The differences are per bond; the quantity multiplies them afterwards, as it did
+        # inside the difference formulas (``x * 1.0`` is ``x``), so engines of one instrument
+        # compute them once.
+        unit_gradient, unit_hessian = self._shared(
+            f"second_order:{bump!r}",
+            lambda: _central_derivatives(price, size, bump, self.base_price_rub, 1.0),
         )
+        gradient, hessian = _scale_derivatives(unit_gradient, unit_hessian, self.request.quantity)
         rates = (
             (*(f"discount {b}" for b in RISK_BUCKETS), *(f"projection {b}" for b in RISK_BUCKETS))
             if self.two_curve
@@ -989,6 +1101,49 @@ class BondRiskEngine:
                 exact.total_pnl_rub - approximate, "approximation residual"
             ),
         )
+
+
+class _EngineFamilies:
+    """The risk engines of one valuation job, shared by the positions in the same instrument.
+
+    Positions in one instrument have the same cash flows, curve and price and differ in
+    quantity (and book), so one calibration serves them all and a price that one engine has
+    computed is not computed again for the next. ``counts`` is the number of positions per
+    key; only keys with several get a shared engine. Results are those of an engine built for
+    each position: ``engine`` returns a fresh one whenever the request is not the donor's own
+    but for the quantity.
+    """
+
+    def __init__(self, counts: Mapping[str, int]) -> None:
+        self._left = {key: n for key, n in counts.items() if n > 1}
+        self._donors: dict[str, BondRiskEngine] = {}
+        self._room = [_PRICE_MEMO_ROOM]
+
+    def engine(
+        self, key: str, request: BondRiskRequest, curve_cache: ShockedCurveCache
+    ) -> BondRiskEngine:
+        if key not in self._left:
+            return BondRiskEngine(request, curve_cache)
+        donor = self._donors.get(key)
+        if donor is not None and donor._same_inputs_but_quantity(request, curve_cache):
+            return donor._sibling(request)
+        engine = BondRiskEngine(request, curve_cache)
+        object.__setattr__(engine, "_family_memo", _FamilyMemo(self._room))
+        self._donors[key] = engine
+        return engine
+
+    def done(self, key: str) -> None:
+        """One position in ``key`` is finished; after the last, the prices held for it go."""
+        left = self._left.get(key)
+        if left is None:
+            return
+        if left > 1:
+            self._left[key] = left - 1
+            return
+        del self._left[key]
+        donor = self._donors.pop(key, None)
+        if donor is not None and donor._family_memo is not None:
+            donor._family_memo.clear()
 
 
 def _agreement_date(base: DiscountCurve, shocked: DiscountFactorCurve) -> date | None:

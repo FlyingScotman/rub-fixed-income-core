@@ -491,6 +491,22 @@ def _central_derivatives(
     return tuple(gradient), tuple(tuple(row) for row in hessian)
 
 
+def _scale_derivatives(
+    gradient: tuple[float, ...], hessian: tuple[tuple[float, ...], ...], quantity: float
+) -> tuple[tuple[float, ...], tuple[tuple[float, ...], ...]]:
+    """The output of :func:`_central_derivatives` for ``quantity`` bonds from its output for one
+    (``quantity=1.0``): each entry is the same product the helper forms, checked in its order."""
+    size = len(gradient)
+    scaled = [[0.0] * size for _ in range(size)]
+    gradient_out = []
+    for i in range(size):
+        gradient_out.append(finite_money(gradient[i] * quantity, "gradient"))
+        scaled[i][i] = finite_money(hessian[i][i] * quantity, "diagonal gamma")
+        for j in range(i):
+            scaled[i][j] = scaled[j][i] = finite_money(hessian[i][j] * quantity, "cross gamma")
+    return tuple(gradient_out), tuple(tuple(row) for row in scaled)
+
+
 def _curve_identity(curve: DiscountCurve | CurveBootstrapRequest | QuoteCurve) -> _Canonical:
     # Converted once per curve object and reused by every position's identity hash;
     # the canonical bytes are those of the plain payload.

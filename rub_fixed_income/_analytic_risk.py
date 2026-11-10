@@ -125,6 +125,18 @@ def analytic_second_order(
 ) -> tuple[tuple[float, ...], tuple[tuple[float, ...], ...]]:
     """Gradient (RUB/bp) and Hessian (RUB/bp^2) over 11 buckets and the spread, signed by
     quantity, in the engine curve's basis."""
+    g_x, g_z, base = engine._shared("second_order", lambda: _second_order_per_bond(engine))
+    q = engine.request.quantity
+    gradient = (*(float(v) * q for v in g_x), g_z * q)
+    full = base * q
+    return gradient, tuple(tuple(float(v) for v in row) for row in full)
+
+
+def _second_order_per_bond(
+    engine: BondRiskEngine,
+) -> tuple[np.ndarray, float, np.ndarray]:
+    """The gradient over the buckets, the gradient over the spread and the full Hessian,
+    all per bond: ``analytic_second_order`` before it is signed by quantity."""
     reason = supports_analytic(engine)
     if reason is not None:
         raise InvalidTerms(reason)
@@ -167,19 +179,20 @@ def analytic_second_order(
         h_xx = np.zeros((_N, _N))
         h_xx[PAR_FIRST_BUCKET:, PAR_FIRST_BUCKET:] = h_q
         h_xz = np.concatenate((np.zeros(PAR_FIRST_BUCKET), h_qz))
-    q = req.quantity
-    gradient = (*(float(v) * q for v in g_x), g_z * q)
     full = np.zeros((_N + 1, _N + 1))
     full[:_N, :_N] = (h_xx + h_xx.T) / 2.0
     full[:_N, _N] = full[_N, :_N] = h_xz
     full[_N, _N] = h_zz
-    full *= q
-    return gradient, tuple(tuple(float(v) for v in row) for row in full)
+    return g_x, g_z, full
 
 
 def analytic_risk(engine: BondRiskEngine) -> tuple[tuple[float, ...], float]:
     """Per-bond gradient (RUB/bp, not signed by quantity) over the 11 buckets in the engine
     curve's basis, and over the spread: the first order of :func:`analytic_second_order`."""
+    return engine._shared("risk", lambda: _risk_per_bond(engine))
+
+
+def _risk_per_bond(engine: BondRiskEngine) -> tuple[tuple[float, ...], float]:
     reason = supports_analytic(engine)
     if reason is not None:
         raise InvalidTerms(reason)
