@@ -22,8 +22,8 @@ frozen position type. `value_portfolio(instruments=...)` takes any mix
 | Type | Wraps | Market data it names |
 |---|---|---|
 | `SwapInstrument(instrument_id, swap, calendar_id, discount_curve_id, projection_curve_id=None, fixing_id=None)` | `swaps.InterestRateSwap` (legs on their own dates with `fixed_*` / `float_*` dates, 0.44.0) | schedule calendar; RUB discount curve; RUONIA projection curve (None: single curve) or, for a key-rate swap (required), a `rub_key_rate_swap_v1` curve; the fixing history |
-| `FxForwardInstrument(instrument_id, trade, rub_curve_id, foreign_curve_id)` | `FxForward` or `FxSwap` (any currency against RUB; NDF legs with fixings, 0.36.0) | RUB curve, foreign curve; the snapshot `FxSpot` and `FxBasis` of the currency; `FxFixing`s of NDF legs whose fixing date has come |
-| `FxCrossInstrument(instrument_id, trade, rub_curve_id, base_curve_id, quote_curve_id, calendar_id)` | `fx_crosses.FxCrossForward` or `FxCrossSwap` (0.36.0: two foreign currencies, e.g. USD/CNY) | RUB curve, a curve per currency; the `FxSpot` and `FxBasis` of each currency; the cross's settlement calendar |
+| `FxForwardInstrument(instrument_id, trade, rub_curve_id, foreign_curve_id)` | `FxForward` or `FxSwap` (any currency against RUB; NDF legs with fixings, 0.36.0; settled in the foreign currency, 0.45.0) | RUB curve, foreign curve; the snapshot `FxSpot` and `FxBasis` of the currency; `FxFixing`s of NDF legs whose fixing date has come |
+| `FxCrossInstrument(instrument_id, trade, rub_curve_id, base_curve_id, quote_curve_id, calendar_id)` | `fx_crosses.FxCrossForward` or `FxCrossSwap` (0.36.0: two foreign currencies, e.g. USD/CNY; NDF legs settled in either currency, 0.45.0) | RUB curve, a curve per currency; the `FxSpot` and `FxBasis` of each currency; the cross's settlement calendar; both currencies' `FxFixing`s of NDF legs whose fixing date has come |
 | `XccyInstrument(instrument_id, swap, rub_discount_curve_id, foreign_discount_curve_id, rub_projection_curve_id=None, foreign_projection_curve_id=None, rub_fixing_id=None, foreign_fixing_id=None, rub_key_rate_curve_id=None)` | `xccy.XccySwap` | a curve per role; RUB-leg fixings (RUONIA, key rate, or index fixings of another RUB index), foreign index fixings; `rub_key_rate_curve_id` (a `rub_key_rate_swap_v1` forward curve) for the horizon of a key-rate RUB leg; `FxSpot`, `FxBasis` |
 | `CdsInstrument(instrument_id, contract, discount_curve_id)` | `cds.CdsContract` | the discount curve of the contract currency; the snapshot `CreditCurveEntry` of (reference entity, currency); `FxRate` for a non-RUB contract |
 | `FxFuturesInstrument(instrument_id, contract, rub_curve_id, foreign_curve_id, basis_day_count=ACT_365_FIXED)` | `fx_futures.FxFuturesContract` | both curves, `FxSpot`, the snapshot `FuturesQuote` |
@@ -87,6 +87,22 @@ snapshot's (`INVALID_TERMS` otherwise). A fixed leg is outstanding until its pay
 date, even when its value date (the date the fixing rate is the spot for) has passed.
 `fx_forwards.NdfConvention(fixing_source, fixing_lag_days, value_lag_days)` derives the
 dates from the confirmation's lags; core assumes no source or lag.
+
+**NDFs settled in a foreign currency and cross NDFs (0.45.0, BACKLOG #135).** A leg's
+`settlement_currency` may be the foreign currency of an `FxForwardInstrument` (fixed from
+`fx_fixings` as above; a fixed leg is a known foreign amount with FX delta, risk on the
+foreign curve and basis, plus the spot-date terms of converting at spot when the spot date follows the
+curve date) or the base or quote currency of an `FxCrossInstrument`. A cross leg is
+fixed from the base and the quote currency's `fx_fixings` of its `fixing_source` on its
+fixing date, `quote_units * R_base / R_quote`; a direct cross fixing goes in `fixing_rate`
+and must agree with the snapshot's (`INVALID_TERMS`); pending and missing fixings as above
+(the message names the currency whose fixing is missing). A fixed cross leg is outstanding until its payment
+date. A cross NDF settled in RUB takes both: `fixing_rate = quote_units * R_base / R_quote`
+and `settlement_fixing_rate = R_quote`, then a known RUB amount (one fixing missing:
+`MISSING_MARKET_DATA` naming it). Leg rows carry
+`settlement_currency` and `settlement_amount` (scaled by the quantity; omitted for RUB, but
+for a fixed RUB-settled cross the known RUB amount, with `settlement_fixing_rate`).
+See [fx-forwards.md](fx-forwards.md#ndfs-settled-in-a-foreign-currency-and-cross-ndfs-backlog-135).
 
 **Dating of key-rate curves (BACKLOG #55).** `build_key_rate_forward_curve` dates its
 curve at the KRS start (TOM) and needs a TOM-dated discount curve; the portfolio values

@@ -25,6 +25,9 @@ NDFs (0.36.0, BACKLOG #49): a cash-settled leg names its fixing (``fixing_date``
 ``N / q * (fixing - K) * DF_rub(P)``: no FX delta, no foreign-curve or basis risk, only
 the RUB discounting to the payment date. :class:`NdfConvention` derives the fixing and
 value dates from the payment date (or back) by the confirmation's business-day lags.
+A leg settled in the foreign currency (0.45.0, ``FxForwardLeg.settlement_currency``, an
+offshore NDF paying ``N * (1 - K / fixing)`` foreign units) is the deliverable exchange at
+``T`` carried to ``P`` on the foreign curve, and once fixed a known foreign amount.
 ``points_held_rub_risk`` (BACKLOG #46) gives the RUB curve risk with every outright
 held, the alternative to the default where the foreign curve is held and the points move.
 """
@@ -591,7 +594,7 @@ def _text(value: object, label: str) -> str:
     return value
 
 
-def _foreign_currency(value: object) -> str:
+def _currency_code(value: object, label: str = "currency") -> str:
     if (
         not isinstance(value, str)
         or len(value) != 3
@@ -599,10 +602,15 @@ def _foreign_currency(value: object) -> str:
         or not value.isalpha()
         or not value.isupper()
     ):
-        raise InvalidTerms("currency must be a three-letter upper-case ISO code")
-    if value == "RUB":
-        raise InvalidTerms("an FX forward needs a foreign currency, not RUB")
+        raise InvalidTerms(f"{label} must be a three-letter upper-case ISO code")
     return value
+
+
+def _foreign_currency(value: object) -> str:
+    code = _currency_code(value)
+    if code == "RUB":
+        raise InvalidTerms("an FX forward needs a foreign currency, not RUB")
+    return code
 
 
 @dataclass(frozen=True)
@@ -625,6 +633,19 @@ class FxForwardLeg:
     - ``fixing_rate``: the published fixing, in the trade's quote units (RUB per ``q``
       foreign units, as ``contract_rate``). With it the leg pays the known
       ``N / q * (fixing_rate - K)`` on the payment date.
+
+    Settlement currency (0.45.0, BACKLOG #135, omitted at None), only on a cash-settled
+    leg: ``settlement_currency`` is the currency the leg pays in. ``None`` (or ``"RUB"``,
+    stored as ``None``) is RUB, as before; the foreign currency of an X/RUB trade pays
+    ``N * (1 - K / fixing)`` foreign units (an offshore NDF); a cross leg may settle in
+    its base or quote currency (``fx_crosses``). Under covered parity the leg is worth
+    the deliverable exchange at its value date carried to the payment date on the
+    settlement currency's curve.
+
+    ``settlement_fixing_rate`` (0.45.0, omitted at None) belongs only to a fixed cross leg
+    settled in RUB: the quote currency's RUB fixing (RUB per one unit, same source and
+    date as ``fixing_rate``) that converts its ``N / q * (fixing_rate - K)`` quote units
+    into RUB (``fx_crosses``).
     """
 
     value_date: date
@@ -634,6 +655,8 @@ class FxForwardLeg:
     fixing_date: date | None = field(default=None, metadata=OMIT_IF_DEFAULT)
     fixing_source: str | None = field(default=None, metadata=OMIT_IF_DEFAULT)
     fixing_rate: float | None = field(default=None, metadata=OMIT_IF_DEFAULT)
+    settlement_currency: str | None = field(default=None, metadata=OMIT_IF_DEFAULT)
+    settlement_fixing_rate: float | None = field(default=None, metadata=OMIT_IF_DEFAULT)
 
     def __post_init__(self) -> None:
         if not isinstance(self.value_date, date):
@@ -646,6 +669,27 @@ class FxForwardLeg:
         object.__setattr__(self, "notional_foreign", notional)
         object.__setattr__(self, "contract_rate", positive_money(self.contract_rate, "rate"))
         self._check_fixing()
+        self._check_settlement()
+
+    def _check_settlement(self) -> None:
+        if self.settlement_fixing_rate is not None:
+            if self.fixing_rate is None:
+                raise InvalidTerms("a settlement_fixing_rate needs the leg's fixing_rate")
+            object.__setattr__(
+                self,
+                "settlement_fixing_rate",
+                positive_money(self.settlement_fixing_rate, "settlement fixing rate"),
+            )
+        if self.settlement_currency is None:
+            return
+        _currency_code(self.settlement_currency, "settlement_currency")
+        if self.settlement_currency == "RUB":
+            object.__setattr__(self, "settlement_currency", None)
+            return
+        if self.payment_date is None:
+            raise InvalidTerms("a settlement currency belongs to a cash-settled leg (payment_date)")
+        if self.settlement_fixing_rate is not None:
+            raise InvalidTerms("a settlement_fixing_rate belongs to a leg settled in RUB")
 
     def _check_fixing(self) -> None:
         if self.fixing_date is None and self.fixing_source is None and self.fixing_rate is None:
@@ -754,8 +798,11 @@ class NdfConvention:
         contract_rate: float,
         *,
         fixing_rate: float | None = None,
+        settlement_currency: str | None = None,
+        settlement_fixing_rate: float | None = None,
     ) -> FxForwardLeg:
-        """The cash-settled :class:`FxForwardLeg` on ``dates`` with this source."""
+        """The cash-settled :class:`FxForwardLeg` on ``dates`` with this source
+        (``settlement_currency`` and ``settlement_fixing_rate``: 0.45.0, ``None`` = RUB)."""
         return FxForwardLeg(
             dates.value_date,
             notional_foreign,
@@ -764,7 +811,21 @@ class NdfConvention:
             fixing_date=dates.fixing_date,
             fixing_source=self.fixing_source,
             fixing_rate=fixing_rate,
+            settlement_currency=settlement_currency,
+            settlement_fixing_rate=settlement_fixing_rate,
         )
+
+
+def _check_rub_pair_settlement(currency: str, legs: Sequence[FxForwardLeg]) -> None:
+    for leg in legs:
+        if leg.settlement_fixing_rate is not None:
+            raise InvalidTerms(
+                f"a {currency}/RUB leg takes no settlement_fixing_rate (a RUB-settled cross only)"
+            )
+        if leg.settlement_currency not in (None, currency):
+            raise InvalidTerms(
+                f"a {currency}/RUB leg settles in RUB or {currency}, not {leg.settlement_currency}"
+            )
 
 
 @dataclass(frozen=True)
@@ -785,6 +846,7 @@ class FxForward:
         _foreign_currency(self.currency)
         if not isinstance(self.leg, FxForwardLeg):
             raise TypeError("leg must be an FxForwardLeg")
+        _check_rub_pair_settlement(self.currency, self.legs)
         object.__setattr__(self, "quote_units", positive_money(self.quote_units, "quote units"))
 
     @property
@@ -815,6 +877,7 @@ class FxSwap:
             raise InvalidTerms("the far leg must settle after the near leg")
         if (self.near.notional_foreign > 0.0) == (self.far.notional_foreign > 0.0):
             raise InvalidTerms("near and far legs of an FX swap must have opposite signs")
+        _check_rub_pair_settlement(self.currency, self.legs)
         object.__setattr__(self, "quote_units", positive_money(self.quote_units, "quote units"))
 
     @property
@@ -900,7 +963,14 @@ class FxForwardBucketRisk:
 @dataclass(frozen=True)
 class FxForwardLegValuation:
     """One leg. A fixed NDF leg (0.36.0) reports its ``fixing_date`` and ``fixing_rate``
-    (both omitted at None) and its ``forward_rate`` is the fixing."""
+    (both omitted at None) and its ``forward_rate`` is the fixing.
+
+    A leg settled in the foreign currency (0.45.0, both omitted at None) reports its
+    ``settlement_currency`` and ``settlement_amount``: the foreign units it pays on
+    ``payment_date``, ``N * (1 - K / F)`` at the projected ``forward_rate`` ``F`` or the
+    known amount once fixed. Its ``pv_rub`` is that amount's value, discounted on the
+    foreign curve; ``rub_discount_factor`` stays ``DF_rub(payment_date)``.
+    """
 
     value_date: date
     payment_date: date
@@ -912,6 +982,8 @@ class FxForwardLegValuation:
     pv_rub: float
     fixing_date: date | None = field(default=None, metadata=OMIT_IF_DEFAULT)
     fixing_rate: float | None = field(default=None, metadata=OMIT_IF_DEFAULT)
+    settlement_currency: str | None = field(default=None, metadata=OMIT_IF_DEFAULT)
+    settlement_amount: float | None = field(default=None, metadata=OMIT_IF_DEFAULT)
 
 
 @dataclass(frozen=True)
@@ -924,7 +996,8 @@ class FxForwardPointsHeldRisk:
     the discounting of each leg's ``N / q * (F - K)`` to its payment date is left, so an
     at-market forward has almost none. The default risk (``risk``) holds the foreign
     curve instead and lets the points move; foreign-curve, basis and spot risk are the
-    same in both. Fixed NDF legs read only the RUB curve and are identical in both.
+    same in both. Fixed RUB-settled NDF legs read only the RUB curve and are identical
+    in both; a fixed leg settled in the foreign currency reads the foreign curve.
     """
 
     base_id: str
@@ -1085,6 +1158,8 @@ class _Leg:
     contract_rate: float
     tau: float  # basis accrual from the spot date, signed
     fixed: float | None = None  # a published NDF fixing (quote units): RUB-only leg
+    foreign_settled: bool = False  # an NDF paying N * (1 - K / fixing) foreign units
+    payment_tau: float = 0.0  # basis accrual to the payment date (foreign-settled legs)
 
 
 @dataclass(frozen=True)
@@ -1094,6 +1169,12 @@ class FxForwardRiskEngine:
     ``PV = A - B`` with the foreign legs' RUB value ``A = sum(N/q * F(T) * DF_rub(P))``
     and the RUB legs' value ``B = sum(N/q * K * DF_rub(P))``. Share one
     ``curve_cache`` across engines on the same curves.
+
+    A leg settled in the foreign currency (0.45.0) is the deliverable exchange at ``T``
+    carried to ``P`` on the foreign curve, ``g(t) = DF_for(t) * exp(b * tau(s, t))``:
+    ``A += N/q * S * DF_rub(s) / DF_for(s) * g(P)`` and ``B += N/q * K * DF_rub(T) *
+    g(P) / g(T)``; once fixed it is the known foreign amount ``N * (1 - K / fixing)``,
+    all in ``A``. PV stays linear in spot.
     """
 
     request: FxForwardRiskRequest
@@ -1126,6 +1207,8 @@ class FxForwardRiskEngine:
                 leg.contract_rate,
                 _signed_years(req.basis_day_count, req.spot_value_date, leg.value_date),
                 leg.fixing_rate,
+                leg.settlement_currency is not None,
+                _signed_years(req.basis_day_count, req.spot_value_date, leg.settlement_date),
             )
             for leg in instrument.legs
         )
@@ -1206,7 +1289,8 @@ class FxForwardRiskEngine:
     ) -> tuple[float, float]:
         """(foreign legs' RUB PV, RUB legs' PV) on the given curves.
 
-        A fixed NDF leg is RUB only: ``N/q * (K - fixing) * DF_rub(P)`` in the second.
+        A fixed NDF leg is RUB only: ``N/q * (K - fixing) * DF_rub(P)`` in the second;
+        one settled in the foreign currency is foreign only (class doc).
         """
         req = self.request
         try:
@@ -1221,6 +1305,23 @@ class FxForwardRiskEngine:
             foreign_pv = []
             rub_pv = []
             for leg in self._legs:
+                if leg.foreign_settled:
+                    paid = foreign.discount_factor(leg.payment_date) * math.exp(
+                        basis * leg.payment_tau
+                    )
+                    if leg.fixed is not None:
+                        amount = 1.0 - leg.contract_rate / leg.fixed
+                        foreign_pv.append(leg.units * amount * spot_pv * paid)
+                        continue
+                    growth = foreign.discount_factor(leg.value_date) * math.exp(basis * leg.tau)
+                    foreign_pv.append(leg.units * spot_pv * paid)
+                    rub_pv.append(
+                        leg.units
+                        * leg.contract_rate
+                        * rub.discount_factor(leg.value_date)
+                        * (paid / growth)
+                    )
+                    continue
                 df = rub.discount_factor(leg.payment_date)
                 if leg.fixed is not None:
                     rub_pv.append(leg.units * (leg.contract_rate - leg.fixed) * df)
@@ -1251,6 +1352,9 @@ class FxForwardRiskEngine:
                 else self._forward(leg, req.spot_rate, self._rub_curve, self._foreign_curve, basis)
             )
             df = self._rub_curve.discount_factor(leg.payment_date)
+            if leg.foreign_settled:
+                rows.append(self._foreign_settled_valuation(leg, terms, forward, df, basis))
+                continue
             rows.append(
                 FxForwardLegValuation(
                     value_date=leg.value_date,
@@ -1266,6 +1370,33 @@ class FxForwardRiskEngine:
                 )
             )
         return tuple(rows)
+
+    def _foreign_settled_valuation(
+        self, leg: _Leg, terms: FxForwardLeg, forward: float, df: float, basis: float
+    ) -> FxForwardLegValuation:
+        """A leg paying ``N * (1 - K / forward)`` foreign units on its payment date."""
+        req = self.request
+        rub, foreign = self._rub_curve, self._foreign_curve
+        spot_date = req.spot_value_date
+        paid = foreign.discount_factor(leg.payment_date) * math.exp(basis * leg.payment_tau)
+        spot_pv = (
+            req.spot_rate * rub.discount_factor(spot_date) / foreign.discount_factor(spot_date)
+        )
+        amount = 1.0 - leg.contract_rate / forward
+        return FxForwardLegValuation(
+            value_date=leg.value_date,
+            payment_date=leg.payment_date,
+            notional_foreign=terms.notional_foreign,
+            contract_rate=leg.contract_rate,
+            forward_rate=forward,
+            forward_points=forward - req.spot_rate,
+            rub_discount_factor=df,
+            pv_rub=finite_money(leg.units * amount * spot_pv * paid, "leg PV"),
+            fixing_date=terms.fixing_date if leg.fixed is not None else None,
+            fixing_rate=leg.fixed,
+            settlement_currency=terms.settlement_currency,
+            settlement_amount=finite_money(terms.notional_foreign * amount, "settlement amount"),
+        )
 
     def risk(
         self, *, bump_bp: float = 1.0, difference: Literal["forward", "central"] = "forward"
@@ -1488,6 +1619,50 @@ class FxForwardRiskEngine:
             hessian_rub=tuple(tuple(row) for row in hessian),
         )
 
+    def _foreign_settled_cash(self, leg: _Leg, held: bool, basis: float) -> float:
+        """RUB received by the horizon from a foreign-settled leg: its foreign amount
+        ``N * (1 - K / FX(T))`` (or the fixed one) at ``FX(P)``, both by the horizon rule."""
+        req = self.request
+        rub, foreign = self._rub_curve, self._foreign_curve
+        spot, spot_date, day_count = req.spot_rate, req.spot_value_date, req.basis_day_count
+
+        def rate(target: date) -> float:
+            if held:
+                return spot
+            return _outright_on(spot, rub, foreign, spot_date, target, basis, day_count)
+
+        fixing = leg.fixed if leg.fixed is not None else rate(leg.value_date)
+        return leg.units * (1.0 - leg.contract_rate / fixing) * rate(leg.payment_date)
+
+    def _foreign_settled_horizon_pv(
+        self,
+        leg: _Leg,
+        horizon_spot: float,
+        horizon_spot_date: date,
+        rub_view: _HorizonView,
+        foreign_view: _HorizonView,
+    ) -> float:
+        """A foreign-settled leg paid after the horizon, at the horizon on the views."""
+        req = self.request
+        basis = req.basis_bp * 1e-4
+        day_count = req.basis_day_count
+        unit = (
+            horizon_spot
+            * rub_view.discount_factor(horizon_spot_date)
+            / foreign_view.discount_factor(horizon_spot_date)
+        )
+        paid = foreign_view.discount_factor(leg.payment_date) * math.exp(
+            basis * _signed_years(day_count, horizon_spot_date, leg.payment_date)
+        )
+        if leg.fixed is not None:
+            return leg.units * (1.0 - leg.contract_rate / leg.fixed) * unit * paid
+        growth = foreign_view.discount_factor(leg.value_date) * math.exp(
+            basis * _signed_years(day_count, horizon_spot_date, leg.value_date)
+        )
+        return leg.units * unit * paid - leg.units * leg.contract_rate * rub_view.discount_factor(
+            leg.value_date
+        ) * (paid / growth)
+
     def horizon(
         self,
         horizon_date: date,
@@ -1521,6 +1696,9 @@ class FxForwardRiskEngine:
             if leg.payment_date > horizon_date:
                 remaining.append(leg)
                 continue
+            if leg.foreign_settled:
+                cash.append(self._foreign_settled_cash(leg, held, basis))
+                continue
             if leg.fixed is not None:
                 fixing = leg.fixed
             else:
@@ -1531,6 +1709,13 @@ class FxForwardRiskEngine:
         def pv(rub_view: _HorizonView, foreign_view: _HorizonView, label: str) -> float:
             values = []
             for leg in remaining:
+                if leg.foreign_settled:
+                    values.append(
+                        self._foreign_settled_horizon_pv(
+                            leg, horizon_spot, horizon_spot_date, rub_view, foreign_view
+                        )
+                    )
+                    continue
                 df = rub_view.discount_factor(leg.payment_date)
                 if leg.fixed is not None:
                     values.append(leg.units * (leg.fixed - leg.contract_rate) * df)
@@ -1567,6 +1752,21 @@ class FxForwardRiskEngine:
             rolldown_rub=finite_money(pv_rolled - pv_forward, "rolldown"),
             horizon_pnl_rub=finite_money(pv_rolled + received - start, "horizon P&L"),
         )
+
+
+def _outright_on(
+    spot: float,
+    rub: DiscountFactorCurve,
+    foreign: DiscountFactorCurve,
+    spot_date: date,
+    target: date,
+    basis: float,
+    day_count: DayCount,
+) -> float:
+    tau = _signed_years(day_count, spot_date, target)
+    return positive_money(
+        _parity(spot, rub, foreign, spot_date, target) * math.exp(basis * tau), "forward rate"
+    )
 
 
 def fx_forward_horizon(
