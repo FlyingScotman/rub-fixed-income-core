@@ -641,6 +641,11 @@ class FxForwardLeg:
     its base or quote currency (``fx_crosses``). Under covered parity the leg is worth
     the deliverable exchange at its value date carried to the payment date on the
     settlement currency's curve.
+
+    ``settlement_fixing_rate`` (0.45.0, omitted at None) belongs only to a fixed cross leg
+    settled in RUB: the quote currency's RUB fixing (RUB per one unit, same source and
+    date as ``fixing_rate``) that converts its ``N / q * (fixing_rate - K)`` quote units
+    into RUB (``fx_crosses``).
     """
 
     value_date: date
@@ -651,6 +656,7 @@ class FxForwardLeg:
     fixing_source: str | None = field(default=None, metadata=OMIT_IF_DEFAULT)
     fixing_rate: float | None = field(default=None, metadata=OMIT_IF_DEFAULT)
     settlement_currency: str | None = field(default=None, metadata=OMIT_IF_DEFAULT)
+    settlement_fixing_rate: float | None = field(default=None, metadata=OMIT_IF_DEFAULT)
 
     def __post_init__(self) -> None:
         if not isinstance(self.value_date, date):
@@ -666,6 +672,14 @@ class FxForwardLeg:
         self._check_settlement()
 
     def _check_settlement(self) -> None:
+        if self.settlement_fixing_rate is not None:
+            if self.fixing_rate is None:
+                raise InvalidTerms("a settlement_fixing_rate needs the leg's fixing_rate")
+            object.__setattr__(
+                self,
+                "settlement_fixing_rate",
+                positive_money(self.settlement_fixing_rate, "settlement fixing rate"),
+            )
         if self.settlement_currency is None:
             return
         _currency_code(self.settlement_currency, "settlement_currency")
@@ -674,6 +688,8 @@ class FxForwardLeg:
             return
         if self.payment_date is None:
             raise InvalidTerms("a settlement currency belongs to a cash-settled leg (payment_date)")
+        if self.settlement_fixing_rate is not None:
+            raise InvalidTerms("a settlement_fixing_rate belongs to a leg settled in RUB")
 
     def _check_fixing(self) -> None:
         if self.fixing_date is None and self.fixing_source is None and self.fixing_rate is None:
@@ -800,6 +816,10 @@ class NdfConvention:
 
 def _check_rub_pair_settlement(currency: str, legs: Sequence[FxForwardLeg]) -> None:
     for leg in legs:
+        if leg.settlement_fixing_rate is not None:
+            raise InvalidTerms(
+                f"a {currency}/RUB leg takes no settlement_fixing_rate (a RUB-settled cross only)"
+            )
         if leg.settlement_currency not in (None, currency):
             raise InvalidTerms(
                 f"a {currency}/RUB leg settles in RUB or {currency}, not {leg.settlement_currency}"

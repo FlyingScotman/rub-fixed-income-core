@@ -96,8 +96,11 @@ fixed from the base and the quote currency's `fx_fixings` of its `fixing_source`
 fixing date, `quote_units * R_base / R_quote`; a direct cross fixing goes in `fixing_rate`
 and must agree with the snapshot's (`INVALID_TERMS`); pending and missing fixings as above
 (the message names both currencies). A fixed cross leg is outstanding until its payment
-date. Fixing terms on a cross settled in RUB are `INVALID_TERMS`. Leg rows carry
-`settlement_currency` and `settlement_amount` (scaled by the quantity; omitted for RUB).
+date. A cross NDF settled in RUB takes both: `fixing_rate = quote_units * R_base / R_quote`
+and `settlement_fixing_rate = R_quote`, then a known RUB amount (one fixing missing:
+`MISSING_MARKET_DATA` naming it). Leg rows carry
+`settlement_currency` and `settlement_amount` (scaled by the quantity; omitted for RUB, but
+for a fixed RUB-settled cross the known RUB amount, with `settlement_fixing_rate`).
 See [fx-forwards.md](fx-forwards.md#ndfs-settled-in-a-foreign-currency-and-cross-ndfs-backlog-135).
 
 **Dating of key-rate curves (BACKLOG #55).** `build_key_rate_forward_curve` dates its

@@ -701,8 +701,9 @@ basis scenarios (#103), FX fallbacks to proxies (#131).
      term), fixed a known amount on that curve. Same engines and factors (`IR|` on every
      curve read, `FX|` per currency, FX delta as the OCP amount); `value_portfolio` fixes a
      cross from both RUB fixings of its source (`q · R_X / R_Y`) or a direct `fixing_rate`.
-     Not done: fixing terms on a cross settled in RUB (need both RUB fixings on one leg; value
-     the two X/RUB NDFs) and a rates–FX correlation term (`tests/test_ndf_settlement.py`).
+     A cross NDF settled in RUB (as the exchange's cross-rate futures: `N · R_X − (N · K / q)
+     · R_Y` RUB) also carries `settlement_fixing_rate` (`R_Y`) once fixed. Not done: a
+     rates–FX correlation term (`tests/test_ndf_settlement.py`).
 136. **Points-held risk as the factor basis.** Today the points-held RUB risk is a row
      field beside the factors; a points-held factor set (`IR|<rub>|*` with points held,
      the foreign curve as the points factor) would need its Hessian and an owner decision

@@ -1337,8 +1337,10 @@ def _fixed_cross_leg(
     The snapshot holds RUB fixings only, so the cross fixing is
     ``q * R_X / R_Y`` from the base and quote currencies' fixings of the leg's
     ``fixing_source`` on its fixing date; a direct cross fixing is passed in
-    ``fixing_rate`` (it must agree with the snapshot's when both exist). Otherwise as
-    :func:`_fixed_leg`.
+    ``fixing_rate`` (it must agree with the snapshot's when both exist). A leg settled in
+    RUB also takes ``settlement_fixing_rate = R_Y`` (RUB per one quote unit), which
+    converts its quote-currency amount; given in the terms, both rates must agree with the
+    snapshot's. Otherwise as :func:`_fixed_leg`.
     """
     if leg.fixing_date is None or leg.fixing_date > ctx.business_date:
         return leg, None
@@ -1353,6 +1355,8 @@ def _fixed_cross_leg(
         if rates is None or rates[0] is None or rates[1] is None
         else trade.quote_units * rates[0].rub_per_unit / rates[1].rub_per_unit
     )
+    quote_rub = None if rate is None or rates is None or rates[1] is None else rates[1].rub_per_unit
+    rub_settled = leg.settlement_currency is None
     if leg.fixing_rate is not None:
         if rate is not None and not math.isclose(rate, leg.fixing_rate, rel_tol=1e-9):
             raise InvalidTerms(
@@ -1360,8 +1364,22 @@ def _fixed_cross_leg(
                 f"{leg.fixing_source} {x} and {y} fixings' cross {rate} of "
                 f"{leg.fixing_date.isoformat()}"
             )
+        given = leg.settlement_fixing_rate
+        if (
+            rub_settled
+            and quote_rub is not None
+            and given is not None
+            and not math.isclose(quote_rub, given, rel_tol=1e-9)
+        ):
+            raise InvalidTerms(
+                f"{trade.trade_id}: settlement_fixing_rate {given} differs from the "
+                f"{leg.fixing_source} {y} fixing {quote_rub} of {leg.fixing_date.isoformat()}"
+            )
         return leg, "known_fixings"
     if rate is not None:
+        if rub_settled:
+            fixed = replace(leg, fixing_rate=rate, settlement_fixing_rate=quote_rub)
+            return fixed, "known_fixings"
         return replace(leg, fixing_rate=rate), "known_fixings"
     if leg.fixing_date == ctx.business_date:
         return leg, "fixing_pending"

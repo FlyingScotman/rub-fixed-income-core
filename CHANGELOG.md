@@ -25,17 +25,28 @@ without interest-rate risk).
   known amount on the settlement curve. `FxCrossRiskEngine` values such trades leg by leg and
   keeps every result (RUB / base / quote buckets, both bases, both FX deltas, scenarios,
   Hessian, points-held risk, horizon). `fx_cross_rub_legs` rejects them (no RUB-leg
-  decomposition). Fixing terms on a cross settled in RUB stay rejected (they need both RUB
-  fixings).
+  decomposition).
+- Cross NDFs settled in RUB (the style of the exchange's cross-rate futures: the cross of two
+  RUB fixings of one source and date, paid in roubles, `N/q · (R − K) · R_Y = N · R_X −
+  (N · K / q) · R_Y`). **Intentional behaviour change**: fixing terms on a RUB-settled cross
+  leg were rejected (`InvalidTerms`, "not supported") and are now accepted; the test of
+  `tests/test_fx_crosses.py` that asserted the rejection now asserts the new rules. Unfixed,
+  the leg is the cash-settled cross (risk on the RUB and both foreign curves, FX delta in
+  both currencies). Fixed, it needs the new `FxForwardLeg.settlement_fixing_rate` (the quote
+  currency's RUB fixing, RUB per one unit; optional, omitted at `None`, `InvalidTerms` on any
+  other leg) beside `fixing_rate` (the cross), and is a known RUB amount on the RUB curve
+  (no FX delta). `fx_cross_rub_legs` gives such a trade as two RUB-settled X/RUB NDFs with the
+  same fixing terms (fixed at `R_X`, `R_Y`); their sum equals the cross.
 - Leg results: `FxForwardLegValuation` and `FxCrossLegValuation` gain `settlement_currency` and
   `settlement_amount` (units of the settlement currency paid; omitted at `None`);
-  `FxCrossLegValuation` also `fixing_date` and `fixing_rate`.
+  `FxCrossLegValuation` also `fixing_date`, `fixing_rate` and `settlement_fixing_rate`.
 - `value_portfolio` / `horizon_portfolio`: foreign-settled X/RUB NDFs are fixed from
   `fx_fixings` as before; a cross NDF from both currencies' fixings of its source
-  (`q · R_X / R_Y`), or its own `fixing_rate` checked against them (`known_fixings`,
-  `fixing_pending`, `MISSING_MARKET_DATA` as for X/RUB NDFs). A fixed cross leg is
+  (`q · R_X / R_Y`, and `R_Y` as `settlement_fixing_rate` when settled in RUB), or its own
+  rates checked against them (`known_fixings`, `fixing_pending`, `MISSING_MARKET_DATA`
+  naming the currency whose fixing is missing). A fixed cross leg is
   outstanding until its payment date. Leg rows scale `settlement_amount` by the quantity.
-- Deliverable forwards and swaps, RUB-settled NDFs and existing crosses: bytes, `base_id`,
+- Deliverable forwards and swaps, RUB-settled X/RUB NDFs and existing crosses: bytes, `base_id`,
   results and model versions are unchanged (checked bit for bit against 0.44.0); job and
   calculation IDs change only through `library_version`, as in every release.
 - Tests: `tests/test_ndf_settlement.py`.
