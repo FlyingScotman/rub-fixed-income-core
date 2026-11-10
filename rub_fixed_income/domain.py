@@ -1252,10 +1252,19 @@ class MarketSnapshot:
         return self.ruonia_index[-1]
 
     def quote(self, instrument_id: str) -> BondPriceObservation:
-        for entry in self.quotes:
-            if entry.instrument_id == instrument_id:
-                return entry
-        raise MissingMarketData(f"no price for {instrument_id!r} in snapshot {self.snapshot_id}")
+        # Indexed on first use: a book reads one quote per position, and the snapshot is
+        # immutable (``__post_init__`` has already sorted ``quotes`` and checked the IDs are
+        # unique, so the index answers exactly what a scan of the tuple would).
+        index: dict[str, BondPriceObservation] | None = self.__dict__.get("_quote_index")
+        if index is None:
+            index = {entry.instrument_id: entry for entry in self.quotes}
+            object.__setattr__(self, "_quote_index", index)
+        entry = index.get(instrument_id)
+        if entry is None:
+            raise MissingMarketData(
+                f"no price for {instrument_id!r} in snapshot {self.snapshot_id}"
+            )
+        return entry
 
 
 @dataclass(frozen=True)
