@@ -799,9 +799,10 @@ class NdfConvention:
         *,
         fixing_rate: float | None = None,
         settlement_currency: str | None = None,
+        settlement_fixing_rate: float | None = None,
     ) -> FxForwardLeg:
         """The cash-settled :class:`FxForwardLeg` on ``dates`` with this source
-        (``settlement_currency``: 0.45.0, ``None`` = RUB)."""
+        (``settlement_currency`` and ``settlement_fixing_rate``: 0.45.0, ``None`` = RUB)."""
         return FxForwardLeg(
             dates.value_date,
             notional_foreign,
@@ -811,6 +812,7 @@ class NdfConvention:
             fixing_source=self.fixing_source,
             fixing_rate=fixing_rate,
             settlement_currency=settlement_currency,
+            settlement_fixing_rate=settlement_fixing_rate,
         )
 
 

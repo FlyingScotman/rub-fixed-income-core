@@ -33,11 +33,13 @@ checks that the two modules agree.
 
 ## Inputs
 
-- `FxForwardLeg(value_date, notional_foreign, contract_rate, payment_date=None, fixing_date=None, fixing_source=None, fixing_rate=None, settlement_currency=None)`.
+- `FxForwardLeg(value_date, notional_foreign, contract_rate, payment_date=None, fixing_date=None, fixing_source=None, fixing_rate=None, settlement_currency=None, settlement_fixing_rate=None)`.
   The three NDF fields (0.36.0, omitted at None) belong to a cash-settled leg only; see
   [NDF fixings](#ndf-fixings-backlog-49). `settlement_currency` (0.45.0, omitted at None;
   `"RUB"` is stored as None) is the currency a cash-settled leg pays in; see
   [NDFs settled in a foreign currency and cross NDFs](#ndfs-settled-in-a-foreign-currency-and-cross-ndfs-backlog-135).
+  `settlement_fixing_rate` (0.45.0, omitted at None) belongs only to a fixed cross leg
+  settled in RUB: the quote currency's RUB fixing (RUB per one unit).
 - `FxForward(trade_id, currency, quote_units, leg)`. An unsettled spot trade is a
   forward whose value date is its spot date.
 - `FxSwap(trade_id, currency, quote_units, near, far)`: legs of opposite sign, the
@@ -194,7 +196,9 @@ days after the fixing (the source's own spot lag: for example 1 for a rate set f
 tomorrow's settlement, or equal to `fixing_lag_days` when the rate is the spot for the
 payment date). `.leg(dates, notional, contract_rate, fixing_rate=None)` builds the leg.
 **No source or lag is built in**: they are trade terms (the firm's NDF confirmations).
-`.leg(..., settlement_currency=None)` (0.45.0) sets the settlement currency.
+`.leg(..., settlement_currency=None, settlement_fixing_rate=None)` (0.45.0) sets the
+settlement currency and, for a fixed cross leg settled in RUB, the quote currency's RUB
+fixing.
 
 ## NDFs settled in a foreign currency and cross NDFs (BACKLOG #135)
 

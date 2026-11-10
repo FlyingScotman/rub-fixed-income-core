@@ -95,7 +95,7 @@ foreign curve only) or the base or quote currency of an `FxCrossInstrument`. A c
 fixed from the base and the quote currency's `fx_fixings` of its `fixing_source` on its
 fixing date, `quote_units * R_base / R_quote`; a direct cross fixing goes in `fixing_rate`
 and must agree with the snapshot's (`INVALID_TERMS`); pending and missing fixings as above
-(the message names both currencies). A fixed cross leg is outstanding until its payment
+(the message names the currency whose fixing is missing). A fixed cross leg is outstanding until its payment
 date. A cross NDF settled in RUB takes both: `fixing_rate = quote_units * R_base / R_quote`
 and `settlement_fixing_rate = R_quote`, then a known RUB amount (one fixing missing:
 `MISSING_MARKET_DATA` naming it). Leg rows carry

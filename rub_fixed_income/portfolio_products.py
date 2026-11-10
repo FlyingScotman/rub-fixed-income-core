@@ -1355,7 +1355,7 @@ def _fixed_cross_leg(
         if rates is None or rates[0] is None or rates[1] is None
         else trade.quote_units * rates[0].rub_per_unit / rates[1].rub_per_unit
     )
-    quote_rub = None if rate is None or rates is None or rates[1] is None else rates[1].rub_per_unit
+    quote_rub = None if rates is None or rates[1] is None else rates[1].rub_per_unit
     rub_settled = leg.settlement_currency is None
     if leg.fixing_rate is not None:
         if rate is not None and not math.isclose(rate, leg.fixing_rate, rel_tol=1e-9):

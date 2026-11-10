@@ -245,15 +245,16 @@ monitor rejects today as `ndf_unsupported`, it passes one new leg field,
   fixings after the fixing date are `MISSING_MARKET_DATA`, naming the currency whose fixing
   is missing;
 - a cross NDF settled in RUB (as the exchange's cross-rate futures, e.g. EUR/USD):
-  `FxCrossInstrument` with an `FxCrossForward(label, base, quote, 1.0, FxForwardLeg(value_date,
-  sign · n_base, k, payment_date, fixing_date=..., fixing_source=<the RUB-fixing source>))`,
-  no `settlement_currency`. The core fixes it from both currencies' `FxFixing`s of that
+  `FxCrossInstrument` with an `FxCrossForward(label, base, quote, q, FxForwardLeg(value_date,
+  sign · n_base, k, payment_date, fixing_date=..., fixing_source=<the RUB-fixing source>))`
+  (`q` the quote units of `k`, 1.0 for EUR/USD), no `settlement_currency`. The core fixes it from both currencies' `FxFixing`s of that
   source (`fixing_rate = q · R_base / R_quote`, `settlement_fixing_rate = R_quote`); after
   that it is a known RUB amount with risk on the RUB curve only. Before the fixing: risk on
   the RUB and both foreign curves, `fx_delta_base` and `fx_delta_quote`. One fixing missing
   after the fixing date is `MISSING_MARKET_DATA` naming that currency; due today and
   unpublished, `fixing_pending`. The monitor passes the rates itself only if it has them,
-  then both. `ndf_unsupported` is no longer needed for any NDF.
+  then both. `ndf_unsupported` stays only for an NDF settled in a currency that is neither
+  RUB nor one of the pair's own (core raises `InvalidTerms` for it).
 
 **From 0.44.0: IRS legs on their own dates** (FlyingScotman/rub-fixed-income-core#106, for
 FlyingScotman/trading-desk-monitor#605). Swaps on common dates are unchanged (same bytes, same

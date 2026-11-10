@@ -26,6 +26,7 @@ from rub_fixed_income import (
     FxForwardRiskEngine,
     FxForwardRiskRequest,
     FxFuturesScenario,
+    FxSwap,
     InvalidTerms,
     NdfConvention,
     NdfDates,
@@ -118,6 +119,8 @@ def test_settlement_currency_terms_and_encoding() -> None:
     rule = NdfConvention("CBR", fixing_lag_days=2, value_lag_days=2)
     built = rule.leg(NdfDates(T, P, P), N, K, settlement_currency="USD")
     assert built.settlement_currency == "USD" and built.fixing_source == "CBR"
+    rub_cross_leg = rule.leg(NdfDates(T, P, P), N, KX, fixing_rate=7.2, settlement_fixing_rate=11.0)
+    assert (rub_cross_leg.settlement_currency, rub_cross_leg.settlement_fixing_rate) == (None, 11.0)
 
 
 # --- X/RUB settled in the foreign currency -----------------------------------------------
@@ -410,7 +413,7 @@ def rub_cross(q: float = 1.0, **changes: object) -> FxCrossForward:
     return FxCrossForward("X-RUB", "USD", "CNY", q, replace(terms, **changes))  # type: ignore[arg-type]
 
 
-def two_rub_ndfs(trade: FxCrossForward) -> float:
+def two_rub_ndfs(trade: FxCrossForward | FxCrossSwap) -> float:
     base, quote = fx_cross_rub_legs(trade, pivot_rate=75.0)
     return sum(
         FxForwardRiskEngine(FxForwardRiskRequest(t_, spot, C, RUB, curve, 0.0)).base_pv_rub
@@ -466,6 +469,56 @@ def test_rub_settled_cross_ndf_fixed(q: float) -> None:
     assert carry.pv_forward_rub == pytest.approx(
         e.base_pv_rub / RUB.discount_factor(horizon), rel=1e-12
     )
+
+
+def test_rub_settled_cross_ndf_swap_and_its_two_rub_ndfs() -> None:
+    near_t = C + timedelta(days=60)
+    near = FxForwardLeg(
+        near_t,
+        -N,
+        7.0,
+        near_t + timedelta(days=2),
+        fixing_date=C - timedelta(days=1),
+        fixing_source="CBR",
+        fixing_rate=82.0 / 11.5,
+        settlement_fixing_rate=11.5,
+    )
+    far = rub_cross().leg
+    swap = FxCrossSwap("XS-RUB", "USD", "CNY", 1.0, near, far)
+    e = cross_engine(swap)
+    legs = [cross_engine(FxCrossForward("X", "USD", "CNY", 1.0, leg)) for leg in (near, far)]
+    assert e.base_pv_rub == pytest.approx(sum(x.base_pv_rub for x in legs), rel=1e-12)
+    assert e.base_pv_rub == pytest.approx(two_rub_ndfs(swap), rel=1e-10)
+    base, quote = fx_cross_rub_legs(swap, pivot_rate=75.0)
+    assert isinstance(base, FxSwap) and isinstance(quote, FxSwap)
+    assert (base.near.fixing_rate, quote.near.fixing_rate) == pytest.approx((82.0, 11.5))
+    assert base.far.fixing_rate is None and base.far.fixing_date == far.fixing_date
+    assert quote.near.fixing_source == "CBR" and quote.far.notional_foreign == -N * KX
+    near_known = (-N * 82.0 + N * 7.0 * 11.5) * RUB.discount_factor(near.settlement_date)
+    assert e.leg_valuations()[0].pv_rub == pytest.approx(near_known, rel=1e-12)
+    risk = e.risk(difference="central")
+    # FX delta from the unfixed far leg only.
+    assert risk.fx_delta_base == pytest.approx(legs[1].risk().fx_delta_base, rel=1e-12)
+
+
+def test_fixed_rub_settled_cross_ndf_reprice() -> None:
+    fixed = rub_cross(fixing_rate=82.0 / 11.5, settlement_fixing_rate=11.5)
+    e = cross_engine(fixed)
+    amount = N * 82.0 - N * KX * 11.5
+    shock = FxCrossScenario(
+        rub_curve_shifts_bp=(100.0,) * 11,
+        base_curve_shifts_bp=(50.0,) * 11,
+        quote_curve_shifts_bp=(-50.0,) * 11,
+        base_basis_shift_bp=10.0,
+        base_spot_shift_pct=5.0,
+        quote_spot_shift_pct=-5.0,
+    )
+    result = e.reprice(shock)
+    expected = amount * (math.exp(-(R + 0.01) * p) - math.exp(-R * p))
+    assert result.total_pnl_rub == pytest.approx(expected, rel=1e-9)
+    assert result.rub_rates_pnl_rub == pytest.approx(expected, rel=1e-9)
+    assert result.fx_spot_pnl_rub == 0.0 and result.basis_pnl_rub == 0.0
+    assert result.base_rates_pnl_rub == 0.0 and result.quote_rates_pnl_rub == 0.0
 
 
 def test_rub_settled_cross_ndf_past_its_fixing_needs_both_rates() -> None:
@@ -652,3 +705,19 @@ def test_rub_settled_cross_ndf_in_value_portfolio() -> None:
     clash = inst(fixing_rate=81.0 / 11.25, settlement_fixing_rate=11.3)
     bad = run(snap, [clash], [pos("x", "XN", 1.0, "USD")])
     assert bad.coverage.rejections[0].code == "INVALID_TERMS"
+    # Only the quote currency's fixing in the snapshot: the given R_Y is still checked.
+    only_cny = market("USD", "CNY", fx_fixings=fixings[1:])
+    off = inst(fixing_rate=81.0 / 11.25, settlement_fixing_rate=11.9)
+    assert run(only_cny, [off], [pos("x", "XN", 1.0, "USD")]).coverage.rejections[0].code == (
+        "INVALID_TERMS"
+    )
+    agreed = inst(fixing_rate=81.0 / 11.25, settlement_fixing_rate=11.25)
+    assert run(only_cny, [agreed], [pos("x", "XN", 1.0, "USD")]).coverage.status == "complete"
+    # Fixing day with one of the two fixings published: still projected.
+    today_fixings = (FxFixing("USD", "CBR", BUSINESS_DATE, 81.0),)
+    half = run(
+        market("USD", "CNY", fx_fixings=today_fixings), [today], [pos("x", "XN", 1.0, "USD")]
+    )
+    assert half.coverage.status == "complete"
+    assert "fixing_pending" in half.position_models[0].flags
+    assert half.fx_crosses[0].legs[0].fixing_rate is None

@@ -29,8 +29,10 @@ without interest-rate risk).
 - Cross NDFs settled in RUB (the style of the exchange's cross-rate futures: the cross of two
   RUB fixings of one source and date, paid in roubles, `N/q · (R − K) · R_Y = N · R_X −
   (N · K / q) · R_Y`). **Intentional behaviour change**: fixing terms on a RUB-settled cross
-  leg were rejected (`InvalidTerms`, "not supported") and are now accepted; the test of
-  `tests/test_fx_crosses.py` that asserted the rejection now asserts the new rules. Unfixed,
+  leg were rejected (`InvalidTerms`, "not supported") and are now accepted; the two
+  assertions of the rejection, in `tests/test_fx_crosses.py` (`test_identity_and_validation`)
+  and in `tests/test_ndf_settlement.py` (`test_settlement_currency_terms_and_encoding`, from
+  the first 0.45.0 commit), now assert the new rules. Unfixed,
   the leg is the cash-settled cross (risk on the RUB and both foreign curves, FX delta in
   both currencies). Fixed, it needs the new `FxForwardLeg.settlement_fixing_rate` (the quote
   currency's RUB fixing, RUB per one unit; optional, omitted at `None`, `InvalidTerms` on any
