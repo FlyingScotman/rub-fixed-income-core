@@ -90,8 +90,9 @@ dates from the confirmation's lags; core assumes no source or lag.
 
 **NDFs settled in a foreign currency and cross NDFs (0.45.0, BACKLOG #135).** A leg's
 `settlement_currency` may be the foreign currency of an `FxForwardInstrument` (fixed from
-`fx_fixings` as above; a fixed leg is a known foreign amount with FX delta and risk on the
-foreign curve only) or the base or quote currency of an `FxCrossInstrument`. A cross leg is
+`fx_fixings` as above; a fixed leg is a known foreign amount with FX delta, risk on the
+foreign curve and basis, plus the spot-date terms of converting at spot when the spot date follows the
+curve date) or the base or quote currency of an `FxCrossInstrument`. A cross leg is
 fixed from the base and the quote currency's `fx_fixings` of its `fixing_source` on its
 fixing date, `quote_units * R_base / R_quote`; a direct cross fixing goes in `fixing_rate`
 and must agree with the snapshot's (`INVALID_TERMS`); pending and missing fixings as above
