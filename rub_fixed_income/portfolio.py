@@ -35,7 +35,7 @@ from ._risk_common import _curve_basis, _shifts
 from ._version import __version__
 from .bond import YieldRequest, solve_effective_annual_yield
 from .callables import ExerciseAssumption, ExercisedBond, exercised_instrument, resolve_exercise
-from .canonical import OMIT_IF_DEFAULT, canonical_json_bytes, canonical_sha256
+from .canonical import OMIT_IF_DEFAULT, _sha256_of_decoded, canonical_json_bytes, canonical_sha256
 from .cashflows import BondCashflow, clean_price_pct_to_dirty_rub
 from .compatibility import bond_duration
 from .conventions import (
@@ -1322,9 +1322,7 @@ def value_portfolio(
     cpi = tuple(used_cpi[k] for k in sorted(used_cpi))
     if not derivative_book:
         result = PortfolioRiskResult(*fields_v2, fx_rates=fx_rates, cpi=cpi)
-        return replace(
-            result, result_sha256=canonical_sha256(portfolio_result_hash_projection(result))
-        )
+        return replace(result, result_sha256=_result_sha256(result))
     by_field: dict[str, list[ProductRow]] = {name: [] for name in ROW_FIELDS.values()}
     for row in rows:
         by_field[ROW_FIELDS[type(row)]].append(row)
@@ -1353,9 +1351,7 @@ def value_portfolio(
         fx_spots=tuple(context.used_fx_spots[k] for k in sorted(context.used_fx_spots)),
         credit_curves=tuple(context.used_credit[k] for k in sorted(context.used_credit)),
     )
-    return replace(
-        result_v3, result_sha256=canonical_sha256(portfolio_result_hash_projection(result_v3))
-    )
+    return replace(result_v3, result_sha256=_result_sha256(result_v3))
 
 
 def _product_context(
@@ -2402,12 +2398,32 @@ def portfolio_result_hash_projection(
     return raw
 
 
+def _result_sha256(result: PortfolioRiskResult) -> str:
+    """The hash of ``result`` as ``canonical_sha256(portfolio_result_hash_projection(result))``
+    gives it, from one serialization: the projection is decoded from the canonical bytes, so it
+    is hashed as it is."""
+    raw = cast(dict[str, object], json.loads(canonical_json_bytes(result)))
+    raw["result_sha256"] = ""
+    return _sha256_of_decoded(raw)
+
+
+def _verify_decoded(raw: dict[str, object], schema: str) -> bool:
+    """``_verify`` for ``raw`` decoded from the canonical bytes of a result object."""
+    if raw.get("schema_version") != schema:
+        return False
+    declared = raw.get("result_sha256")
+    if declared is None and "result_sha256" not in raw:
+        return False
+    actual = _sha256_of_decoded({**raw, "result_sha256": ""})
+    return isinstance(declared, str) and declared == actual
+
+
 def _verify(result: PortfolioRiskResult | Mapping[str, object], schema: str) -> bool:
-    raw = (
-        cast(dict[str, object], json.loads(canonical_json_bytes(result)))
-        if isinstance(result, PortfolioRiskResult)
-        else dict(result)
-    )
+    if isinstance(result, PortfolioRiskResult):
+        return _verify_decoded(
+            cast(dict[str, object], json.loads(canonical_json_bytes(result))), schema
+        )
+    raw = dict(result)
     if raw.get("schema_version") != schema:
         return False
     declared = raw.get("result_sha256")
@@ -2434,10 +2450,15 @@ def verify_portfolio_result_v3(result: PortfolioRiskResult | Mapping[str, object
 
 def portfolio_result_to_json(result: PortfolioRiskResult) -> bytes:
     """Canonical JSON of a v2 or v3 result; raises unless its schema and hash verify."""
-    v3 = isinstance(result, PortfolioRiskResultV3)
-    if not (verify_portfolio_result_v3(result) if v3 else verify_portfolio_result(result)):
+    schema = (
+        PORTFOLIO_RESULT_SCHEMA_V3
+        if isinstance(result, PortfolioRiskResultV3)
+        else PORTFOLIO_RESULT_SCHEMA
+    )
+    data = canonical_json_bytes(result)
+    if not _verify_decoded(cast(dict[str, object], json.loads(data)), schema):
         raise ValueError("portfolio result hash or schema does not verify")
-    return canonical_json_bytes(result)
+    return data
 
 
 def portfolio_result_from_json(data: bytes | str) -> PortfolioRiskResult:
