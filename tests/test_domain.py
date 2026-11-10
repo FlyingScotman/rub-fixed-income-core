@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import math
+import pickle
 import random
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
@@ -284,6 +286,29 @@ def test_snapshot_quote_index_answers_like_a_scan_of_the_quotes() -> None:
         other.quote("BOND-005")
     with pytest.raises(InvalidTerms, match="duplicate quote instrument_id"):
         replace(snap, quotes=(*quotes, quotes[0]))
+
+
+def test_snapshot_quote_index_stays_out_of_pickles_and_copies() -> None:
+    quotes = tuple(
+        BondPriceObservation(f"BOND-{i:03d}", 90.0 + i * 0.25, "waprice") for i in (5, 0, 11, 3, 8)
+    )
+    snap = replace(snapshot(), quotes=quotes)
+    empty_size = len(pickle.dumps(snap))
+    for entry in snap.quotes:
+        assert snap.quote(entry.instrument_id) is entry
+    assert "_quote_index" in snap.__dict__
+    # A filled index does not grow the pickle and is not part of the state.
+    assert len(pickle.dumps(snap)) == empty_size
+    assert set(snap.__getstate__()) == set(snap.__dataclass_fields__)
+    for clone in (pickle.loads(pickle.dumps(snap)), copy.copy(snap), copy.deepcopy(snap)):
+        assert clone == snap and hash(clone) == hash(snap)
+        assert "_quote_index" not in clone.__dict__
+        # The index is rebuilt on first use and answers exactly as before.
+        for entry in snap.quotes:
+            assert clone.quote(entry.instrument_id) == entry
+        with pytest.raises(MissingMarketData, match="no price for"):
+            clone.quote("BOND-004")
+    assert pickle.dumps(pickle.loads(pickle.dumps(snap))) == pickle.dumps(snap)
 
 
 def test_position_validation() -> None:

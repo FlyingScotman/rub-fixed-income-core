@@ -19,6 +19,7 @@ from itertools import pairwise
 from typing import Literal, cast
 
 from ._money import finite_money, positive_money
+from ._state import _fields_only_state
 from .canonical import OMIT_IF_DEFAULT
 from .cashflows import Cashflow, CashflowKind, accrued_interest
 from .cds import CdsConvention, CdsSpreadQuote, CdsUpfrontQuote
@@ -970,6 +971,8 @@ class MarketSnapshot:
     ruonia_fixings: tuple[RuoniaFixingsEntry, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
     ruonia_index: tuple[RuoniaIndexValue, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
     fx_fixings: tuple[FxFixing, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
+
+    __getstate__ = _fields_only_state
 
     def __post_init__(self) -> None:
         _text(self.snapshot_id, "snapshot_id")

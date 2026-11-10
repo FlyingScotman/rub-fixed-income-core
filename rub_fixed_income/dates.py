@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import cast
 
+from ._state import _fields_only_state
 from .errors import CalendarRangeError
 
 _ADD_MEMO_SIZE = 1 << 15
@@ -49,6 +50,8 @@ class BusinessCalendar:
     version: str = "weekends-only"
     valid_from: date | None = None
     valid_to: date | None = None
+
+    __getstate__ = _fields_only_state
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "holidays", frozenset(self.holidays))

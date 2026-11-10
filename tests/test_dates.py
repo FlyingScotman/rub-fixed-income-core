@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import pickle
 from dataclasses import replace
 from datetime import date, timedelta
 
@@ -91,3 +93,31 @@ def test_add_business_days_keeps_its_errors_and_never_stores_a_failed_walk() -> 
     other = replace(calendar, holidays=frozenset({date(2026, 1, 29)}))
     assert other.add_business_days(date(2026, 1, 28), 1) == date(2026, 1, 30)
     assert calendar.add_business_days(date(2026, 1, 28), 1) == date(2026, 1, 29)
+
+
+def test_add_business_days_memo_stays_out_of_pickles_and_copies() -> None:
+    calendar = BusinessCalendar(
+        holidays=frozenset({date(2026, 1, 8)}),
+        version="b",
+        valid_from=date(2025, 1, 1),
+        valid_to=date(2027, 12, 31),
+    )
+    empty_size = len(pickle.dumps(calendar))
+    starts = [date(2026, 1, 1) + timedelta(days=i) for i in range(300)]
+    expected = [calendar.add_business_days(day, lag) for day in starts for lag in (1, 2, 5)]
+    assert len(calendar.__dict__["_add_memo"]) == 900
+    # A filled memo does not grow the pickle and is not part of the state.
+    assert len(pickle.dumps(calendar)) == empty_size
+    assert set(calendar.__getstate__()) == set(calendar.__dataclass_fields__)
+    for clone in (
+        pickle.loads(pickle.dumps(calendar)),
+        copy.copy(calendar),
+        copy.deepcopy(calendar),
+    ):
+        assert clone == calendar and hash(clone) == hash(calendar)
+        assert "_add_memo" not in clone.__dict__
+        # The memo is rebuilt on first use and answers exactly as before.
+        got = [clone.add_business_days(day, lag) for day in starts for lag in (1, 2, 5)]
+        assert got == expected
+        assert len(clone.__dict__["_add_memo"]) == 900
+    assert pickle.dumps(pickle.loads(pickle.dumps(calendar))) == pickle.dumps(calendar)
