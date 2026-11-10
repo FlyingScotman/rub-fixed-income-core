@@ -92,6 +92,8 @@ _ISO_TYPES = frozenset({date, datetime})
 _SEQUENCE_TYPES = frozenset({list, tuple})
 # Per exact dataclass type: its fields, each with the spec when it is omittable. Filled only
 # for a type that no earlier branch of the generic chain below would have claimed.
+# Unbounded by design: it has one entry per dataclass type, and those classes are created
+# statically at import, never per call or per input, so the table cannot grow with the data.
 _DATACLASS_FIELDS: dict[type, tuple[tuple[str, Field[Any] | None], ...]] = {}
 _NOT_DATACLASS = (_Canonical, Enum, date, Decimal, float, dict, list, tuple, set, frozenset)
 
