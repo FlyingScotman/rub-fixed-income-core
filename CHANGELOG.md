@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.45.0 — NDFs settled in a foreign currency and cross NDFs
+
+BACKLOG #135, for FlyingScotman/trading-desk-monitor#616 (NDFs in the open currency position
+without interest-rate risk).
+
+- `FxForwardLeg.settlement_currency` (optional, `None` by default, left out of serialization
+  while `None`; `"RUB"` is stored as `None`): the currency a cash-settled leg pays in. Only on
+  a leg with `payment_date`; an X/RUB trade settles in RUB or its foreign currency, a cross in
+  RUB, its base or its quote currency (`InvalidTerms` otherwise). `NdfConvention.leg` takes it.
+- X/RUB NDF settled in the foreign currency (an offshore USD/RUB NDF settled in USD): pays
+  `N · (1 − K / fixing)` foreign units on the payment date. `FxForwardRiskEngine` values it as
+  the deliverable exchange at the value date carried to the payment date on the foreign curve
+  (with the basis): exact under covered parity, no convexity adjustment (its RUB value is
+  linear in the fixing; see `docs/fx-forwards.md`). PV, bucketed RUB and foreign curve risk,
+  basis, FX delta (`fx_delta_foreign`, the OCP amount), scenarios, Hessian (PV stays linear
+  in spot), points-held RUB risk and horizon all cover it. Once fixed it is a known foreign
+  amount: risk on the foreign (settlement) curve and basis, plus the spot-date terms of
+  converting at spot (a small RUB and foreign short-bucket pair when the spot date follows
+  the curve date); still an FX position.
+- Cross NDFs (`fx_crosses`): a cross leg may carry fixing terms when it settles in the base or
+  quote currency (`fixing_rate`: the cross rate, quote per `quote_units` base). Unfixed,
+  `PV = [N · V_X(T) − (N · K / q) · V_Y(T)] · V_Z(P) / V_Z(T)` on the three curves; fixed, the
+  known amount on the settlement curve. `FxCrossRiskEngine` values such trades leg by leg and
+  keeps every result (RUB / base / quote buckets, both bases, both FX deltas, scenarios,
+  Hessian, points-held risk, horizon). `fx_cross_rub_legs` rejects them (no RUB-leg
+  decomposition).
+- Cross NDFs settled in RUB (the style of the exchange's cross-rate futures: the cross of two
+  RUB fixings of one source and date, paid in roubles, `N/q · (R − K) · R_Y = N · R_X −
+  (N · K / q) · R_Y`). **Intentional behaviour change**: fixing terms on a RUB-settled cross
+  leg were rejected (`InvalidTerms`, "not supported") and are now accepted; the two
+  assertions of the rejection, in `tests/test_fx_crosses.py` (`test_identity_and_validation`)
+  and in `tests/test_ndf_settlement.py` (`test_settlement_currency_terms_and_encoding`, from
+  the first 0.45.0 commit), now assert the new rules. Unfixed,
+  the leg is the cash-settled cross (risk on the RUB and both foreign curves, FX delta in
+  both currencies). Fixed, it needs the new `FxForwardLeg.settlement_fixing_rate` (the quote
+  currency's RUB fixing, RUB per one unit; optional, omitted at `None`, `InvalidTerms` on any
+  other leg) beside `fixing_rate` (the cross), and is a known RUB amount on the RUB curve
+  (no FX delta). `fx_cross_rub_legs` gives such a trade as two RUB-settled X/RUB NDFs with the
+  same fixing terms (fixed at `R_X`, `R_Y`); their sum equals the cross.
+- Leg results: `FxForwardLegValuation` and `FxCrossLegValuation` gain `settlement_currency` and
+  `settlement_amount` (units of the settlement currency paid; omitted at `None`);
+  `FxCrossLegValuation` also `fixing_date`, `fixing_rate` and `settlement_fixing_rate`.
+- `value_portfolio` / `horizon_portfolio`: foreign-settled X/RUB NDFs are fixed from
+  `fx_fixings` as before; a cross NDF from both currencies' fixings of its source
+  (`q · R_X / R_Y`, and `R_Y` as `settlement_fixing_rate` when settled in RUB), or its own
+  rates checked against them (`known_fixings`, `fixing_pending`, `MISSING_MARKET_DATA`
+  naming the currency whose fixing is missing). A fixed cross leg is
+  outstanding until its payment date. Leg rows scale `settlement_amount` by the quantity.
+- Deliverable forwards and swaps, RUB-settled X/RUB NDFs and existing crosses: bytes, `base_id`,
+  results and model versions are unchanged (checked bit for bit against 0.44.0); job and
+  calculation IDs change only through `library_version`, as in every release.
+- Tests: `tests/test_ndf_settlement.py`.
+
 ## 0.44.0 — IRS legs on their own dates
 
 FlyingScotman/rub-fixed-income-core#106 (owner's decision of 2026-11-06: each leg is valued on

@@ -240,9 +240,11 @@ def test_identity_and_validation() -> None:
         FxCrossForward("X", "USD", "USD", 1.0, FxForwardLeg(T, N, K))
     with pytest.raises(InvalidTerms, match="not RUB"):
         FxCrossForward("X", "USD", "RUB", 1.0, FxForwardLeg(T, N, K))
+    # 0.45.0: a RUB-settled cross NDF is supported; fixed, it needs both RUB fixings.
     ndf_leg = FxForwardLeg(T, N, K, T, fixing_date=T)
-    with pytest.raises(InvalidTerms, match="not supported"):
-        FxCrossForward("X", "USD", "CNY", 1.0, ndf_leg)
+    assert FxCrossForward("X", "USD", "CNY", 1.0, ndf_leg).leg.fixing_date == T
+    with pytest.raises(InvalidTerms, match="needs settlement_fixing_rate"):
+        FxCrossForward("X", "USD", "CNY", 1.0, replace(ndf_leg, fixing_rate=K))
     with pytest.raises(TypeError):
         FxCrossRiskRequest(object(), SU, C, SC, C, RUB, USD, CNY, 0.0, 0.0)  # type: ignore[arg-type]
     with pytest.raises(InvalidTerms, match="settled"):

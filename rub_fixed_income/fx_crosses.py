@@ -21,13 +21,32 @@ Risk: ``IR|<rub>|*``, ``IR|<base>|*``, ``IR|<quote>|*``, ``FXBASIS|X``, ``FXBASI
 ``FX|X``, ``FX|Y``: the FX delta is per currency against RUB, never a cross delta.
 The engine composes two :class:`~rub_fixed_income.fx_forwards.FxForwardRiskEngine` on the
 decomposition and reads only their foreign-leg values, so its PV does not depend on
-the pivot. NDF fixings of crosses are not supported (a fixing would need both rates).
+the pivot.
+
+Cross NDFs (0.45.0, BACKLOG #135): a cash-settled leg with ``settlement_currency`` the
+base or the quote currency pays ``N / q * (R - K)`` quote units or ``N * (1 - K / R)``
+base units for the cross fixing ``R`` (quote per ``q`` base, ``fixing_rate``). With
+``V_C(t) = S_C * DF_rub(s_C) / DF_C(s_C) * DF_C(t) * exp(b_C * tau(s_C, t))`` the RUB value
+of one unit of ``C`` paid on ``t`` (``V_RUB = DF_rub``), an unfixed leg settled in ``Z`` is
+the deliverable exchange at ``T`` carried to ``P`` on ``Z``'s curve,
+
+``PV = [N * V_X(T) - (N * K / q) * V_Y(T)] * V_Z(P) / V_Z(T)``,
+
+exact under deterministic rates (no convexity term; see ``docs/fx-forwards.md``), and a
+fixed one the known amount times ``V_Z(P)``. Such a leg is not a sum of two RUB-settled
+legs: the engine values it on the three curves directly.
+
+A cross NDF settled in RUB (as the exchange's cross-rate futures, final price the cross of
+two RUB fixings) pays ``N / q * (R - K) * R_Y = N * R_X - (N * K / q) * R_Y`` RUB, linear in
+the two RUB fixings: unfixed it is the cash-settled cross above, fixed (``fixing_rate``
+``R = q * R_X / R_Y`` and ``settlement_fixing_rate`` ``R_Y``) a known RUB amount on the RUB
+curve, exactly its two RUB-settled X/RUB NDFs (:func:`fx_cross_rub_legs`).
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from typing import Literal
 
@@ -41,10 +60,11 @@ from ._risk_common import (
     _check_scenario_shifts,
     _curve_identity,
     _shifts,
+    _shock_curve,
 )
-from .canonical import canonical_sha256
+from .canonical import OMIT_IF_DEFAULT, canonical_sha256
 from .conventions import DayCount
-from .discount import CurveBootstrapRequest, DiscountCurve
+from .discount import CurveBootstrapRequest, DiscountCurve, DiscountFactorCurve
 from .errors import InvalidTerms
 from .factors import FactorRisk, _upper, fx_basis_factor, fx_factor, ir_factor
 from .fx_forwards import (
@@ -55,8 +75,12 @@ from .fx_forwards import (
     FxForwardRiskRequest,
     FxSwap,
     _foreign_currency,
+    _outright_on,
+    _PointsHeldCurve,
+    _signed_years,
     _text,
 )
+from .fx_futures import _horizon_rule, _horizon_views
 
 __all__ = [
     "FX_CROSS_HORIZON_MODEL_VERSION",
@@ -89,12 +113,36 @@ def _pair(base: object, quote: object) -> None:
         raise InvalidTerms("a cross needs two different currencies")
 
 
-def _cross_leg(leg: object) -> FxForwardLeg:
+def _cross_leg(leg: object, base: str, quote: str) -> FxForwardLeg:
     if not isinstance(leg, FxForwardLeg):
         raise TypeError("cross legs must be FxForwardLeg values")
-    if leg.fixing_date is not None:
-        raise InvalidTerms("NDF fixings of a cross are not supported; pass a deliverable leg")
+    if leg.settlement_currency not in (None, base, quote):
+        raise InvalidTerms(
+            f"a {base}/{quote} leg settles in RUB, {base} or {quote}, not {leg.settlement_currency}"
+        )
+    if (
+        leg.settlement_currency is None
+        and leg.fixing_rate is not None
+        and leg.settlement_fixing_rate is None
+    ):
+        raise InvalidTerms(
+            f"a fixed {base}/{quote} NDF settled in RUB needs settlement_fixing_rate, the "
+            f"{quote} RUB fixing (RUB per one {quote}) of its source and date, beside "
+            "fixing_rate"
+        )
     return leg
+
+
+def _pair_settled(trade: FxCrossForward | FxCrossSwap) -> bool:
+    """True when a leg is an NDF settled in the base or quote currency (0.45.0)."""
+    return any(leg.settlement_currency is not None for leg in trade.legs)
+
+
+def _direct(trade: FxCrossForward | FxCrossSwap) -> bool:
+    """True when the engine values the legs itself: a pair-settled or a fixed NDF leg."""
+    return any(
+        leg.settlement_currency is not None or leg.fixing_rate is not None for leg in trade.legs
+    )
 
 
 @dataclass(frozen=True)
@@ -115,7 +163,7 @@ class FxCrossForward:
     def __post_init__(self) -> None:
         _text(self.trade_id, "trade_id")
         _pair(self.base_currency, self.quote_currency)
-        _cross_leg(self.leg)
+        _cross_leg(self.leg, self.base_currency, self.quote_currency)
         object.__setattr__(self, "quote_units", positive_money(self.quote_units, "quote units"))
 
     @property
@@ -140,8 +188,8 @@ class FxCrossSwap:
     def __post_init__(self) -> None:
         _text(self.trade_id, "trade_id")
         _pair(self.base_currency, self.quote_currency)
-        _cross_leg(self.near)
-        _cross_leg(self.far)
+        _cross_leg(self.near, self.base_currency, self.quote_currency)
+        _cross_leg(self.far, self.base_currency, self.quote_currency)
         if self.far.value_date <= self.near.value_date:
             raise InvalidTerms("the far leg must settle after the near leg")
         if (self.near.notional_foreign > 0.0) == (self.far.notional_foreign > 0.0):
@@ -172,26 +220,42 @@ def fx_cross_rub_legs(
 
     The base leg exchanges ``N`` base units at ``pivot_rate`` RUB, the quote leg
     ``-N * K / q`` quote units at ``pivot_rate * N / (N * K / q)``: their RUB amounts are
-    equal and opposite, so their sum is the cross for every positive pivot.
+    equal and opposite, so their sum is the cross for every positive pivot. A leg
+    settled in the base or quote currency (0.45.0) has no such decomposition and is
+    rejected with :class:`InvalidTerms`. A RUB-settled NDF leg (0.45.0) gives two
+    RUB-settled X/RUB NDFs with its fixing date and source; fixed, the base one at
+    ``R_X = fixing_rate * settlement_fixing_rate / q`` and the quote one at
+    ``R_Y = settlement_fixing_rate``.
     """
     if not isinstance(trade, (FxCrossForward, FxCrossSwap)):
         raise TypeError("trade must be an FxCrossForward or an FxCrossSwap")
+    if _pair_settled(trade):
+        raise InvalidTerms(
+            f"{trade.trade_id}: a cross NDF settled in {trade.base_currency} or "
+            f"{trade.quote_currency} is not a sum of two RUB-settled legs"
+        )
     pivot = positive_money(pivot_rate, "pivot rate")
     base_legs = []
     quote_legs = []
     for leg in trade.legs:
         quote = _quote_notional(leg, trade.quote_units)
-        base_legs.append(
-            FxForwardLeg(leg.value_date, leg.notional_foreign, pivot, leg.payment_date)
+        base_leg = FxForwardLeg(leg.value_date, leg.notional_foreign, pivot, leg.payment_date)
+        quote_leg = FxForwardLeg(
+            leg.value_date,
+            quote,
+            positive_money(pivot * leg.notional_foreign / -quote, "quote pivot rate"),
+            leg.payment_date,
         )
-        quote_legs.append(
-            FxForwardLeg(
-                leg.value_date,
-                quote,
-                positive_money(pivot * leg.notional_foreign / -quote, "quote pivot rate"),
-                leg.payment_date,
-            )
-        )
+        if leg.fixing_date is not None:
+            base_rate = quote_rate = None
+            if leg.fixing_rate is not None and leg.settlement_fixing_rate is not None:
+                quote_rate = leg.settlement_fixing_rate
+                base_rate = leg.fixing_rate * quote_rate / trade.quote_units
+            terms = {"fixing_date": leg.fixing_date, "fixing_source": leg.fixing_source}
+            base_leg = replace(base_leg, fixing_rate=base_rate, **terms)  # type: ignore[arg-type]
+            quote_leg = replace(quote_leg, fixing_rate=quote_rate, **terms)  # type: ignore[arg-type]
+        base_legs.append(base_leg)
+        quote_legs.append(quote_leg)
     base_id = f"{trade.trade_id}/{trade.base_currency}"
     quote_id = f"{trade.trade_id}/{trade.quote_currency}"
     if isinstance(trade, FxCrossSwap):
@@ -238,11 +302,49 @@ class FxCrossRiskRequest:
         )
         object.__setattr__(self, "base_basis_bp", finite_money(self.base_basis_bp, "base basis"))
         object.__setattr__(self, "quote_basis_bp", finite_money(self.quote_basis_bp, "quote basis"))
+        curve_date = getattr(self.rub_curve, "curve_date", None)
+        if not isinstance(curve_date, date):
+            return  # the per-currency requests reject the curve
+        trade = self.instrument
+        # On the engine's direct path the per-currency requests see only curve proxies, so
+        # every leg is checked here; otherwise they check the decomposition's legs, and the
+        # NDF legs (fixing terms) are checked here for their fixing.
+        direct = _direct(trade)
+        for leg in trade.legs:
+            if not direct and leg.fixing_date is None:
+                continue
+            if leg.settlement_date < curve_date or (
+                not leg.is_fixed and leg.value_date < curve_date
+            ):
+                raise InvalidTerms(
+                    f"{trade.trade_id}: a leg settled before the curve date "
+                    f"({leg.value_date.isoformat()}); value only outstanding legs"
+                )
+            if not leg.is_fixed and leg.fixing_date is not None and leg.fixing_date < curve_date:
+                rub = (
+                    f" and settlement_fixing_rate (RUB per one {trade.quote_currency})"
+                    if leg.settlement_currency is None
+                    else ""
+                )
+                raise InvalidTerms(
+                    f"{trade.trade_id}: the leg fixed on {leg.fixing_date.isoformat()}; pass "
+                    f"its published fixing_rate ({trade.quote_currency} per "
+                    f"{trade.quote_units:g} {trade.base_currency}){rub}"
+                )
 
 
 @dataclass(frozen=True)
 class FxCrossLegValuation:
-    """One cross leg: ``forward_rate`` is the cross outright ``q * F_X(T) / F_Y(T)``."""
+    """One cross leg: ``forward_rate`` is the cross outright ``q * F_X(T) / F_Y(T)``.
+
+    A cross NDF leg settled in the base or quote currency (0.45.0, each omitted at None)
+    reports its ``settlement_currency`` and ``settlement_amount`` (units of it paid on
+    ``payment_date``, at the projected cross rate or the fixing); a fixed one its
+    ``fixing_date`` and ``fixing_rate``, its ``forward_rate`` is the fixing and its
+    ``base_forward_rate`` / ``quote_forward_rate`` are today's forwards for the payment
+    date (the value date may have passed). A fixed leg settled in RUB also reports its
+    ``settlement_fixing_rate`` and its known RUB ``settlement_amount``.
+    """
 
     value_date: date
     payment_date: date
@@ -255,6 +357,11 @@ class FxCrossLegValuation:
     forward_points: float
     rub_discount_factor: float
     pv_rub: float
+    fixing_date: date | None = field(default=None, metadata=OMIT_IF_DEFAULT)
+    fixing_rate: float | None = field(default=None, metadata=OMIT_IF_DEFAULT)
+    settlement_currency: str | None = field(default=None, metadata=OMIT_IF_DEFAULT)
+    settlement_amount: float | None = field(default=None, metadata=OMIT_IF_DEFAULT)
+    settlement_fixing_rate: float | None = field(default=None, metadata=OMIT_IF_DEFAULT)
 
 
 @dataclass(frozen=True)
@@ -394,12 +501,93 @@ _NO_MOVE: _Moves = (_ZERO_SHOCK, _ZERO_SHOCK, _ZERO_SHOCK, 0.0, 0.0, 0.0, 0.0)
 
 
 @dataclass(frozen=True)
+class _Unit:
+    """``V(t)``: RUB value of one unit of a currency paid on ``t`` (today, or at the
+    horizon on its views), ``spot_pv * DF(t) * exp(b * tau(s, t))``."""
+
+    spot_pv: float
+    curve: DiscountFactorCurve
+    spot_date: date
+    basis: float
+    day_count: DayCount
+
+    def growth(self, target: date) -> float:
+        tau = _signed_years(self.day_count, self.spot_date, target)
+        return self.curve.discount_factor(target) * math.exp(self.basis * tau)
+
+    def value(self, target: date) -> float:
+        return self.spot_pv * self.growth(target)
+
+
+def _unit(
+    spot: float,
+    rub: DiscountFactorCurve,
+    curve: DiscountFactorCurve,
+    spot_date: date,
+    basis: float,
+    day_count: DayCount,
+) -> _Unit:
+    pv = spot * rub.discount_factor(spot_date) / curve.discount_factor(spot_date)
+    return _Unit(pv, curve, spot_date, basis, day_count)
+
+
+def _rub_unit(rub: DiscountFactorCurve) -> _Unit:
+    return _Unit(1.0, rub, rub.curve_date, 0.0, DayCount.ACT_365_FIXED)
+
+
+def _rub_amount(trade: FxCrossForward | FxCrossSwap, leg: FxForwardLeg) -> float:
+    """The known RUB amount of a fixed RUB-settled leg, ``N / q * (R - K) * R_Y``."""
+    assert leg.fixing_rate is not None and leg.settlement_fixing_rate is not None
+    return (
+        leg.notional_foreign
+        / trade.quote_units
+        * (leg.fixing_rate - leg.contract_rate)
+        * leg.settlement_fixing_rate
+    )
+
+
+def _ndf_leg_values(
+    trade: FxCrossForward | FxCrossSwap, leg: FxForwardLeg, ux: _Unit, uy: _Unit, ur: _Unit
+) -> tuple[float, float, float]:
+    """(base part, quote part, RUB-only part) of a leg's RUB PV; the first two are linear
+    in their own spot, the last (a fixed RUB-settled leg) reads only the RUB curve."""
+    n, k, q = leg.notional_foreign, leg.contract_rate, trade.quote_units
+    settle, pay = leg.settlement_currency, leg.settlement_date
+    if leg.fixing_rate is not None:  # a known amount of the settlement currency
+        if settle == trade.base_currency:
+            return n * (1.0 - k / leg.fixing_rate) * ux.value(pay), 0.0, 0.0
+        if settle == trade.quote_currency:
+            return 0.0, n / q * (leg.fixing_rate - k) * uy.value(pay), 0.0
+        return 0.0, 0.0, _rub_amount(trade, leg) * ur.value(pay)
+    z = ux if settle == trade.base_currency else uy if settle == trade.quote_currency else ur
+    value_date = leg.value_date
+    carry = z.growth(pay) / z.growth(value_date)
+    return n * ux.value(value_date) * carry, -(n * k / q) * uy.value(value_date) * carry, 0.0
+
+
+def _curve_proxies(trade: FxCrossForward | FxCrossSwap) -> tuple[FxForward, FxForward]:
+    """Deliverable unit trades on each currency: their engines give the curves, shocks and
+    checks of the pair-settled path, which values the legs itself."""
+    last = max(leg.settlement_date for leg in trade.legs)
+    leg = FxForwardLeg(last, 1.0, 1.0)
+    return (
+        FxForward(f"{trade.trade_id}/{trade.base_currency}", trade.base_currency, 1.0, leg),
+        FxForward(f"{trade.trade_id}/{trade.quote_currency}", trade.quote_currency, 1.0, leg),
+    )
+
+
+@dataclass(frozen=True)
 class FxCrossRiskEngine:
     """Value an outstanding cross on two foreign curves and the RUB curve, bases held.
 
     ``PV = A_X + A_Y``: the RUB value of the base and quote currency amounts, each from
     its own :class:`FxForwardRiskEngine` on :func:`fx_cross_rub_legs` (whose cancelling
     RUB amounts are never added). Share one ``curve_cache`` across engines.
+
+    A trade with a leg settled in the base or quote currency (0.45.0) is valued leg by
+    leg on the three curves (module doc): ``A_X`` and ``A_Y`` are then the parts of PV
+    linear in each spot, so FX deltas, the exact spot Hessian terms and every curve's
+    buckets keep their meaning.
     """
 
     request: FxCrossRiskRequest
@@ -410,13 +598,21 @@ class FxCrossRiskEngine:
     base_id: str = field(init=False)
     _base: FxForwardRiskEngine = field(init=False, repr=False)
     _quote: FxForwardRiskEngine = field(init=False, repr=False)
-    _base_values: tuple[float, float] = field(init=False, repr=False)
+    _base_values: tuple[float, float, float] = field(init=False, repr=False)
+    _ndf: bool = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         req = self.request
         if not isinstance(self.curve_cache, ShockedCurveCache):
             raise TypeError("curve_cache must be a ShockedCurveCache")
-        base_trade, quote_trade = fx_cross_rub_legs(req.instrument)
+        ndf = _direct(req.instrument)
+        object.__setattr__(self, "_ndf", ndf)
+        base_trade: FxForward | FxSwap
+        quote_trade: FxForward | FxSwap
+        if ndf:
+            base_trade, quote_trade = _curve_proxies(req.instrument)
+        else:
+            base_trade, quote_trade = fx_cross_rub_legs(req.instrument)
         base = FxForwardRiskEngine(
             FxForwardRiskRequest(
                 base_trade,
@@ -445,7 +641,7 @@ class FxCrossRiskEngine:
         object.__setattr__(self, "_quote", quote)
         values = self._values(_NO_MOVE)
         object.__setattr__(self, "_base_values", values)
-        object.__setattr__(self, "base_pv_rub", finite_money(values[0] + values[1], "PV"))
+        object.__setattr__(self, "base_pv_rub", finite_money(self._total(values), "PV"))
         object.__setattr__(
             self,
             "base_id",
@@ -484,19 +680,142 @@ class FxCrossRiskEngine:
     def quote_curve_basis(self) -> str:
         return self._quote.foreign_curve_basis
 
-    def _values(self, moves: _Moves) -> tuple[float, float]:
-        """(base amounts' RUB PV, quote amounts' RUB PV) under the moves."""
+    def _total(self, values: tuple[float, float, float]) -> float:
+        if self._ndf:
+            return values[0] + values[1] + values[2]
+        return values[0] + values[1]
+
+    def _values(self, moves: _Moves) -> tuple[float, float, float]:
+        """(base amounts' RUB PV, quote amounts' RUB PV, RUB-only PV) under the moves; the
+        last is that of fixed RUB-settled legs, zero off the direct path."""
         rub, base, quote, base_basis, quote_basis, base_spot, quote_spot = moves
+        if self._ndf:
+            try:
+                rub_curve, base_curve = self._base._curves(rub, base)
+                _, quote_curve = self._quote._curves(rub, quote)
+            except (OverflowError, ZeroDivisionError) as exc:
+                raise ValueError("shock is outside the supported numerical domain") from exc
+            return self._ndf_values_on(
+                rub_curve, base_curve, quote_curve, base_basis, quote_basis, base_spot, quote_spot
+            )
         return (
             self._base._values((rub, base, base_basis, base_spot))[0],
             self._quote._values((rub, quote, quote_basis, quote_spot))[0],
+            0.0,
         )
 
+    def _units(
+        self,
+        rub: DiscountFactorCurve,
+        base: DiscountFactorCurve,
+        quote: DiscountFactorCurve,
+        base_basis: float,
+        quote_basis: float,
+        base_spot: float,
+        quote_spot: float,
+    ) -> tuple[_Unit, _Unit]:
+        req = self.request
+        return (
+            _unit(
+                req.base_spot_rate * (1.0 + base_spot / 100.0),
+                rub,
+                base,
+                req.base_spot_value_date,
+                finite_money(req.base_basis_bp + base_basis, "shocked basis") * 1e-4,
+                req.base_basis_day_count,
+            ),
+            _unit(
+                req.quote_spot_rate * (1.0 + quote_spot / 100.0),
+                rub,
+                quote,
+                req.quote_spot_value_date,
+                finite_money(req.quote_basis_bp + quote_basis, "shocked basis") * 1e-4,
+                req.quote_basis_day_count,
+            ),
+        )
+
+    def _ndf_values_on(
+        self,
+        rub: DiscountFactorCurve,
+        base: DiscountFactorCurve,
+        quote: DiscountFactorCurve,
+        base_basis: float,
+        quote_basis: float,
+        base_spot: float,
+        quote_spot: float,
+    ) -> tuple[float, float, float]:
+        """(base, quote, RUB-only) parts of the direct path's PV on the given curves."""
+        trade = self.request.instrument
+        try:
+            ux, uy = self._units(rub, base, quote, base_basis, quote_basis, base_spot, quote_spot)
+            ur = _rub_unit(rub)
+            parts = [_ndf_leg_values(trade, leg, ux, uy, ur) for leg in trade.legs]
+            return (
+                finite_money(math.fsum(a for a, _, _ in parts), "base amounts PV"),
+                finite_money(math.fsum(b for _, b, _ in parts), "quote amounts PV"),
+                finite_money(math.fsum(r for _, _, r in parts), "RUB amounts PV"),
+            )
+        except (OverflowError, ZeroDivisionError) as exc:
+            raise ValueError("shock is outside the supported numerical domain") from exc
+
     def _pv(self, moves: _Moves) -> float:
-        base, quote = self._values(moves)
-        return base + quote
+        return self._total(self._values(moves))
+
+    def _ndf_leg_valuations(self) -> tuple[FxCrossLegValuation, ...]:
+        trade = self.request.instrument
+        rub = self._base._rub_curve
+        ux, uy = self._units(
+            rub, self._base._foreign_curve, self._quote._foreign_curve, 0.0, 0.0, 0.0, 0.0
+        )
+        ur = _rub_unit(rub)
+        q = trade.quote_units
+        cross_spot = q * self.request.base_spot_rate / self.request.quote_spot_rate
+        rows = []
+        for leg in trade.legs:
+            pay = leg.settlement_date
+            fixed = leg.fixing_rate is not None
+            at = pay if fixed else leg.value_date
+            df_at = rub.discount_factor(at)
+            base_forward = ux.value(at) / df_at
+            quote_forward = uy.value(at) / df_at
+            forward = (
+                leg.fixing_rate if leg.fixing_rate is not None else q * base_forward / quote_forward
+            )
+            a, b, r = _ndf_leg_values(trade, leg, ux, uy, ur)
+            settle = leg.settlement_currency
+            n, k = leg.notional_foreign, leg.contract_rate
+            amount = None
+            if settle == trade.base_currency:
+                amount = finite_money(n * (1.0 - k / forward), "settlement amount")
+            elif settle == trade.quote_currency:
+                amount = finite_money(n / q * (forward - k), "settlement amount")
+            elif fixed:
+                amount = finite_money(_rub_amount(trade, leg), "settlement amount")
+            rows.append(
+                FxCrossLegValuation(
+                    value_date=leg.value_date,
+                    payment_date=pay,
+                    base_notional=n,
+                    quote_notional=_quote_notional(leg, q),
+                    contract_rate=k,
+                    base_forward_rate=base_forward,
+                    quote_forward_rate=quote_forward,
+                    forward_rate=forward,
+                    forward_points=forward - cross_spot,
+                    rub_discount_factor=rub.discount_factor(pay),
+                    pv_rub=finite_money(a + b + r, "leg PV"),
+                    fixing_date=leg.fixing_date if fixed else None,
+                    fixing_rate=leg.fixing_rate,
+                    settlement_currency=settle,
+                    settlement_amount=amount,
+                    settlement_fixing_rate=leg.settlement_fixing_rate,
+                )
+            )
+        return tuple(rows)
 
     def leg_valuations(self) -> tuple[FxCrossLegValuation, ...]:
+        if self._ndf:
+            return self._ndf_leg_valuations()
         trade = self.request.instrument
         rows = []
         cross_spot = trade.quote_units * self.request.base_spot_rate / self.request.quote_spot_rate
@@ -572,7 +891,7 @@ class FxCrossRiskEngine:
         req = self.request
         parallel = (bump,) * size
         rub_rows, base_rows, quote_rows = buckets(0), buckets(1), buckets(2)
-        base_pv, quote_pv = self._base_values
+        base_pv, quote_pv, _ = self._base_values
         rub = self._base._rub_curve
         trade = req.instrument
         return FxCrossRiskResult(
@@ -616,7 +935,10 @@ class FxCrossRiskEngine:
         self, *, bump_bp: float = 1.0, difference: Literal["forward", "central"] = "central"
     ) -> FxCrossPointsHeldRisk:
         """RUB risk with both currencies' outrights held: the sum over the two RUB-leg
-        trades (their cancelling RUB amounts carry equal and opposite risk)."""
+        trades (their cancelling RUB amounts carry equal and opposite risk); on the
+        pair-settled path both foreign curves move with the RUB one."""
+        if self._ndf:
+            return self._ndf_points_held(bump_bp, difference)
         base = self._base.points_held_rub_risk(bump_bp=bump_bp, difference=difference)
         quote = self._quote.points_held_rub_risk(bump_bp=bump_bp, difference=difference)
         rows = tuple(
@@ -632,6 +954,49 @@ class FxCrossRiskEngine:
             rub_parallel_dv01_rub=finite_money(
                 base.rub_parallel_dv01_rub + quote.rub_parallel_dv01_rub, "RUB parallel DV01"
             ),
+        )
+
+    def _ndf_points_held(
+        self, bump_bp: float, difference: Literal["forward", "central"]
+    ) -> FxCrossPointsHeldRisk:
+        bump = positive_money(bump_bp, "risk bump bp")
+        if difference not in ("forward", "central"):
+            raise ValueError("difference must be forward or central")
+        size = len(RISK_BUCKETS)
+        base_engine, quote_engine = self._base, self._quote
+        rub_base = base_engine._rub_curve
+
+        def pv(shifts: tuple[float, ...]) -> float:
+            try:
+                rub = _shock_curve(
+                    base_engine.request.rub_curve, rub_base, shifts, self.curve_cache
+                )
+                base = _PointsHeldCurve(base_engine._foreign_curve, rub_base, rub)
+                quote = _PointsHeldCurve(quote_engine._foreign_curve, rub_base, rub)
+            except (OverflowError, ZeroDivisionError) as exc:
+                raise ValueError("shock is outside the supported numerical domain") from exc
+            return self._total(self._ndf_values_on(rub, base, quote, 0.0, 0.0, 0.0, 0.0))
+
+        def sensitivity(shifts: tuple[float, ...]) -> float:
+            up = pv(shifts)
+            if difference == "central":
+                down = pv(tuple(-s for s in shifts))
+                return finite_money((up - down) / (2.0 * bump), "sensitivity")
+            return finite_money((up - self.base_pv_rub) / bump, "sensitivity")
+
+        rows = tuple(
+            FxForwardBucketRisk(
+                bucket, sensitivity(tuple(bump if i == j else 0.0 for j in range(size)))
+            )
+            for i, bucket in enumerate(RISK_BUCKETS)
+        )
+        return FxCrossPointsHeldRisk(
+            base_id=self.base_id,
+            difference=difference,
+            bump_bp=bump,
+            rub_buckets=rows,
+            rub_dv01_rub=finite_money(math.fsum(b.dv01_rub for b in rows), "RUB DV01"),
+            rub_parallel_dv01_rub=sensitivity((bump,) * size),
         )
 
     def reprice(self, scenario: FxCrossScenario) -> FxCrossScenarioResult:
@@ -686,7 +1051,7 @@ class FxCrossRiskEngine:
         rates = 3 * size + 2
         base_spot, quote_spot = rates, rates + 1
 
-        def values(vector: list[float]) -> tuple[float, float]:
+        def values(vector: list[float]) -> tuple[float, float, float]:
             return self._values(
                 (
                     tuple(vector[:size]),
@@ -715,7 +1080,7 @@ class FxCrossRiskEngine:
             if up == base and down == base:
                 continue
             active.append(i)
-            up_pv, down_pv = up[0] + up[1], down[0] + down[1]
+            up_pv, down_pv = self._total(up), self._total(down)
             gradient[i] = finite_money((up_pv - down_pv) / (2 * bump), "gradient")
             hessian[i][i] = finite_money(
                 ((up_pv - base_pv) + (down_pv - base_pv)) / square, "diagonal gamma"
@@ -730,8 +1095,7 @@ class FxCrossRiskEngine:
                 for sign_i, sign_j in ((1, 1), (1, -1), (-1, 1), (-1, -1)):
                     pair = [0.0] * rates
                     pair[i], pair[j] = sign_i * bump, sign_j * bump
-                    a, b = values(pair)
-                    corners.append(a + b)
+                    corners.append(self._total(values(pair)))
                 hessian[i][j] = hessian[j][i] = finite_money(
                     ((corners[0] - corners[1]) - (corners[2] - corners[3])) / (4 * square),
                     "cross gamma",
@@ -767,7 +1131,20 @@ class FxCrossRiskEngine:
         fx_horizon: FxHorizon = "spot_held",
     ) -> FxCrossHorizonValuation:
         """Carry, rolldown and theta to ``horizon_date``; each currency's horizon spot date
-        is its own spot lag from the horizon (the caller applies it)."""
+        is its own spot lag from the horizon (the caller applies it).
+
+        On the pair-settled path (0.45.0) a leg paid by the horizon receives its
+        settlement amount (at the fixing, or the cross rate of the rule's rates for the
+        value date) converted at the rule's rate for the payment date; the other legs are
+        valued on the views from each currency's horizon spot.
+        """
+        if self._ndf:
+            return self._ndf_horizon(
+                horizon_date,
+                base_horizon_spot_value_date,
+                quote_horizon_spot_value_date,
+                fx_horizon,
+            )
         base = self._base.horizon(
             horizon_date,
             horizon_spot_value_date=base_horizon_spot_value_date,
@@ -803,6 +1180,134 @@ class FxCrossRiskEngine:
             rolldown_rub=finite_money(pv_rolled - pv_forward, "rolldown"),
             horizon_pnl_rub=finite_money(pv_rolled + received - start, "horizon P&L"),
         )
+
+    def _ndf_horizon(
+        self,
+        horizon_date: date,
+        base_horizon_spot_value_date: date,
+        quote_horizon_spot_value_date: date,
+        fx_horizon: FxHorizon,
+    ) -> FxCrossHorizonValuation:
+        return _ndf_horizon_impl(
+            self,
+            horizon_date,
+            base_horizon_spot_value_date,
+            quote_horizon_spot_value_date,
+            fx_horizon,
+        )
+
+
+def _ndf_horizon_impl(
+    engine: FxCrossRiskEngine,
+    horizon_date: date,
+    base_horizon_spot_value_date: date,
+    quote_horizon_spot_value_date: date,
+    fx_horizon: FxHorizon,
+) -> FxCrossHorizonValuation:
+    req = engine.request
+    trade = req.instrument
+    rub = engine._base._rub_curve
+    sides = (
+        (
+            req.base_spot_rate,
+            req.base_spot_value_date,
+            base_horizon_spot_value_date,
+            req.base_basis_bp * 1e-4,
+            req.base_basis_day_count,
+            engine._base._foreign_curve,
+        ),
+        (
+            req.quote_spot_rate,
+            req.quote_spot_value_date,
+            quote_horizon_spot_value_date,
+            req.quote_basis_bp * 1e-4,
+            req.quote_basis_day_count,
+            engine._quote._foreign_curve,
+        ),
+    )
+    rule = fx_horizon
+    for _, spot_date, horizon_spot_date, _, _, _ in sides:
+        rule = _horizon_rule(rub.curve_date, spot_date, horizon_date, horizon_spot_date, fx_horizon)
+    held = rule == "spot_held"
+
+    def rate(side: int, target: date) -> float:
+        spot, spot_date, _, basis, day_count, curve = sides[side]
+        if held:
+            return spot
+        return _outright_on(spot, rub, curve, spot_date, target, basis, day_count)
+
+    horizon_spots = tuple(rate(i, sides[i][2]) for i in (0, 1))
+    q = trade.quote_units
+    x, y = trade.base_currency, trade.quote_currency
+    cash = []
+    remaining = []
+    for leg in trade.legs:
+        pay = leg.settlement_date
+        if pay > horizon_date:
+            remaining.append(leg)
+            continue
+        n, k, settle = leg.notional_foreign, leg.contract_rate, leg.settlement_currency
+        if leg.fixing_rate is not None:
+            if settle is None:  # a known RUB amount
+                cash.append(_rub_amount(trade, leg))
+                continue
+            cross = leg.fixing_rate
+        else:
+            fx_x, fx_y = rate(0, leg.value_date), rate(1, leg.value_date)
+            if settle is None:  # RUB: N * FX_X - N * K / q * FX_Y
+                cash.append(n * fx_x - n * k / q * fx_y)
+                continue
+            cross = q * fx_x / fx_y
+        if settle == x:
+            cash.append(n * (1.0 - k / cross) * rate(0, pay))
+        else:
+            cash.append(n / q * (cross - k) * rate(1, pay))
+    received = finite_money(math.fsum(cash), "received")
+    rub_forward, rub_rolled = _horizon_views(rub, horizon_date)
+    views = tuple(_horizon_views(side[5], horizon_date) for side in sides)
+
+    def pv(index: int, label: str) -> float:
+        rub_view = (rub_forward, rub_rolled)[index]
+        ux, uy = (
+            _unit(
+                horizon_spots[i],
+                rub_view,
+                views[i][index],
+                sides[i][2],
+                sides[i][3],
+                sides[i][4],
+            )
+            for i in (0, 1)
+        )
+        ur = _rub_unit(rub_view)
+        values: list[float] = []
+        for leg in remaining:
+            values.extend(_ndf_leg_values(trade, leg, ux, uy, ur))
+        return finite_money(math.fsum(values), label)
+
+    pv_forward = pv(0, "forward PV")
+    pv_rolled = pv(1, "rolled PV")
+    start = engine.base_pv_rub
+    return FxCrossHorizonValuation(
+        base_id=engine.base_id,
+        trade_id=trade.trade_id,
+        base_currency=x,
+        quote_currency=y,
+        valuation_date=rub.curve_date,
+        horizon_date=horizon_date,
+        fx_horizon=rule,
+        base_horizon_spot_rate=positive_money(horizon_spots[0], "horizon spot rate"),
+        base_horizon_spot_value_date=base_horizon_spot_value_date,
+        quote_horizon_spot_rate=positive_money(horizon_spots[1], "horizon spot rate"),
+        quote_horizon_spot_value_date=quote_horizon_spot_value_date,
+        pv_start_rub=start,
+        pv_forward_rub=pv_forward,
+        pv_rolled_rub=pv_rolled,
+        received_rub=received,
+        carry_rub=finite_money(pv_forward + received - start, "carry"),
+        rolldown_rub=finite_money(pv_rolled - pv_forward, "rolldown"),
+        horizon_pnl_rub=finite_money(pv_rolled + received - start, "horizon P&L"),
+    )
 
 
 def fx_cross_factor_risk(

@@ -126,7 +126,9 @@ class FxForwardInstrument:
     settlement calendar) and the :class:`~rub_fixed_income.domain.FxBasis` of the pair on
     the foreign curve. Any currency other than RUB (0.36.0: ``<ccy>_discount_factors_v1``
     or ``<ccy>_fx_implied_v1``); an NDF leg whose fixing date has come is frozen at the
-    snapshot :class:`~rub_fixed_income.domain.FxFixing` of its ``fixing_source``.
+    snapshot :class:`~rub_fixed_income.domain.FxFixing` of its ``fixing_source``. A leg
+    settled in the foreign currency (0.45.0, ``FxForwardLeg.settlement_currency``) is then
+    a known foreign amount discounted on ``foreign_curve_id``.
     """
 
     instrument_id: str
@@ -161,7 +163,11 @@ class FxCrossInstrument:
     :class:`~rub_fixed_income.domain.FxSpot` and :class:`~rub_fixed_income.domain.FxBasis`,
     both discounted to RUB on ``rub_curve_id``. ``calendar_id`` is the cross pair's
     settlement calendar (for example a joint US + CN calendar for USD/CNY): every value
-    date must be a business day of it. A position on it states the base currency.
+    date must be a business day of it. A position on it states the base currency. An NDF
+    leg settled in the base or quote currency (0.45.0) whose fixing date has come is fixed
+    at ``quote_units * R_base / R_quote`` from both currencies' snapshot
+    :class:`~rub_fixed_income.domain.FxFixing` of its ``fixing_source`` (or its own
+    ``fixing_rate``, checked against them).
     """
 
     instrument_id: str
