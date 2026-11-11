@@ -3,8 +3,12 @@ from __future__ import annotations
 from calendar import monthrange
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
+from typing import cast
 
+from ._state import _fields_only_state
 from .errors import CalendarRangeError
+
+_ADD_MEMO_SIZE = 1 << 15
 
 
 def year_fraction(start: date, end: date) -> float:
@@ -47,6 +51,8 @@ class BusinessCalendar:
     valid_from: date | None = None
     valid_to: date | None = None
 
+    __getstate__ = _fields_only_state
+
     def __post_init__(self) -> None:
         object.__setattr__(self, "holidays", frozenset(self.holidays))
         object.__setattr__(self, "working_days", frozenset(self.working_days))
@@ -87,7 +93,11 @@ class BusinessCalendar:
             )
 
     def is_business_day(self, value: date) -> bool:
-        self.require_covered(value)
+        # ``covers`` inline: this is the innermost call of every date walk.
+        if self.valid_from is not None and not self.valid_from <= value <= cast(
+            date, self.valid_to
+        ):
+            self.require_covered(value)
         if value in self.working_days:
             return True
         return value.weekday() < 5 and value not in self.holidays
@@ -96,12 +106,29 @@ class BusinessCalendar:
         if count < 0:
             raise ValueError("negative business-day lags are not supported")
         self.require_covered(value)
+        if not count:
+            return value
+        # The calendar is immutable and the walk is a pure function of (value, count), so a
+        # result is computed once: floating coupons ask for the same observation days
+        # (+1 business day) once per position. A walk that leaves the covered range raises
+        # and is not stored.
+        memo: dict[tuple[date, int], date] | None = self.__dict__.get("_add_memo")
+        if memo is None:
+            memo = {}
+            object.__setattr__(self, "_add_memo", memo)
+        key = (value, count)
+        cached = memo.get(key)
+        if cached is not None:
+            return cached
         current = value
         added = 0
+        step = timedelta(days=1)
         while added < count:
-            current += timedelta(days=1)
+            current += step
             if self.is_business_day(current):
                 added += 1
+        if len(memo) < _ADD_MEMO_SIZE:
+            memo[key] = current
         return current
 
     def modified_following(self, value: date) -> date:

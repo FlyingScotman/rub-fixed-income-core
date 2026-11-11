@@ -22,10 +22,12 @@ from __future__ import annotations
 import json
 import math
 import time
+from collections import Counter
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field, replace
 from dataclasses import fields as dataclass_fields
 from datetime import date, datetime
+from functools import partial
 from itertools import pairwise
 from typing import Literal, cast
 
@@ -35,7 +37,7 @@ from ._risk_common import _curve_basis, _shifts
 from ._version import __version__
 from .bond import YieldRequest, solve_effective_annual_yield
 from .callables import ExerciseAssumption, ExercisedBond, exercised_instrument, resolve_exercise
-from .canonical import OMIT_IF_DEFAULT, canonical_json_bytes, canonical_sha256
+from .canonical import OMIT_IF_DEFAULT, _sha256_of_decoded, canonical_json_bytes, canonical_sha256
 from .cashflows import BondCashflow, clean_price_pct_to_dirty_rub
 from .compatibility import bond_duration
 from .conventions import (
@@ -132,6 +134,7 @@ from .risk import (
     BondScenario,
     BondSecondOrderRisk,
     ShockedCurveCache,
+    _EngineFamilies,
 )
 from .serialization import decode
 from .xccy import XccyCurveBootstrapRequest
@@ -1159,13 +1162,14 @@ def value_portfolio(
     models: list[PositionModel] = []
     exercised_memo: dict[str, ExercisedBond | CoreRejection] = {}
 
+    engines = _EngineFamilies(Counter(p.instrument_id for p in positions))
     context = _product_context(
         snapshot, policy, job_id, cache, built, projections, used_calendars, used_fx, bonds_by_id
     )
     curve, projection = context.bond_curve, context.projection
     ofz_job = None if policy.ofz_basis is None else _OfzBasisJob(policy.ofz_basis, curve)
 
-    for position in positions:
+    for position in _finished(positions, engines):
         reason = stopped()
         if reason is not None:
             rejections.append(
@@ -1209,6 +1213,7 @@ def value_portfolio(
                 used_cpi,
                 None if exercised is None else exercised.perpetual_tail,
                 ofz_job,
+                engines,
             )
         except CoreRejection as exc:
             rejections.append(
@@ -1322,9 +1327,7 @@ def value_portfolio(
     cpi = tuple(used_cpi[k] for k in sorted(used_cpi))
     if not derivative_book:
         result = PortfolioRiskResult(*fields_v2, fx_rates=fx_rates, cpi=cpi)
-        return replace(
-            result, result_sha256=canonical_sha256(portfolio_result_hash_projection(result))
-        )
+        return replace(result, result_sha256=_result_sha256(result))
     by_field: dict[str, list[ProductRow]] = {name: [] for name in ROW_FIELDS.values()}
     for row in rows:
         by_field[ROW_FIELDS[type(row)]].append(row)
@@ -1353,9 +1356,15 @@ def value_portfolio(
         fx_spots=tuple(context.used_fx_spots[k] for k in sorted(context.used_fx_spots)),
         credit_curves=tuple(context.used_credit[k] for k in sorted(context.used_credit)),
     )
-    return replace(
-        result_v3, result_sha256=canonical_sha256(portfolio_result_hash_projection(result_v3))
-    )
+    return replace(result_v3, result_sha256=_result_sha256(result_v3))
+
+
+def _finished(positions: Sequence[Position], engines: _EngineFamilies) -> Iterator[Position]:
+    """``positions`` one by one; each is reported to ``engines`` as done when the next is asked
+    for, whichever way the loop body left it."""
+    for position in positions:
+        yield position
+        engines.done(position.instrument_id)
 
 
 def _product_context(
@@ -1610,6 +1619,7 @@ def _value_position(
     used_cpi: dict[str, CpiUse] | None = None,
     perpetual_tail: PerpetualTail | None = None,
     ofz_job: _OfzBasisJob | None = None,
+    engines: _EngineFamilies | None = None,
 ) -> tuple[PositionValuation, BondRiskEngine]:
     """Value one bond position.
 
@@ -1630,6 +1640,8 @@ def _value_position(
     A bond discounted on the KBD of ``ofz_job`` (``ValuationPolicy.ofz_basis``), or a floater
     discounted on its RUONIA OIS curve and projected off that KBD, reports its rate risk as
     RUONIA + basis; its engine is recorded in ``ofz_job.engines``.
+
+    ``engines`` shares one calibrated risk engine among the positions in one instrument.
     """
     linker = instruments.get(position.instrument_id)
     if linker is not None and linker.product is ProductType.INFLATION_LINKED_BOND:
@@ -1689,6 +1701,7 @@ def _value_position(
     quote = snapshot.quote(instrument.instrument_id)
     accrued = _accrued(instrument, quote, settlement, snapshot)
     nominal = instrument.outstanding_face(settlement)
+    build_engine = None if engines is None else partial(engines.engine, instrument.instrument_id)
     # RUB amounts: unchanged for a RUB bond, converted at the snapshot rate otherwise.
     rub_flows: tuple[BondCashflow, ...] = (
         tuple(BondCashflow(f.payment_date, f.amount * fx) for f in flows) if foreign else flows
@@ -1713,6 +1726,7 @@ def _value_position(
             (nominal, accrued, position.quantity),
             run_id,
             tail,
+            build_engine,
         )
         # A floating perpetual's tail at its base projection (BACKLOG #127).
         tail = engine.tail_for(engine.projected_coupons)
@@ -1757,6 +1771,7 @@ def _value_position(
                 perpetual_tail=None if tail is None else tail.scaled(fx) if foreign else tail,
             ),
             curve_cache=cache,
+            build_engine=build_engine,
         )
         engine, adapter_id = prepared.engine, prepared.calculation_id
     risk = _bond_risk(engine, policy)
@@ -1996,6 +2011,7 @@ def _floating_engine(
     amounts: tuple[float, float, float],
     run_id: str,
     tail: PerpetualTail | None = None,
+    build_engine: Callable[[BondRiskRequest, ShockedCurveCache], BondRiskEngine] | None = None,
 ) -> tuple[BondRiskEngine, str, str | None]:
     """The risk engine of a RUB floater, its adapter ID and its separate projection curve.
 
@@ -2013,20 +2029,20 @@ def _floating_engine(
     )
     projected = projection(projection_id, leg.rule.index)
     two_curve = projection_id != curve_id
-    engine = BondRiskEngine(
-        BondRiskRequest(
-            cashflows=tuple(BondCashflow(f.payment_date, f.amount) for f in flows),
-            settlement_date=settlement,
-            curve=built.source,
-            spread_convention=policy.spread_convention,
-            spread_kind=policy.spread_kind_for(instrument.instrument_id),
-            dirty_price_rub=clean_price_pct_to_dirty_rub(quote.clean_price_pct, nominal, accrued),
-            quantity=quantity,
-            floating_leg=model,
-            projection_curve=projected.curve if two_curve else None,
-            perpetual_tail=tail,
-        ),
-        cache,
+    request = BondRiskRequest(
+        cashflows=tuple(BondCashflow(f.payment_date, f.amount) for f in flows),
+        settlement_date=settlement,
+        curve=built.source,
+        spread_convention=policy.spread_convention,
+        spread_kind=policy.spread_kind_for(instrument.instrument_id),
+        dirty_price_rub=clean_price_pct_to_dirty_rub(quote.clean_price_pct, nominal, accrued),
+        quantity=quantity,
+        floating_leg=model,
+        projection_curve=projected.curve if two_curve else None,
+        perpetual_tail=tail,
+    )
+    engine = (
+        BondRiskEngine(request, cache) if build_engine is None else build_engine(request, cache)
     )
     adapter: dict[str, object] = {
         "adapter_model": "portfolio-floating-rub-risk-v1",
@@ -2402,12 +2418,32 @@ def portfolio_result_hash_projection(
     return raw
 
 
+def _result_sha256(result: PortfolioRiskResult) -> str:
+    """The hash of ``result`` as ``canonical_sha256(portfolio_result_hash_projection(result))``
+    gives it, from one serialization: the projection is decoded from the canonical bytes, so it
+    is hashed as it is."""
+    raw = cast(dict[str, object], json.loads(canonical_json_bytes(result)))
+    raw["result_sha256"] = ""
+    return _sha256_of_decoded(raw)
+
+
+def _verify_decoded(raw: dict[str, object], schema: str) -> bool:
+    """``_verify`` for ``raw`` decoded from the canonical bytes of a result object."""
+    if raw.get("schema_version") != schema:
+        return False
+    declared = raw.get("result_sha256")
+    if declared is None and "result_sha256" not in raw:
+        return False
+    actual = _sha256_of_decoded({**raw, "result_sha256": ""})
+    return isinstance(declared, str) and declared == actual
+
+
 def _verify(result: PortfolioRiskResult | Mapping[str, object], schema: str) -> bool:
-    raw = (
-        cast(dict[str, object], json.loads(canonical_json_bytes(result)))
-        if isinstance(result, PortfolioRiskResult)
-        else dict(result)
-    )
+    if isinstance(result, PortfolioRiskResult):
+        return _verify_decoded(
+            cast(dict[str, object], json.loads(canonical_json_bytes(result))), schema
+        )
+    raw = dict(result)
     if raw.get("schema_version") != schema:
         return False
     declared = raw.get("result_sha256")
@@ -2434,10 +2470,15 @@ def verify_portfolio_result_v3(result: PortfolioRiskResult | Mapping[str, object
 
 def portfolio_result_to_json(result: PortfolioRiskResult) -> bytes:
     """Canonical JSON of a v2 or v3 result; raises unless its schema and hash verify."""
-    v3 = isinstance(result, PortfolioRiskResultV3)
-    if not (verify_portfolio_result_v3(result) if v3 else verify_portfolio_result(result)):
+    schema = (
+        PORTFOLIO_RESULT_SCHEMA_V3
+        if isinstance(result, PortfolioRiskResultV3)
+        else PORTFOLIO_RESULT_SCHEMA
+    )
+    data = canonical_json_bytes(result)
+    if not _verify_decoded(cast(dict[str, object], json.loads(data)), schema):
         raise ValueError("portfolio result hash or schema does not verify")
-    return canonical_json_bytes(result)
+    return data
 
 
 def portfolio_result_from_json(data: bytes | str) -> PortfolioRiskResult:

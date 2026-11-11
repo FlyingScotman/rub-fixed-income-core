@@ -9,6 +9,7 @@ from functools import lru_cache
 from typing import Any, Protocol, SupportsInt, cast
 
 from ._solver import bisect
+from ._state import _fields_only_state
 from .conventions import (
     Compounding,
     CurveConvention,
@@ -41,12 +42,6 @@ class OisQuote:
 
 
 _DF_MEMO_SIZE = 4096
-
-
-def _fields_only_state(self: Any) -> dict[str, object]:
-    """Pickle state without the lazily built caches kept beside the fields."""
-    names = self.__dataclass_fields__
-    return {k: v for k, v in self.__dict__.items() if k in names}
 
 
 def _fixed_leg_schedule(

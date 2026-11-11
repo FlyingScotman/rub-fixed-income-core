@@ -6,6 +6,7 @@ This boundary checks units, horizons and identities, not source authenticity.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Literal, get_args
@@ -135,11 +136,16 @@ class PreparedLocalBondRisk:
 
 
 def prepare_local_bond_risk(
-    source: FixedRubBondInput, *, curve_cache: ShockedCurveCache | None = None
+    source: FixedRubBondInput,
+    *,
+    curve_cache: ShockedCurveCache | None = None,
+    build_engine: Callable[[BondRiskRequest, ShockedCurveCache], BondRiskEngine] | None = None,
 ) -> PreparedLocalBondRisk:
     """Validate the boundary, convert clean % to dirty RUB, calibrate once.
 
     Pass one ``curve_cache`` to every position of a job to reuse shocked OIS curves.
+    ``build_engine`` (internal, ``portfolio.value_portfolio``) builds the engine of the request,
+    sharing one among positions that differ only in quantity.
     """
     if source.cashflow_currency != "RUB" or source.coupon_model != "fixed":
         raise ValueError("only validated fixed RUB cashflows are supported")
@@ -163,18 +169,19 @@ def prepare_local_bond_risk(
     expected_basis = _curve_basis(source.curve)
     if source.context.curve_basis != expected_basis:
         raise ValueError("curve input does not match the explicit curve_basis")
-    engine = BondRiskEngine(
-        BondRiskRequest(
-            cashflows=flows,
-            settlement_date=source.settlement_date,
-            curve=source.curve,
-            spread_convention=source.spread_convention,
-            spread_kind=source.spread_kind,
-            dirty_price_rub=clean_price_pct_to_dirty_rub(clean, nominal, accrued),
-            quantity=source.quantity,
-            perpetual_tail=tail,
-        ),
-        ShockedCurveCache() if curve_cache is None else curve_cache,
+    request = BondRiskRequest(
+        cashflows=flows,
+        settlement_date=source.settlement_date,
+        curve=source.curve,
+        spread_convention=source.spread_convention,
+        spread_kind=source.spread_kind,
+        dirty_price_rub=clean_price_pct_to_dirty_rub(clean, nominal, accrued),
+        quantity=source.quantity,
+        perpetual_tail=tail,
+    )
+    cache = ShockedCurveCache() if curve_cache is None else curve_cache
+    engine = (
+        BondRiskEngine(request, cache) if build_engine is None else build_engine(request, cache)
     )
     identity = canonical_sha256(
         {
