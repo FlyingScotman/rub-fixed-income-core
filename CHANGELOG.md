@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- CDS premium accrual supports `DayCount.ACT_ACT_ISDA` for scheduled coupons, accrued
+  premium to step-in and accrual on default. The ISDA standard preset uses ACT/360
+  for premium accrual. Refs #67.
+
 ## 0.45.0 — NDFs settled in a foreign currency and cross NDFs
 
 BACKLOG #135, for FlyingScotman/trading-desk-monitor#616 (NDFs in the open currency position

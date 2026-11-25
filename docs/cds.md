@@ -24,13 +24,20 @@ Model's choices:
 |---|---|---|
 | `payment_frequency_months` | 3 | Premium periods roll back from the unadjusted maturity on the 20 Mar/Jun/Sep/Dec cycle |
 | `business_day_convention` | `FOLLOWING` | Adjusts every premium date except the maturity. The last payment is the adjusted maturity |
-| `accrual_day_count` | `ACT_360` | Premium accrual. Only ACT/360 and ACT/365F are accepted |
+| `accrual_day_count` | `ACT_360` | Premium accrual. Accepts ACT/360, ACT/365F and ACT/ACT-ISDA |
 | `step_in_days` | 1 | Step-in = trade date + 1 calendar day. Protection starts there, and accrued premium is counted to it |
 | `cash_settlement_days` | 3 | Upfront paid T+3 business days on `calendar` |
 | `accrual_on_default` | `ISDA_HALF_DAY_BIAS` | Accrued premium paid on default, integrated as in the Standard Model's C code |
-| `hazard_day_count` | `ACT_365_FIXED` | Time basis of hazard rates |
+| `hazard_day_count` | `ACT_365_FIXED` | Time basis of hazard rates. Accepts ACT/360 and ACT/365F |
 
 The calendar is always the caller's. Nothing here encodes holidays.
+
+Set `accrual_day_count=DayCount.ACT_ACT_ISDA` to accrue on Actual/Actual under the
+2006 ISDA Definitions. The start date is included and the end date is excluded.
+Days in leap years contribute `days / 366` and days in other years contribute
+`days / 365`, summed across the period. This applies to scheduled premiums, the
+accrued premium to step-in and accrual on default.
+[ISDA's Actual/Actual worked examples](https://www.isda.org/a/pIJEE/The-Actual-Actual-Day-Count-Fraction-1999.pdf)
 
 Other standard-contract facts are inputs too:
 
@@ -72,18 +79,22 @@ factor is read at the end of a day.
   and the hazard are constant there (the Standard Model's "piecewise" assumption), and
   each piece integrates in closed form. For a node curve (`DiscountCurve`, or a
   rebootstrapped OIS curve) this is exact. A zero-shocked view (`continuous_zero` basis)
-  is read at the same grid.
+  is read at the same grid. For ACT/ACT-ISDA, the accrual-on-default integral uses the
+  exact contractual fraction of each day, splitting at 31 December close before the
+  1 January weight takes effect.
 - **Protection leg**, per unit loss. It runs from the start of the step-in day to the
   end of the maturity day, from `d0 = step-in - 1` to `maturity`:
   `Σ ĥ/(ĥ+f̂) · P0 Q0 · (1 - e^-(ĥ+f̂))`, with `ĥ = ln Q0/Q1` and `f̂ = ln P0/P1` on each
   piece. Near zero, a series replaces the ratio.
 - **Premium leg**, per unit coupon. It sums `α_i · P(pay_i) · Q(accrual_end_i - 1)` over
-  the periods not ended at step-in, plus the accrual on default. In a period starting at
-  `s`, the accrued premium at the end of day `u` is `(u - (s - 1) + b)/360`. Here
-  `b = 0.5` for `ISDA_HALF_DAY_BIAS` and `0` for `EXACT`, and `NONE` drops the term. This
-  is integrated against the default density on the same pieces:
-  `ĥ P0 Q0 [(u0 - a) E1(k) + n E2(k)] / 360`, where `k = ĥ + f̂`,
-  `E1 = (1 - e^-k)/k` and `E2 = (1 - e^-k (1 + k))/k²`.
+  the periods not ended at step-in, plus the accrual on default. On a grid piece
+  from the end of day `u0` to the end of day `u1`, `A0` is the year fraction from
+  the start of the coupon period through `u0` inclusive, and `ΔA` is the year fraction
+  for the days after `u0` through `u1` inclusive. `ISDA_HALF_DAY_BIAS` adds half a day
+  to `A0`, weighted by the basis of the default day. `EXACT` uses `A0` as defined
+  above, and `NONE` omits accrual on default. The integral on each piece is
+  `ĥ P0 Q0 [A0 E1(k) + ΔA E2(k)]`, where `k = ĥ + f̂`, `E1 = (1 - e^-k)/k` and
+  `E2 = (1 - e^-k (1 + k))/k²`.
 - **Accrued premium** `α_acc`: the accrual day count from the start of the period
   holding the step-in date to the step-in date.
 
@@ -239,7 +250,8 @@ spread. `horizon_portfolio` does not carry CDS positions yet.
 
 **External goldens** are ISDA Standard Model values published in QuantLib's test suite
 (`test-suite/creditdefaultswap.cpp`, github.com/lballabio/QuantLib, fetched 17 October
-2026). The tests rebuild that suite's ISDA-style curve independently: deposits ACT/360
+2026). Reconciliation against Markit and the ISDA C code covers ACT/360 premiums only.
+The tests rebuild that suite's ISDA-style curve independently: deposits ACT/360
 from T+2, single-curve par swaps 30/360, log-linear discount factors.
 
 - **`testIsdaEngine`.** These are 20 Markit values:
@@ -272,6 +284,8 @@ The match also confirms the timing choices listed above:
   default;
 - `h ≈ s/(1 - R)` under standard conventions;
 - the zero-hazard limit;
+- exact agreement with ACT/365F across non-leap years and an independent daily
+  integration of ACT/ACT-ISDA accrual on default across both ends of a leap year;
 - a contract at its par spread has zero clean value;
 - the bootstrap reprices mixed spread and upfront quotes;
 - the round trips upfront ↔ spread ↔ hazard;
@@ -314,7 +328,9 @@ amortises better.
 - **Standard maturities.** A contract's maturity and accrual start are always inputs.
   `standard_cds_maturity` and `cds_trade_dates` are helpers the caller applies; nothing
   rolls a tenor implicitly.
-- **Day counts.** ACT/ACT accrual or hazard time raises `UnsupportedProduct`.
+- **Day counts.** Both day-count fields require a `DayCount` member. Strings raise
+  `TypeError`. Unsupported members, such as `DayCount.ACT_ACT_ISDA` for hazard time,
+  raise `UnsupportedProduct`.
 - **Recovery curves.** Recovery is one number per curve. There is no term structure and
   no random recovery.
 - **Default timing.** No default before the step-in date or backstop look-back, and no
