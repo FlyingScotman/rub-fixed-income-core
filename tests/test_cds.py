@@ -42,6 +42,7 @@ from rub_fixed_income.cds import (
     CdsSide,
     CdsSpreadQuote,
     CdsUpfrontQuote,
+    CdsValuation,
     HazardCurve,
     bootstrap_hazard_curve,
     cds_factor_risk,
@@ -572,6 +573,131 @@ def test_half_day_bias_adds_half_a_day_of_accrual_on_default() -> None:
     assert biased - exact == pytest.approx(0.5 / 360 * 0.01 * 1e7 * default_probability, rel=1e-9)
 
 
+@pytest.mark.parametrize("mode", list(AccrualOnDefault))
+def test_act_act_isda_matches_act_365f_across_nonleap_years(mode: AccrualOnDefault) -> None:
+    trade = date(2025, 11, 13)
+    maturity = date(2026, 9, 20)
+    discount = DiscountCurve.flat(trade, 0.12)
+    quotes = (CdsSpreadQuote(date(2026, 3, 20), 0.015), CdsSpreadQuote(maturity, 0.02))
+    cache = CdsCurveCache()
+    engines = []
+    for basis in (DayCount.ACT_365_FIXED, DayCount.ACT_ACT_ISDA):
+        convention = replace(ISDA, accrual_day_count=basis, accrual_on_default=mode)
+        accrual_start = cds_trade_dates(
+            trade, convention, maturity_date=maturity
+        ).accrual_start_date
+        contract = _contract(maturity=maturity, accrual_start=accrual_start, convention=convention)
+        credit = CdsCurveRequest(trade, quotes, 0.4, convention)
+        engine = CdsRiskEngine(
+            CdsRiskRequest(contract, trade, discount, credit), credit_cache=cache
+        )
+        assert engine.valuation == value_cds(
+            contract,
+            valuation_date=trade,
+            hazard_curve=engine.hazard_curve,
+            discount_curve=discount,
+            recovery_rate=credit.recovery_rate,
+        )
+        engines.append(engine)
+
+    fixed, actual = engines
+    assert fixed.hazard_curve == actual.hazard_curve
+    assert fixed.valuation == actual.valuation
+    fixed_risk, actual_risk = fixed.risk(), actual.risk()
+    assert fixed_risk.cs01 == actual_risk.cs01
+    assert fixed_risk.dv01 == actual_risk.dv01
+
+
+@pytest.mark.parametrize("mode", [AccrualOnDefault.EXACT, AccrualOnDefault.ISDA_HALF_DAY_BIAS])
+@pytest.mark.parametrize(
+    "trade, accrued_fraction",
+    [(date(2027, 12, 27), 8 / 365), (date(2028, 1, 3), 12 / 365 + 3 / 366)],
+)
+def test_act_act_isda_coupons_and_default_accrual_across_leap_year(
+    mode: AccrualOnDefault, trade: date, accrued_fraction: float
+) -> None:
+    start, maturity = date(2027, 12, 20), date(2029, 3, 20)
+    convention = replace(ISDA, accrual_day_count=DayCount.ACT_ACT_ISDA, accrual_on_default=mode)
+    contract = _contract(maturity=maturity, accrual_start=start, convention=convention)
+    discount_rate, hazard_rate = 0.12, 0.4
+    discount = DiscountCurve.flat(trade, discount_rate)
+    hazard = HazardCurve.flat(trade, hazard_rate)
+
+    def value(basis: DayCount, accrual_mode: AccrualOnDefault) -> CdsValuation:
+        return value_cds(
+            replace(
+                contract,
+                convention=replace(
+                    convention, accrual_day_count=basis, accrual_on_default=accrual_mode
+                ),
+            ),
+            valuation_date=trade,
+            discount_curve=discount,
+            hazard_curve=hazard,
+            recovery_rate=0.4,
+        )
+
+    one_day = timedelta(days=1)
+    payment_dates = (
+        date(2028, 3, 20),
+        date(2028, 6, 20),
+        date(2028, 9, 20),
+        date(2028, 12, 20),
+        maturity,
+    )
+    fractions = (12 / 365 + 79 / 366, 92 / 366, 92 / 366, 91 / 366, 12 / 366 + 79 / 365)
+    schedule = cds_premium_schedule(start, maturity, convention)
+    assert tuple(p.year_fraction for p in schedule) == fractions
+    daily_hazard = hazard_rate / 365
+    combined_rate = (discount_rate + hazard_rate) / 365
+    scheduled = sum(
+        alpha
+        * math.exp(
+            -discount_rate * (pay - trade).days / 365
+            - daily_hazard * ((pay if pay == maturity else pay - one_day) - trade).days
+        )
+        for alpha, pay in zip(fractions, payment_dates, strict=True)
+    )
+
+    # Integrate one default day at a time independently of the pricer's grid.
+    # The conditional mean time within a default day is in units of one day.
+    day_mass = -math.expm1(-combined_rate) * daily_hazard / combined_rate
+    mean_time = 1 / combined_rate - 1 / math.expm1(combined_rate)
+    bias = 0.5 if mode is AccrualOnDefault.ISDA_HALF_DAY_BIAS else 0.0
+    default_accrual = 0.0
+    for period_start, period_end in zip(
+        (start, *payment_dates[:-1]), (*payment_dates[:-1], maturity + one_day), strict=True
+    ):
+        elapsed = 0.0
+        day = period_start
+        while day < period_end:
+            weight = 1 / (366 if day.year == 2028 else 365)
+            if day > trade:
+                before = (day - one_day - trade).days
+                default_accrual += (
+                    math.exp(-combined_rate * before)
+                    * day_mass
+                    * (elapsed + (mean_time + bias) * weight)
+                )
+            elapsed += weight
+            day += one_day
+
+    premium = contract.notional * contract.coupon
+    actual = value(DayCount.ACT_ACT_ISDA, mode)
+    assert actual.accrued_premium == -premium * accrued_fraction
+    scheduled_pv = value(DayCount.ACT_ACT_ISDA, AccrualOnDefault.NONE).premium_leg_pv
+    assert scheduled_pv == pytest.approx(premium * scheduled, abs=1e-9, rel=0.0)
+    assert actual.premium_leg_pv - scheduled_pv == pytest.approx(
+        premium * default_accrual, abs=1e-9, rel=0.0
+    )
+    for basis in (DayCount.ACT_365_FIXED, DayCount.ACT_360):
+        fixed = value(basis, mode)
+        fixed_scheduled = value(basis, AccrualOnDefault.NONE).premium_leg_pv
+        assert actual.protection_leg_pv == fixed.protection_leg_pv
+        assert actual.premium_leg_pv < fixed.premium_leg_pv
+        assert actual.premium_leg_pv - scheduled_pv < fixed.premium_leg_pv - fixed_scheduled
+
+
 # ---------------------------------------------------------------- bootstrap
 
 MATURITIES = tuple(standard_cds_maturity(VAL, 12 * y, roll="semiannual") for y in (1, 3, 5, 7, 10))
@@ -587,19 +713,25 @@ def _quotes() -> tuple[CdsSpreadQuote | CdsUpfrontQuote, ...]:
     )
 
 
-def test_bootstrap_reprices_spread_and_upfront_quotes() -> None:
+@pytest.mark.parametrize("basis", [DayCount.ACT_360, DayCount.ACT_ACT_ISDA])
+def test_bootstrap_reprices_spread_and_upfront_quotes(basis: DayCount) -> None:
     curve = DiscountCurve.flat(VAL, 0.15)
-    request = CdsCurveRequest(VAL, _quotes(), 0.4, ISDA)
+    convention = replace(ISDA, accrual_day_count=basis)
+    request = CdsCurveRequest(VAL, _quotes(), 0.4, convention)
     hazard = bootstrap_hazard_curve(request, curve)
     assert hazard.node_dates == MATURITIES
     assert all(rate > 0 for rate in hazard.hazard_rates)
     common: dict[str, Any] = {"valuation_date": VAL, "recovery_rate": 0.4, "discount_curve": curve}
     for quote in request.quotes:
         if isinstance(quote, CdsSpreadQuote):
-            par = cds_par_spread(hazard, maturity_date=quote.maturity, convention=ISDA, **common)
+            par = cds_par_spread(
+                hazard, maturity_date=quote.maturity, convention=convention, **common
+            )
             assert par == pytest.approx(quote.par_spread, abs=1e-12)
         else:
-            contract = _contract(coupon=quote.coupon, maturity=quote.maturity)
+            contract = _contract(
+                coupon=quote.coupon, maturity=quote.maturity, convention=convention
+            )
             value = value_cds(contract, hazard_curve=hazard, **common)
             assert value.points_upfront == pytest.approx(quote.upfront, abs=1e-12)
 
@@ -683,8 +815,8 @@ def test_bootstrap_rejections() -> None:
 
 
 def test_convention_and_contract_validation() -> None:
-    with pytest.raises(UnsupportedProduct):
-        replace(ISDA, accrual_day_count=DayCount.ACT_ACT_ISDA)
+    with pytest.raises(UnsupportedProduct, match="hazard_day_count"):
+        replace(ISDA, hazard_day_count=DayCount.ACT_ACT_ISDA)
     with pytest.raises(InvalidTerms):
         replace(ISDA, payment_frequency_months=4)
     with pytest.raises(TypeError):
@@ -711,6 +843,14 @@ def test_convention_and_contract_validation() -> None:
             recovery_rate=0.4,
         )
     assert ISDA.identifier.startswith("cds:3M:FOLLOWING:ACT/360:stepin+1d:cash+3bd:")
+
+
+@pytest.mark.parametrize("basis", ["ACT/360", "ACT/365F", "ACT/ACT-ISDA", "30/360", "ACT/ACT-ICMA"])
+def test_cds_day_count_fields_reject_strings(basis: Any) -> None:
+    with pytest.raises(TypeError, match="accrual_day_count must be a DayCount"):
+        replace(ISDA, accrual_day_count=basis)
+    with pytest.raises(TypeError, match="hazard_day_count must be a DayCount"):
+        replace(ISDA, hazard_day_count=basis)
 
 
 # ---------------------------------------------------------------- risk
@@ -764,6 +904,39 @@ def test_cs01_against_a_risky_annuity_estimate() -> None:
     risk = engine.risk()
     estimate = 1e7 * engine.valuation.risky_annuity * 1e-4
     assert risk.cs01 == pytest.approx(estimate, rel=0.01)
+
+
+def test_act_act_isda_risk_matches_rebuilt_curves_across_leap_year() -> None:
+    trade, maturity = date(2027, 12, 27), date(2029, 3, 20)
+    convention = replace(ISDA, accrual_day_count=DayCount.ACT_ACT_ISDA)
+    start = cds_trade_dates(trade, convention, maturity_date=maturity).accrual_start_date
+    contract = _contract(maturity=maturity, accrual_start=start, convention=convention)
+    quotes = (CdsSpreadQuote(date(2028, 6, 20), 0.02), CdsSpreadQuote(maturity, 0.025))
+    credit = CdsCurveRequest(trade, quotes, 0.4, convention)
+    continuous_rate = 0.12
+    discount = DiscountCurve.flat(trade, continuous_rate)
+    risk = CdsRiskEngine(CdsRiskRequest(contract, trade, discount, credit)).risk()
+
+    def pv(rate_shift: float = 0.0, spread_shift: float = 0.0) -> float:
+        bumped_discount = DiscountCurve.flat(trade, continuous_rate + rate_shift)
+        bumped_credit = replace(
+            credit,
+            quotes=tuple(replace(q, par_spread=q.par_spread + spread_shift) for q in quotes),
+        )
+        return value_cds(
+            contract,
+            valuation_date=trade,
+            discount_curve=bumped_discount,
+            hazard_curve=bootstrap_hazard_curve(bumped_credit, bumped_discount),
+            recovery_rate=credit.recovery_rate,
+        ).pv
+
+    bp = 1e-4
+    cs01 = (pv(spread_shift=bp) - pv(spread_shift=-bp)) / 2
+    dv01 = (pv(rate_shift=bp) - pv(rate_shift=-bp)) / 2
+    assert risk.cs01 == pytest.approx(cs01, abs=1e-7, rel=0.0)
+    assert risk.parallel_dv01 == pytest.approx(dv01, abs=1e-7, rel=0.0)
+    assert risk.dv01 == pytest.approx(dv01, rel=1e-6)
 
 
 def test_bump_size_convergence() -> None:

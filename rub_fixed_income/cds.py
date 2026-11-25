@@ -4,7 +4,7 @@ The model is the ISDA CDS Standard Model's: a piecewise-constant hazard rate, a
 discount curve read as constant forward rates between the dates of a merged grid
 (the discount curve's nodes, the hazard curve's nodes and the contract's own dates),
 protection from the start of the step-in day to the end of the maturity day,
-premium accrued ACT/360 with the last period including the maturity date, and
+premium accrual with the last period including the maturity date, and
 accrued premium paid on default. Every contract convention is an explicit input
 (:class:`CdsConvention`); :meth:`CdsConvention.isda_standard` collects the
 published standard choices. Recovery is always explicit; there is no default.
@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import math
 from bisect import bisect_left
+from calendar import isleap
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
@@ -102,6 +103,7 @@ CDS_HORIZON_MODEL_VERSION = "rub-cds-horizon-v1"
 
 _IMM_MONTHS = (3, 6, 9, 12)
 _LINEAR_DAY_COUNTS = (DayCount.ACT_360, DayCount.ACT_365_FIXED)
+_PREMIUM_DAY_COUNTS = (*_LINEAR_DAY_COUNTS, DayCount.ACT_ACT_ISDA)
 _BASIS_DAYS = {DayCount.ACT_360: 360.0, DayCount.ACT_365_FIXED: 365.0}
 _BOOTSTRAP_TOLERANCE = 1e-14
 _REPRICING_TOLERANCE = 1e-12
@@ -127,7 +129,8 @@ class AccrualOnDefault(Enum):
     - ``EXACT``: the accrued premium to the end of the default day;
     - ``ISDA_HALF_DAY_BIAS``: as the ISDA Standard Model C code integrates it, half a
       day more than ``EXACT`` (the formula QuantLib labels ``HalfDayBias`` and uses to
-      reproduce Markit's published values).
+      reproduce Markit's published values). For ACT/ACT-ISDA, the half-day has
+      the weight of the default day.
     """
 
     NONE = "none"
@@ -144,7 +147,7 @@ class CdsConvention:
       the maturity date (unadjusted) in these steps;
     - ``business_day_convention``: adjustment of every premium date except the maturity
       date, which stays unadjusted as the last accrual end; its payment is adjusted;
-    - ``accrual_day_count``: premium accrual (ACT/360 or ACT/365F; linear in days);
+    - ``accrual_day_count``: premium accrual (ACT/360, ACT/365F or ACT/ACT-ISDA);
     - ``step_in_days``: calendar days from trade date to the step-in date, from which
       protection runs and to which accrued premium is counted;
     - ``cash_settlement_days``: business days from trade date to the upfront payment;
@@ -176,12 +179,17 @@ class CdsConvention:
             raise TypeError("business_day_convention must be a BusinessDayConvention")
         if not isinstance(self.accrual_on_default, AccrualOnDefault):
             raise TypeError("accrual_on_default must be an AccrualOnDefault")
-        for name in ("accrual_day_count", "hazard_day_count"):
+        for name, supported in (
+            ("accrual_day_count", _PREMIUM_DAY_COUNTS),
+            ("hazard_day_count", _LINEAR_DAY_COUNTS),
+        ):
             value = getattr(self, name)
             if not isinstance(value, DayCount):
                 raise TypeError(f"{name} must be a DayCount")
-            if value not in _LINEAR_DAY_COUNTS:
-                raise UnsupportedProduct(f"{name} must be ACT/360 or ACT/365F")
+            if value not in supported:
+                raise UnsupportedProduct(
+                    f"{name} must be " + " or ".join(basis.value for basis in supported)
+                )
 
     @classmethod
     def isda_standard(cls, calendar: BusinessCalendar) -> CdsConvention:
@@ -296,6 +304,15 @@ class CdsPremiumPeriod:
     year_fraction: float
 
 
+def _premium_day_count(day_count: DayCount, start: date, end: date) -> DayCount:
+    """Use the same arithmetic as ACT/365F when every accrued day is in a common year."""
+    if day_count is DayCount.ACT_ACT_ISDA and start < end:
+        last_year = (end - timedelta(days=1)).year
+        if not any(isleap(year) for year in range(start.year, last_year + 1)):
+            return DayCount.ACT_365_FIXED
+    return day_count
+
+
 def cds_premium_schedule(
     accrual_start: date, maturity: date, convention: CdsConvention
 ) -> tuple[CdsPremiumPeriod, ...]:
@@ -326,10 +343,11 @@ def cds_premium_schedule(
     final_payment = adjust_date(maturity, convention.business_day_convention, convention.calendar)
     ends = [*boundaries[1:], maturity + timedelta(days=1)]
     payments = [*boundaries[1:], final_payment]
-    return tuple(
-        CdsPremiumPeriod(start, end, pay, convention.accrual_day_count.year_fraction(start, end))
-        for start, end, pay in zip(boundaries, ends, payments)
-    )
+    periods = []
+    for start, end, pay in zip(boundaries, ends, payments):
+        basis = _premium_day_count(convention.accrual_day_count, start, end)
+        periods.append(CdsPremiumPeriod(start, end, pay, basis.year_fraction(start, end)))
+    return tuple(periods)
 
 
 # ---------------------------------------------------------------- hazard curve
@@ -497,8 +515,8 @@ def _node_dates(curve: DiscountFactorCurve) -> tuple[date, ...]:
 class _Layout:
     """Every date one contract reads, and how the legs combine them; no curve values.
 
-    The integration grid between two contract dates is the union of the discount
-    curve's and the hazard curve's node dates. A layout is shared by every shock of
+    The integration grid combines discount and hazard curve nodes and, for ACT/ACT-ISDA
+    accrual on default, calendar-year boundaries. A layout is shared by every shock of
     one contract: shocked curves keep their node dates. Indices point into ``dates``.
     """
 
@@ -507,9 +525,9 @@ class _Layout:
     taus: tuple[float, ...]
     protection: tuple[tuple[int, int], ...]
     premium: tuple[tuple[float, int, int], ...]
-    accrual: tuple[tuple[int, int, float, int], ...]
+    accrual: tuple[tuple[int, int, float, float], ...]  # endpoints, elapsed accrual, accrual span
     cash_index: int
-    accrual_scale: float
+    accrual_scale: float  # convert the fixed bases' day units after summing
     accrued_fraction: float
 
 
@@ -524,24 +542,52 @@ def _layout(
     one_day = timedelta(days=1)
     grid = sorted(set(discount_nodes) | set(segments.ends))
 
-    def path(start: date, end: date) -> list[date]:
-        lo = bisect_left(grid, start + one_day)
-        hi = bisect_left(grid, end)
-        return [start, *grid[lo:hi], end]
+    def path(start: date, end: date, nodes: list[date]) -> list[date]:
+        lo = bisect_left(nodes, start + one_day)
+        hi = bisect_left(nodes, end)
+        return [start, *nodes[lo:hi], end]
 
-    protection_path = path(dates.protection_start - one_day, dates.maturity)
-    accrual_paths: list[tuple[float, list[date]]] = []
+    protection_path = path(dates.protection_start - one_day, dates.maturity, grid)
+    needed = {*protection_path, dates.cash_settlement_date}
+    for p in dates.periods:
+        needed.update((p.payment_date, p.accrual_end - one_day))
+
+    accrual: list[tuple[date, date, float, float]] = []
+    accrual_scale = 1.0
     if accrual_on_default is not AccrualOnDefault.NONE:
+        basis = _premium_day_count(
+            accrual_day_count, dates.periods[0].accrual_start, dates.periods[-1].accrual_end
+        )
+        split_years = basis is DayCount.ACT_ACT_ISDA
+        accrual_grid = grid
+        if split_years:
+            # The grid uses end-of-day dates. The slope for Jan 1 starts at Dec 31 close.
+            accrual_grid = sorted(
+                set(grid)
+                | {
+                    date(year, 12, 31)
+                    for year in range(dates.protection_start.year, dates.maturity.year)
+                }
+            )
+        else:
+            accrual_scale = 1.0 / _BASIS_DAYS[basis]
+
         bias = 0.5 if accrual_on_default is AccrualOnDefault.ISDA_HALF_DAY_BIAS else 0.0
         for p in dates.periods:
             anchor = float((p.accrual_start - one_day).toordinal()) - bias
             start = max(p.accrual_start, dates.protection_start) - one_day
-            accrual_paths.append((anchor, path(start, p.accrual_end - one_day)))
-    needed = {*protection_path, dates.cash_settlement_date}
-    for p in dates.periods:
-        needed.update((p.payment_date, p.accrual_end - one_day))
-    for _, points in accrual_paths:
-        needed.update(points)
+            points = path(start, p.accrual_end - one_day, accrual_grid)
+            needed.update(points)
+            for a, b in pairwise(points):
+                if split_years:
+                    first_day = a + one_day
+                    elapsed = basis.year_fraction(p.accrual_start, first_day)
+                    elapsed += bias * basis.year_fraction(first_day, first_day + one_day)
+                    length = basis.year_fraction(first_day, b + one_day)
+                else:
+                    elapsed = a.toordinal() - anchor
+                    length = (b - a).days
+                accrual.append((a, b, elapsed, length))
     ordered = tuple(sorted(needed))
     index = {d: i for i, d in enumerate(ordered)}
     located = [segments.locate(d) for d in ordered]
@@ -554,13 +600,9 @@ def _layout(
             (p.year_fraction, index[p.payment_date], index[p.accrual_end - one_day])
             for p in dates.periods
         ),
-        accrual=tuple(
-            (index[a], index[b], a.toordinal() - anchor, (b - a).days)
-            for anchor, points in accrual_paths
-            for a, b in pairwise(points)
-        ),
+        accrual=tuple((index[a], index[b], elapsed, length) for a, b, elapsed, length in accrual),
         cash_index=index[dates.cash_settlement_date],
-        accrual_scale=1.0 / _BASIS_DAYS[accrual_day_count],
+        accrual_scale=accrual_scale,
         accrued_fraction=dates.accrued_fraction,
     )
 
@@ -634,7 +676,8 @@ def _contract_dates(
     accrued = 0.0
     for period in periods:
         if period.accrual_start <= step_in < period.accrual_end:
-            accrued = convention.accrual_day_count.year_fraction(period.accrual_start, step_in)
+            basis = _premium_day_count(convention.accrual_day_count, period.accrual_start, step_in)
+            accrued = basis.year_fraction(period.accrual_start, step_in)
             break
     live = tuple(p for p in periods if p.accrual_end > step_in)
     return _ContractDates(

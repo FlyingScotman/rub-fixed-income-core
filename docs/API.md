@@ -255,7 +255,7 @@ and the recovery are explicit.
 
 | Name | Description |
 | --- | --- |
-| `CdsConvention(calendar, payment_frequency_months, business_day_convention, accrual_day_count, step_in_days, cash_settlement_days, accrual_on_default, hazard_day_count)`, `.isda_standard(calendar)`, `.identifier` | No defaults; `isda_standard` = quarterly IMM, following, ACT/360, step-in T+1, cash T+3 bd, ISDA accrual on default, ACT/365F hazard. ACT/ACT raises `UnsupportedProduct`. |
+| `CdsConvention(calendar, payment_frequency_months, business_day_convention, accrual_day_count, step_in_days, cash_settlement_days, accrual_on_default, hazard_day_count)`, `.isda_standard(calendar)`, `.identifier` | `accrual_day_count` accepts ACT/360, ACT/365F and ACT/ACT-ISDA. `hazard_day_count` accepts ACT/360 and ACT/365F. `isda_standard` sets quarterly IMM, following, ACT/360 premium, step-in T+1, cash T+3 bd, ISDA accrual on default and ACT/365F hazard. |
 | `AccrualOnDefault` | `NONE`, `EXACT`, `ISDA_HALF_DAY_BIAS` (the Standard Model code). |
 | `CdsSide` | `BUYER`, `SELLER`; `.sign` (+1 / −1). |
 | `previous_imm_date(d)`, `standard_cds_maturity(trade, tenor_months, *, roll)` | `roll` `"quarterly"` or `"semiannual"` (ISDA rule from 20 Dec 2015). |
