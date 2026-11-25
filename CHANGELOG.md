@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.46.0 — ACT/ACT-ISDA premium accrual for CDS
 
 - CDS premium accrual supports `DayCount.ACT_ACT_ISDA` for scheduled coupons, accrued
   premium to step-in and accrual on default. The ISDA standard preset uses ACT/360
