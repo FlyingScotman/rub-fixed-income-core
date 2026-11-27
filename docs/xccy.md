@@ -378,21 +378,21 @@ curves are not persisted yet.
 `r(d)` is the key rate in force on each calendar day (the rows of the history are by
 effective date). Known days come from `FixingHistory("key_rate")`; the semantics are those
 of `swaps._arithmetic_known`. Projected days sum the projection curve's overnight forwards
-`(DF(d) / DF(d + 1) - 1) / tau(d, d + 1)`, with `tau` on `rate_day_count`. On the curve
-`rub_key_rate_projection_v1` (calendar nodes, Act/365F) these are exactly the key-rate path.
+`(DF(d) / DF(d + 1) - 1) / tau(d, d + 1)`, with `tau` on `rate_day_count`.
+`KeyRateProjection` builds these calendar-day forwards from the KRS quotes on the
+scenario's RUONIA discount.
 `rub_projection_curve` is required (`MissingMarketData` otherwise); `XccyInstrument`
 requires `rub_projection_curve_id`. Compounding the key rate would overstate the coupon by
 about 1.3 percentage points at a 16 % rate over a year-long period, hence a separate index kind. The horizon keeps
 today's forwards up to the horizon and, after it, the projection curve rolled as the key-rate
 swap's horizon does (`roll_key_rate_curve`, BACKLOG #109): the next decision date stays on
 its date, the tenor-held segment ends move by the horizon. The decision date is not
-recoverable from the projection curve (a decision to the same rate leaves no trace), so the
-horizon takes the forward curve it was built from: `XccyRiskRequest.rub_key_rate_curve`
-(`KeyRateForwardCurve`), in `value_portfolio` `XccyInstrument.rub_key_rate_curve_id`, a
-`rub_key_rate_swap_v1` entry. The result agrees with the key-rate swap's roll to 1e-12; a
-projection curve that is not that forward curve is `InvalidTerms`. A projection curve with
-nodes and no forward curve make the horizon `MissingMarketData` (valuation and risk need
-neither); a flat projection curve has no decision and rolls as a plain curve.
+recoverable from an explicit projection discount curve. In the portfolio,
+`XccyInstrument.rub_projection_curve_id` supplies KRS quotes under
+`rub_key_rate_swap_v1` for both valuation and horizon. Standalone callers with an
+explicit discount-factor projection also supply the matching
+`XccyRiskRequest.rub_key_rate_curve` for the horizon. A flat projection curve
+rolls as a plain curve.
 A period ending after the last node of the projection curve is `MissingMarketData`; so is a
 horizon on or after the end of the forward curve, even when every flow after the horizon is
 known, as for the key-rate swap. The foreign curve

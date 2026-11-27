@@ -10,6 +10,7 @@ from datetime import UTC, date, datetime, timedelta
 
 import pytest
 import test_portfolio
+from portfolio_v3_book import key_rate_quotes
 from test_portfolio import AS_OF, BUSINESS_DATE, PARAMS
 
 from rub_fixed_income import (
@@ -153,7 +154,7 @@ def snapshot(**changes: object) -> MarketSnapshot:
         curves=(
             CurveEntry("RUB_OFZ_KBD", "rub_ofz_kbd_v1", PARAMS),
             CurveEntry("RUB_OIS", "rub_ruonia_ois_legacy_v1", OIS),
-            CurveEntry("KEY_PROJ", "rub_key_rate_projection_v1", KEY_PROJECTION),
+            CurveEntry("KEY_PROJ", "rub_key_rate_swap_v1", key_rate_quotes("RUB_OIS", CALENDAR)),
         ),
         calendars=(CalendarEntry("MOEX_STOCK", CALENDAR),),
         fixings=(FixingEntry("RUONIA", ruonia()), FixingEntry("KEY_RATE", key_rate())),
@@ -173,7 +174,9 @@ def positions() -> tuple[Position, ...]:
 
 
 POLICY = ValuationPolicy(
-    "RUB_OFZ_KBD", curve_overrides=(("FRN-1C", "RUB_OIS"),), cap_floor_guard_bp=25.0
+    "RUB_OFZ_KBD",
+    curve_overrides=(("FRN-1C", "RUB_OIS"), ("FRN-KEY", "RUB_OIS")),
+    cap_floor_guard_bp=25.0,
 )
 
 
@@ -203,6 +206,7 @@ def test_floaters_are_valued_with_single_and_two_curve_factors() -> None:
     assert two.factors[22] == "CS" and two.has_second_order
     key = rows["p-FRN-KEY"].factor_risk
     assert key.factors[11] == "IR|KEY_PROJ|1M"
+    assert rows["p-FRN-KEY"].projection_curve_basis == "key_rate_quote"
     # A long two-curve floater gains when projected rates rise and loses on discounting.
     first = two.first_order_by_factor()
     assert sum(first[f"IR|RUB_OIS|{b}"] for b in RISK_BUCKETS) > 0.0

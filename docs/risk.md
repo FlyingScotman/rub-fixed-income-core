@@ -48,6 +48,8 @@ The input type selects the basis, which is recorded in every result:
 | `DiscountCurve` with `convention.zero_shock="annual_par"` (0.37.0) | `annual_par` | Move the par yield of one annual-coupon instrument per bucket from 1Y to 20Y+ by the bucket's shift and solve the annual-zero overlay (hats on 1Y–20Y, flat below 1Y) that reprices all eight; 1M–6M have no instrument and no risk |
 | `CurveBootstrapRequest` | `ois_quote` | Interpolate the shift to each original OIS quote's maturity, add it to the decimal par rate, then bootstrap again using the same conventions |
 | `ParYieldCurveRequest` (0.38.0, issue #77) | `par_yield_quote` | The same for the par yields of a USD / EUR proxy: the shift at each quote's maturity (spec day count from the curve date) added to the par yield, then `bootstrap_par_yield_curve` again |
+| `KeyRateCurveRequest` / `KeyRateProjection` | `key_rate_quote` | Shift each KRS mid at its maturity on ACT/ACT ISDA, then calibrate on the current RUONIA discount for the scenario |
+| `XccyCurveBootstrapRequest` | `xccy_quote` | Shift the cross-currency par quotes at their maturities and bootstrap on the scenario's RUB curves |
 
 The zero overlay evaluates the original curve at each required date, preserving
 its interpolation and extrapolation; it does not replace the original curve by
@@ -73,6 +75,60 @@ universal sparse Hessian. Quote risk and zero-rate risk are not interchangeable:
 downstream scenario/market-move vectors must use the same basis as the risks.
 The caller identifies whether its actual curve represents RUONIA; this generic
 math module does not certify a market curve's source or quality.
+
+### Basis of portfolio `IR|<curve_id>|<bucket>` factors
+
+A built discount curve uses the zero or par convention in the first table.
+`rub_ofz_kbd_v1`, `rub_ofz_kbd_v2` and `rub_ofz_kbd_v3` select
+`continuous_zero`, `annual_zero` and `annual_par`, respectively. Nominal foreign
+discount-factor curves and built FX-implied curves use `continuous_zero`.
+
+| Product | Curve roles and basis |
+| --- | --- |
+| Fixed, amortizing, callable, pass-through and perpetual bonds | Discount uses the built-curve basis or `ois_quote` for OIS quotes. USD and EUR par-yield proxies use `par_yield_quote` in quote mode. Linker discount risk uses `REAL|...`. |
+| RUONIA and KBD floaters | Discount follows the bond rule. Separate RUONIA projection uses `ois_quote` or the built-curve basis. A KBD projection uses its KBD spec. |
+| OFZ in RUONIA + basis coordinates | RUONIA uses `ois_quote`. The separate basis ID uses the KBD v3 par overlay with RUONIA held, in `annual_par` units. |
+| Key-rate floaters, KRS, key-rate repos and the key-rate leg of a CCS | Linked RUB discount uses `ois_quote`; KRS projection uses `key_rate_quote`. The foreign roles of a CCS follow the CCS rule below. |
+| RUONIA swaps and RUONIA/RUSFAR repos | OIS quote requests use `ois_quote`. Explicit built curves use their own basis. A single curve supplies one block for discount and projection. A fixed repo has only discount risk. |
+| RUON, RUONIA index and KEYRATE futures | RUON and index futures project on OIS quotes (`ois_quote`) or a built curve. KEYRATE uses `key_rate_quote` for KRS projection and `ois_quote` for the linked calibration discount. |
+| FX forwards, FX swaps, NDFs, FX crosses and FX futures | Settlement or forward curves use their built-curve bases, `ois_quote` for OIS quotes, `xccy_quote` for XCCY par quotes, or `par_yield_quote` for quoted proxies. Quote curves dependent on RUB are rebuilt when RUB moves. |
+| Cross-currency swaps (CCS) | RUB discount and non-key-rate projection use the built-curve basis or `ois_quote`. Foreign discount under RUB collateral uses `xccy_quote`, the built-curve basis, or `par_yield_quote` for a quoted proxy. Separate foreign projection uses `ois_quote` or the built-curve basis. |
+| CDS | Discount and credit calibration use the same scenario discount. Its IR basis is the built-curve basis, `ois_quote` or `par_yield_quote`. Credit spread and recovery have separate factors. |
+| OFZ basket futures | Bond discount and funding have distinct IDs. Each uses `ois_quote` or its built-curve basis. |
+
+### Key-rate calibration under RUONIA shocks
+
+A portfolio supplies one `KeyRateCurveRequest` under `rub_key_rate_swap_v1` for
+each KRS market. Its `ruonia_curve_id` names the snapshot's RUONIA OIS quote
+curve and must match the product's RUB discount ID where the product has one.
+The core applies the OIS tail policy through that same ID. Under a RUONIA shock
+it bootstraps the shocked OIS quotes and reads the resulting discount curve
+forward from KRS TOM, using `DF(t) / DF(TOM)`. The KRS fit on that discount
+holds KRS mids fixed unless their own factors also move. The request re-dates the
+calibrated path to the business date at the key rate already in force.
+
+The same calibration serves floaters, KRS, repos, CCS and KEYRATE futures. The
+products that read overnight forwards use `KeyRateProjection`, with the day grid
+and day count of the leg. CCS and key-rate repo observe calendar days. A floater
+can observe business or calendar days according to its coupon rule. The
+floater's parallel DV01 moves both quote curves together. Second order includes
+their interaction. For KRS, the payoff is linear in KRS quotes at each RUONIA
+state. The mixed Hessian block differences the discounted KRS quote sensitivities
+at the positive and negative RUONIA bucket shocks.
+
+A par KRS has zero RUONIA sensitivity at its own quote because the calibration
+reprices it on each shocked discount. A par OIS has only RUONIA quote exposure.
+The two sets of buckets therefore hedge a floater's first-order risk. A
+synthetic near-par monthly key-rate + 165 bp floater around 2.6 years can still
+have positive net DV01 of about 4% of the absolute discount DV01. A basis point
+of a compounded OIS par quote and a basis point of an arithmetic KRS par quote
+move different cashflow schedules and day-count weights. Their parallel net DV01
+has no fixed par-cancellation threshold.
+
+KRS quote risk applies independently of `quote_curve_risk`.
+Portfolio positions using `rub_key_rate_projection_v1`, a `KeyRateForwardCurve`,
+or a different discount ID receive `InvalidTerms`. Standalone revaluations can
+supply explicit curves in their corresponding forward or zero-rate bases.
 
 **Units across curves (0.34.0).** A continuous-zero bp is larger than an annual one:
 `dP/dr_cont = (1 + y) dP/dy_annual`, 14–16 % at RUB rates of 2026. Par OIS quote risk,
@@ -306,7 +362,7 @@ skipped at the yield to call).
 
 `BondRiskRequest(floating_leg=..., projection_curve=...)` projects coupons off
 `projection_curve` and discounts on `curve`; the spread is a margin over `curve`. Each
-curve is shocked in its own basis (zero-rate overlay or OIS quote rebootstrap) on the 11
+curve is shocked in its own basis on the 11
 buckets. `risk()` returns a `TwoCurveBondRiskResult` with `projection_buckets` beside the
 discount `buckets`; `dv01_rub` sums both and `parallel_dv01_rub` moves both curves
 together. `second_order()` is central over 23 factors (`discount <b>`, `projection <b>`,

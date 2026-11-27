@@ -49,7 +49,7 @@ from .discount import (
     DiscountFactorCurve,
 )
 from .errors import InvalidTerms
-from .floating import FloatingCouponProjection, FloatingLeg
+from .floating import FloatingCouponProjection, FloatingLeg, KeyRateProjection
 from .perpetual import PerpetualTail
 
 # Bucket weights, the shocked-curve cache and curve helpers live in ._risk_common since
@@ -82,10 +82,12 @@ __all__ = [
 RISK_MODEL_VERSION = "rub-fixed-cashflow-risk-v1"
 FLOATING_RISK_MODEL_VERSION = "rub-floating-coupon-risk-v1"
 FLOATING_TWO_CURVE_RISK_MODEL_VERSION = "rub-floating-two-curve-risk-v1"
+KEY_RATE_FLOATER_MODEL_VERSION = "rub-floating-two-curve-krs-quote-risk-v1"
 _SECOND_ORDER_MODELS = {
     RISK_MODEL_VERSION: "rub-fixed-cashflow-second-order-v1",
     FLOATING_RISK_MODEL_VERSION: "rub-floating-coupon-second-order-v1",
     FLOATING_TWO_CURVE_RISK_MODEL_VERSION: "rub-floating-two-curve-second-order-v1",
+    KEY_RATE_FLOATER_MODEL_VERSION: "rub-floating-two-curve-krs-quote-second-order-v1",
 }
 ANALYTIC_SECOND_ORDER_MODEL_VERSION = "rub-fixed-cashflow-second-order-analytic-v1"
 ANALYTIC_RISK_MODEL_VERSION = "rub-fixed-cashflow-risk-analytic-v1"
@@ -162,7 +164,7 @@ class BondRiskRequest:
     quantity: float = 1.0
     currency: Literal["RUB"] = "RUB"
     floating_leg: FloatingLeg | None = None
-    projection_curve: DiscountCurve | CurveBootstrapRequest | None = field(
+    projection_curve: DiscountCurve | CurveBootstrapRequest | KeyRateProjection | None = field(
         default=None, metadata=OMIT_IF_DEFAULT
     )
     perpetual_tail: PerpetualTail | None = field(default=None, metadata=OMIT_IF_DEFAULT)
@@ -224,8 +226,30 @@ class BondRiskRequest:
         if self.projection_curve is not None:
             if self.floating_leg is None:
                 raise ValueError("a projection curve needs a floating leg")
-            if not isinstance(self.projection_curve, (DiscountCurve, CurveBootstrapRequest)):
-                raise TypeError("projection_curve must be DiscountCurve or CurveBootstrapRequest")
+            if not isinstance(
+                self.projection_curve, (DiscountCurve, CurveBootstrapRequest, KeyRateProjection)
+            ):
+                raise TypeError(
+                    "projection_curve must be a discount curve, OIS quotes or KeyRateProjection"
+                )
+            if isinstance(self.projection_curve, KeyRateProjection):
+                rule = self.floating_leg.rule
+                if rule.index != "key_rate":
+                    raise InvalidTerms("KeyRateProjection requires a key-rate floating leg")
+                if (
+                    self.projection_curve.observation_days != rule.observation_days
+                    or self.projection_curve.rate_day_count != rule.rate_day_count
+                    or (
+                        rule.observation_days == "business"
+                        and self.projection_curve.calendar != self.floating_leg.history.calendar
+                    )
+                ):
+                    raise InvalidTerms(
+                        "KeyRateProjection must use the floating leg's observation rule"
+                    )
+                object.__setattr__(
+                    self, "projection_curve", self.projection_curve._with_discount(self.curve)
+                )
             if self.projection_curve.curve_date != self.curve.curve_date:
                 raise ValueError("projection and discount curves must have the same date")
             object.__setattr__(self, "projection_curve", _snapshot_curve(self.projection_curve))
@@ -381,11 +405,11 @@ class BondRiskEngine:
             raise TypeError("curve_cache must be a ShockedCurveCache")
         curve = _base_curve(req.curve, self.curve_cache)
         object.__setattr__(self, "_curve", curve)
-        projection = (
-            curve
-            if req.projection_curve is None
-            else _base_curve(req.projection_curve, self.curve_cache)
-        )
+        source = req.projection_curve
+        if isinstance(source, KeyRateProjection):
+            projection = source._quote_build(_ZERO_SHOCK, curve)
+        else:
+            projection = curve if source is None else _base_curve(source, self.curve_cache)
         object.__setattr__(self, "_projection", projection)
         object.__setattr__(self, "projected_coupons", self._project(projection))
         object.__setattr__(self, "_reuse", self._reuse_plan())
@@ -503,17 +527,18 @@ class BondRiskEngine:
         RUONIA OIS, an OFZ-PK) it is the risk of the spread or basis over that curve.
 
         ``risk`` (central, the same bump) reuses a result already computed for this
-        engine where it holds the discount-only buckets (fixed bonds and two-curve
-        floaters).
+        engine when its discount shocks leave the projected coupons fixed.
         """
         bump = positive_money(bump_bp, "risk bump bp")
         quantity = self.request.quantity
-        single_floater = self.request.floating_leg is not None and not self.two_curve
+        reprojects_on_discount = self.request.floating_leg is not None and (
+            not self.two_curve or isinstance(self.request.projection_curve, KeyRateProjection)
+        )
         if (
             risk is not None
             and risk.difference == "central"
             and risk.bump_bp == bump
-            and not single_floater
+            and not reprojects_on_discount
         ):
             units = [b.dv01_rub for b in risk.buckets]
             parallel = risk.cs01_rub if self.request.spread_kind == "credit" else risk.ofz_spr01_rub
@@ -580,6 +605,8 @@ class BondRiskEngine:
     def model_version(self) -> str:
         if self.request.floating_leg is None:
             return RISK_MODEL_VERSION
+        if isinstance(self.request.projection_curve, KeyRateProjection):
+            return KEY_RATE_FLOATER_MODEL_VERSION
         if self.two_curve:
             return FLOATING_TWO_CURVE_RISK_MODEL_VERSION
         return FLOATING_RISK_MODEL_VERSION
@@ -729,6 +756,9 @@ class BondRiskEngine:
             projection: DiscountFactorCurve
             if source is None:
                 projection, moves = curve, shifts
+            elif isinstance(source, KeyRateProjection):
+                projection = source._quote_build(projection_shifts, curve)
+                moves = projection_shifts
             else:
                 projection = _shock_curve(
                     source, self._projection, projection_shifts, self.curve_cache

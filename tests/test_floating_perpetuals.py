@@ -36,6 +36,7 @@ from floating_perpetual_data import (
     ruonia_perpetual,
     snapshot,
 )
+from portfolio_v3_book import key_rate_quotes
 from test_perpetual import materialised
 from test_portfolio import AS_OF, PARAMS
 from test_portfolio_floaters import KEY_PROJECTION, OIS
@@ -272,13 +273,26 @@ def test_value_portfolio_values_and_risks_the_three_floating_perpetuals() -> Non
         assert row.dirty_price_rub == pytest.approx(dirty(bond), rel=1e-12)
         assert row.pv_rub == pytest.approx(row.dirty_price_rub * 1000.0, rel=1e-10)
         ours, _, _ = engines(bond)
+        if instrument_id == "PERP-KEY":
+            from rub_fixed_income import KeyRateProjection
+
+            assert ours.request.floating_leg is not None
+            leg = ours.request.floating_leg
+            source = KeyRateProjection(
+                key_rate_quotes("RUB_OIS", leg.history.calendar),
+                leg.history.calendar,
+                leg.rule.rate_day_count,
+                leg.rule.observation_days,
+            )
+            ours = BondRiskEngine(replace(ours.request, projection_curve=source))
         assert row.spread_bp == pytest.approx(ours.spread_bp, abs=1e-9)
         first = row.factor_risk.first_order_by_factor()
         assert first["CS"] < 0.0
         assert row.factor_risk.hessian  # second order computed
         assert row.macaulay_duration_years > 3.0
     key = rows["PERP-KEY"].factor_risk.first_order_by_factor()
-    assert all(key[f"IR|KEY_PROJ|{b}"] > 0.0 for b in ("1Y", "5Y", "10Y", "20Y+"))
+    assert all(key[f"IR|KEY_PROJ|{b}"] > 0.0 for b in ("1Y", "5Y"))
+    assert key["IR|KEY_PROJ|20Y+"] == 0.0
     kbd = rows["PERP-KBD"].factor_risk.first_order_by_factor()
     assert kbd["IR|RUB_KBD|3Y"] < 0.0 < kbd["IR|RUB_KBD|20Y+"]
     ruonia = rows["PERP-RUONIA"].factor_risk.factors

@@ -107,8 +107,9 @@ calendar rejects dates outside its range.
   - **RUONIA**, a `DiscountCurve` or `CurveBootstrapRequest`: a separate
     projection curve, with its own factors.
   - **Key rate**: a `KeyRateForwardCurve` (`key_rate_forward` basis) or KRS
-    quotes, a `KeyRateCurveRequest` (`key_rate_quote` basis: shift the quotes,
-    then recalibrate), is required.
+    quotes, a `KeyRateCurveRequest` (`key_rate_quote` basis), is required. With
+    quotes, supply RUONIA OIS quotes as the discount input. Every scenario
+    calibrates KRS on that scenario's RUONIA discount read forward from TOM.
 - `fixings` is a [`FixingHistory`](floating.md) of the swap's index, used read-only.
   It is required as soon as a remaining float period has started. A float leg that has
   not started (a later `float_effective_date`) needs none: its first period is projected
@@ -182,7 +183,7 @@ across engines on the same OIS quotes.
   treated as set and does not move.
 - On KRS quotes (`KeyRateCurveRequest`) a bucket shift moves each mid quote by
   `sum_k w_k(t_i) * s_k` at its maturity's time `t_i` from the valuation date, as an
-  OIS quote, and the mid curve is recalibrated on the calibration's discount curve
+  OIS quote, and the mid curve is recalibrated on the scenario's RUONIA discount
   (`KeyRateCurveRequest.shocked`, the solve and checks of
   `build_key_rate_forward_curve`). Bid, ask and the decided rate do not move.
   Buckets beyond the last quote's hat move nothing.
@@ -288,9 +289,6 @@ informational.
 
 - **Lookback, lockout and observation shift** are not modelled (the v2 spec has
   none).
-- **Key-rate quote-basis risk with the discount curve coupled**: KRS quotes are
-  shifted and recalibrated (`KeyRateCurveRequest`), but on the calibration's own
-  discount curve, which a discount-curve shock does not move.
 - **Other terms**: explicit confirmation schedules (instead of
   convention-generated ones), stubs other than the roll's natural one,
   amortizing notionals, compounded spreads, caps and floors.

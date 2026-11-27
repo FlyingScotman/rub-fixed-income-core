@@ -12,8 +12,8 @@ from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
-from portfolio_v3_book import BUSINESS_DATE, CAL, POLICY
-from test_fx_portfolio_v036 import RUB_CURVE, built, market, pos, run
+from portfolio_v3_book import BUSINESS_DATE, CAL, POLICY, key_rate_quotes, ois_request
+from test_fx_portfolio_v036 import market, pos, run
 from test_xccy import bootstrap_request
 
 from rub_fixed_income import (
@@ -42,6 +42,7 @@ from rub_fixed_income import (
     XccyRiskRequest,
     XccyScenario,
     XccySwap,
+    bootstrap_discount_curve,
     from_dict,
     horizon_portfolio,
     key_rate_projection_curve,
@@ -667,22 +668,15 @@ def portfolio_market(
     rows: tuple[tuple[date, float], ...] | None = None, **changes: object
 ) -> MarketSnapshot:
     rows = rows or ((date(2026, 6, 1), 0.18), (date(2026, 9, 15), 0.165))
-    proj = key_rate_projection_curve(
-        KeyRateForwardCurve(
-            BUSINESS_DATE,
-            0.16,
-            STEP,
-            (KeyRateForwardSegment(STEP, date(2029, 1, 1), 0.14, "1Y"),),
-        ),
-        CAL,
-        rate_day_count=ACT365,
-        observation_days="calendar",
-    )
     history = FixingHistory("key_rate", BUSINESS_DATE, rows, CAL, "key-snap", known_at_utc=KNOWN)
     base = market("CNY", calendars=(CalendarEntry("FX", CAL), CalendarEntry("MOEX", CAL)))
     base = replace(
         base,
-        curves=(*base.curves, CurveEntry("KEY_PROJ", "rub_key_rate_projection_v1", proj)),
+        curves=(
+            *(c for c in base.curves if c.curve_id != "RUB_OIS"),
+            CurveEntry("RUB_OIS", "rub_ruonia_ois_legacy_v1", ois_request()),
+            CurveEntry("KEY_PROJ", "rub_key_rate_swap_v1", key_rate_quotes("RUB_OIS")),
+        ),
         fixings=(FixingEntry("KEY_RATE", history),),
     )
     return replace(base, **changes)  # type: ignore[arg-type]
@@ -731,14 +725,15 @@ def test_value_portfolio_prices_the_key_rate_leg_with_projection_risk() -> None:
     # RUB leg PV by hand on the snapshot's RUB curve
     rows = ((date(2026, 6, 1), 0.18), (date(2026, 9, 15), 0.165))
     known = in_force(rows, start, BUSINESS_DATE)
+    rub_curve = bootstrap_discount_curve(ois_request())
+    forward = key_rate_quotes("RUB_OIS").curve(ruonia=rub_curve)
     total = sum(known.values())
     day = BUSINESS_DATE
     while day < end:
-        total += FORWARD.rate_at(day)
+        total += forward.rate_at(day)
         day += timedelta(days=1)
     avg = total / (end - start).days
     alpha = (end - start).days / 360.0
-    rub_curve = built(CurveEntry("x", "rub_ruonia_ois_legacy_v1", RUB_CURVE))
     expected = -N_RUB * ((avg + 0.002) * alpha + 1.0) * rub_curve.discount_factor(end)
     assert row.rub_leg_pv_rub == pytest.approx(expected, rel=1e-10)
     # without the history the position is rejected, not guessed
@@ -748,16 +743,7 @@ def test_value_portfolio_prices_the_key_rate_leg_with_projection_risk() -> None:
 
 def test_horizon_portfolio_reads_the_key_rate_forward_curve_of_the_snapshot() -> None:
     start, end = date(2026, 9, 1), date(2027, 3, 1)
-    forward = KeyRateForwardCurve(
-        BUSINESS_DATE,
-        0.16,
-        STEP,
-        (KeyRateForwardSegment(STEP, date(2029, 1, 1), 0.14, "1Y"),),
-    )
     snap = portfolio_market()
-    snap = replace(
-        snap, curves=(*snap.curves, CurveEntry("KEY_FWD", "rub_key_rate_swap_v1", forward))
-    )
     swap_ = portfolio_swap(start, end)
     positions = [pos("p", "XKEY", 1.0, "CNY")]
     h = date(2026, 11, 16)
@@ -773,12 +759,16 @@ def test_horizon_portfolio_reads_the_key_rate_forward_curve_of_the_snapshot() ->
 
     base = {"rub_projection_curve_id": "KEY_PROJ", "rub_fixing_id": "KEY_RATE"}
     with_curve = XccyInstrument(
-        "XKEY", swap_, "RUB_OIS", "CNY_DF", rub_key_rate_curve_id="KEY_FWD", **base
+        "XKEY", swap_, "RUB_OIS", "CNY_DF", rub_key_rate_curve_id="KEY_PROJ", **base
     )
     result = carry(with_curve)
     assert result.coverage.status == "complete", result.coverage.rejections  # type: ignore[attr-defined]
     without = carry(XccyInstrument("XKEY", swap_, "RUB_OIS", "CNY_DF", **base))
-    assert without.coverage.rejections[0].code == "MISSING_MARKET_DATA"  # type: ignore[attr-defined]
+    assert without == result
+    different = carry(
+        XccyInstrument("XKEY", swap_, "RUB_OIS", "CNY_DF", rub_key_rate_curve_id="KEY_FWD", **base)
+    )
+    assert different.coverage.rejections[0].code == "INVALID_TERMS"  # type: ignore[attr-defined]
     with pytest.raises(InvalidTerms, match="averaged key-rate"):
         XccyInstrument("X", swap(RUSFAR), "RUB_OIS", "CNY_DF", rub_key_rate_curve_id="KEY_FWD")
     # RUONIA and other instruments serialize as before: the new field is omitted at its default

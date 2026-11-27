@@ -58,7 +58,13 @@ from rub_fixed_income.domain import (
 )
 from rub_fixed_income.fx_forwards import FxForward, FxForwardLeg, FxSwap
 from rub_fixed_income.fx_futures import FxFuturesContract
-from rub_fixed_income.key_rate import KeyRateForwardCurve, KeyRateForwardSegment
+from rub_fixed_income.key_rate import (
+    KeyRateCurveBuildRequest,
+    KeyRateCurveRequest,
+    KeyRateForwardCurve,
+    KeyRateForwardSegment,
+    KeyRateSwapQuote,
+)
 from rub_fixed_income.ofz_futures import OfzFuturesContract
 from rub_fixed_income.portfolio_instruments import (
     CdsInstrument,
@@ -141,6 +147,36 @@ KEY_RATE_CURVE = KeyRateForwardCurve(
         KeyRateForwardSegment(date(2027, 6, 1), date(2031, 1, 1), 0.13, "5Y"),
     ),
 )
+
+
+def key_rate_quotes(
+    ruonia_curve_id: str,
+    calendar: BusinessCalendar = CAL,
+) -> KeyRateCurveRequest:
+    tom = calendar.add_business_days(BUSINESS_DATE, 1)
+    return KeyRateCurveRequest(
+        KeyRateCurveBuildRequest(
+            BUSINESS_DATE,
+            0.165,
+            date(2026, 10, 26),
+            tuple(
+                KeyRateSwapQuote(tenor, mid - 0.0004, mid, mid + 0.0004)
+                for tenor, mid in (
+                    ("3M", 0.163),
+                    ("6M", 0.158),
+                    ("1Y", 0.151),
+                    ("2Y", 0.143),
+                    ("3Y", 0.139),
+                    ("5Y", 0.135),
+                )
+            ),
+            DiscountCurve.flat(tom, 0.15),
+            calendar,
+        ),
+        BUSINESS_DATE,
+        0.165,
+        ruonia_curve_id,
+    )
 
 
 def xccy_quotes() -> XccyCurveBootstrapRequest:
@@ -328,7 +364,7 @@ def instruments(*, pinned: bool = False) -> tuple[PortfolioInstrument, ...]:
     if not pinned:
         rows += [
             SwapInstrument("OIS-2C", forward_ois, "MOEX", "RUB_OIS", "RUB_PROJ"),
-            SwapInstrument("KRS-2Y", krs, "MOEX", "RUB_OIS", "KEY_RATE"),
+            SwapInstrument("KRS-2Y", krs, "MOEX", "RUB_PROJ", "KEY_RATE"),
             *repos(),
         ]
     return tuple(rows)
@@ -394,7 +430,7 @@ def snapshot(**changes: object) -> MarketSnapshot:
             CurveEntry("RUB_OIS", "rub_ruonia_ois_legacy_v1", node_curve(0.15, -0.004)),
             CurveEntry("RUB_REPO", "rub_ruonia_ois_legacy_v1", node_curve(0.155, -0.003)),
             CurveEntry("RUB_PROJ", "rub_ruonia_ois_legacy_v1", ois_request()),
-            CurveEntry("KEY_RATE", "rub_key_rate_swap_v1", KEY_RATE_CURVE),
+            CurveEntry("KEY_RATE", "rub_key_rate_swap_v1", key_rate_quotes("RUB_PROJ")),
             CurveEntry("USD_DF", "usd_discount_factors_v1", node_curve(0.042, 0.0008)),
             CurveEntry("CNY_DF", "cny_discount_factors_v1", node_curve(0.016, 0.0006)),
             CurveEntry("CNY_XCCY", "cny_ruonia_xccy_v1", xccy_quotes()),
@@ -482,8 +518,7 @@ PINNED_SCENARIO = PortfolioScenario(
 
 
 def pinned_v3_result() -> PortfolioRiskResult:
-    """The book behind ``tests/fixtures/portfolio_result_v3.json`` (pin the library
-    version before calling it: it is part of the job identity)."""
+    """The pinned book with linked KRS quotes. Pin the library version before valuing it."""
     return value_portfolio(
         run_id="pinned-v3",
         as_of=AS_OF,

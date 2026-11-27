@@ -29,7 +29,9 @@ from portfolio_v3_book import (
     SPOT,
     TOM,
     instruments,
+    key_rate_quotes,
     node_curve,
+    ois_request,
     positions,
     ruonia_futures_fixings,
     ruonia_history,
@@ -311,7 +313,12 @@ def standalone(position_id: str) -> tuple[float, FactorRisk, Callable[[], float]
         contract_r = inst.contract
         price, _ = FUTURES_PRICES[contract_r.contract_id]
         if inst.fixing_id is None:
-            request_r = RateFuturesRiskRequest(contract_r, KEY_RATE_CURVE, futures_price=price)
+            request_r = RateFuturesRiskRequest(
+                contract_r,
+                key_rate_quotes("RUB_PROJ"),
+                futures_price=price,
+                ruonia_curve=ois_request(),
+            )
         else:
             anchor = (
                 RuoniaIndexValue(date(2026, 10, 14), 4.5524)
@@ -330,11 +337,21 @@ def standalone(position_id: str) -> tuple[float, FactorRisk, Callable[[], float]
             re.risk(bump_bp=bump, difference="central"),
             inst.projection_curve_id,
             re.second_order(bump_bp=bump),
+            ruonia_curve_id="RUB_PROJ" if inst.fixing_id is None else None,
         )
         return (
             math.nan,
             risk,
-            lambda: re.reprice(RateFuturesScenario(shift)).total_pnl_rub,
+            lambda: (
+                re.reprice(
+                    RateFuturesScenario(
+                        shift,
+                        ruonia_shifts_bp=shift
+                        if inst.fixing_id is None
+                        else RateFuturesScenario().ruonia_shifts_bp,
+                    )
+                ).total_pnl_rub
+            ),
         )
     if isinstance(inst, RepoInstrument):
         floating = inst.fixing_id is not None
@@ -518,7 +535,7 @@ def test_product_rows_carry_their_engine_fields() -> None:
     assert swap.clean_pv_rub == pytest.approx(swap.pv_rub - swap.accrued_rub)  # type: ignore[attr-defined]
     assert 0.0 < swap.par_rate < 0.3  # type: ignore[attr-defined]
     krs = rows["p-krs"]
-    assert krs.projection_curve_basis == "key_rate_forward"  # type: ignore[attr-defined]
+    assert krs.projection_curve_basis == "key_rate_quote"  # type: ignore[attr-defined]
     cds = rows["p-cds-gaz"]
     assert cds.points_upfront != 0.0 and cds.par_spread > 0.0  # type: ignore[attr-defined]
     assert cds.recovery01_rub != 0.0 and cds.accrued_premium_rub < 0.0  # type: ignore[attr-defined]
@@ -830,7 +847,7 @@ def test_horizon_portfolio_carries_every_product() -> None:
         assert row.rolldown_rub == pytest.approx(direct.rolldown_rub * q, rel=1e-15)
         assert row.received_rub == pytest.approx(direct.received_rub * q, rel=1e-15)
         assert row.horizon_pnl_rub == pytest.approx(row.carry_rub + row.rolldown_rub, abs=1e-6)
-    assert result.swaps[2].discount_curve_id == "RUB_OIS"
+    assert result.swaps[2].discount_curve_id == "RUB_PROJ"
     assert result.swaps[2].projection_curve_id == "KEY_RATE"
     assert [r.position_id for r in result.repos] == ["p-repo-term", "p-repo-open"]
     for repo_row in result.repos:
@@ -928,8 +945,8 @@ def test_horizon_portfolio_derivative_rejections_carry_codes() -> None:
     result = horizon_book(instruments=no_end, positions=only)
     codes = {r.position_id: r.code for r in result.coverage.rejections}
     assert codes == {"p-repo-open": "MISSING_ASSUMPTION"}
-    # The key-rate projection curve ends on 2031-01-01.
-    late = horizon_book(positions=only, horizon_date=date(2031, 2, 3))
+    # The last KRS pillar is 5Y.
+    late = horizon_book(positions=only, horizon_date=date(2032, 2, 3))
     late_codes = {r.position_id: r.code for r in late.coverage.rejections}
     assert late_codes == {"p-krs": "MISSING_MARKET_DATA"}
     assert [r.position_id for r in late.repos] == ["p-repo-open"]

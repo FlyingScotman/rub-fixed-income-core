@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 from ._curve_views import FxHorizon
 from ._money import finite_money
-from ._risk_common import ShockedCurveCache, _base_curve
+from ._risk_common import _ZERO_SHOCK, ShockedCurveCache, _base_curve
 from .canonical import OMIT_IF_DEFAULT, canonical_sha256
 from .cds import (
     CDS_RISK_MODEL_VERSION,
@@ -49,6 +49,7 @@ from .cds import (
     CdsSide,
     cds_factor_risk,
 )
+from .conventions import DayCount
 from .curve_specs import PAR_YIELD_PROXY_MODEL_VERSION, CurveKind, CurveSpec, get_curve_spec
 from .dates import BusinessCalendar
 from .discount import CurveBootstrapRequest, DiscountCurve
@@ -82,7 +83,7 @@ from .factors import (
     fx_futures_factor_risk,
     fx_translated_factor_risk,
 )
-from .floating import FixingHistory, FixingIndex
+from .floating import FixingHistory, FixingIndex, KeyRateProjection, ObservationDays
 from .fx_crosses import (
     FX_CROSS_RISK_MODEL_VERSION,
     FxCrossForward,
@@ -116,7 +117,7 @@ from .fx_futures import (
     FxFuturesScenario,
 )
 from .key_rate import MODEL_VERSION as KEY_RATE_CURVE_MODEL_VERSION
-from .key_rate import KeyRateCurveRequest, KeyRateForwardCurve
+from .key_rate import KeyRateCurveRequest
 from .ofz_futures import (
     OFZ_FUTURES_RISK_MODEL_VERSION,
     DeliverableAnalysis,
@@ -140,7 +141,6 @@ from .portfolio_instruments import (
 )
 from .proxy_curves import ParYieldCurveRequest
 from .rate_futures import (
-    RATE_FUTURES_RISK_MODEL_VERSION,
     KeyRateFuturesContract,
     RateFuturesHorizonValuation,
     RateFuturesRiskEngine,
@@ -153,7 +153,6 @@ from .rate_futures import (
     rate_futures_variation_margin,
 )
 from .repo import (
-    REPO_MODEL_VERSION,
     AmountSource,
     FloatingRepoRate,
     RepoCarry,
@@ -165,7 +164,6 @@ from .repo import (
     repo_factor_risk,
 )
 from .swaps import (
-    SWAP_MODEL_VERSION,
     SwapHorizonValuation,
     SwapRiskEngine,
     SwapRiskRequest,
@@ -176,7 +174,6 @@ from .swaps import (
 from .xccy import (
     RUONIA_OIS_COMPOUND,
     XCCY_CURVE_MODEL_VERSION,
-    XCCY_MODEL_VERSION,
     AveragedIndex,
     CompoundedIndex,
     IndexFixings,
@@ -402,6 +399,8 @@ class XccyPositionValuation:
     foreign_leg_pv_rub: float
     foreign_leg_par_rate: float | None
     curve_fallback_from: str | None = field(default=None, metadata=OMIT_IF_DEFAULT)
+    projection_curve_id: str | None = field(default=None, metadata=OMIT_IF_DEFAULT)
+    projection_curve_basis: str | None = field(default=None, metadata=OMIT_IF_DEFAULT)
 
 
 @dataclass(frozen=True)
@@ -515,6 +514,8 @@ class RateFuturesPositionValuation:
     fixing_snapshot_id: str | None
     index_anchor_date: date | None
     variation_margin_rub: float
+    projection_curve_basis: str | None = field(default=None, metadata=OMIT_IF_DEFAULT)
+    ruonia_curve_id: str | None = field(default=None, metadata=OMIT_IF_DEFAULT)
 
 
 @dataclass(frozen=True)
@@ -585,6 +586,7 @@ class RepoPositionValuation:
     accrued_interest_rub: float
     current_repurchase_amount_rub: float
     collateral: RepoCollateralReference | None
+    projection_curve_basis: str | None = field(default=None, metadata=OMIT_IF_DEFAULT)
 
 
 ProductRow = (
@@ -708,6 +710,9 @@ class ProductContext:
     fx_points_held_risk: bool = False
     quote_curve_risk: bool = False
     implied_curves: dict[str, DiscountCurve | CoreRejection] = field(default_factory=dict)
+    key_rate_projections: dict[
+        tuple[str, BusinessCalendar | None, DayCount, ObservationDays], KeyRateProjection
+    ] = field(default_factory=dict)
 
     @property
     def business_date(self) -> date:
@@ -863,39 +868,31 @@ class ProductContext:
     def fx_fixing(self, currency: str, source: str, fixing_date: date) -> FxFixing | None:
         return self.snapshot.fx_fixing(currency, source, fixing_date)
 
-    def key_rate_curve(self, curve_id: str) -> KeyRateForwardCurve | KeyRateCurveRequest:
-        """A key-rate swap projection curve (``rub_key_rate_swap_v1``) dated the business date.
+    def key_rate_curve(
+        self, curve_id: str, discount_curve_id: str | None = None
+    ) -> KeyRateCurveRequest:
+        quotes = self.snapshot._key_rate_quotes(curve_id, discount_curve_id)
+        assert quotes.ruonia_curve_id is not None
+        self.discount_curve(quotes.ruonia_curve_id, "RUB")
+        self.used_curves[curve_id] = ("rub_key_rate_swap_v1", KEY_RATE_CURVE_MODEL_VERSION)
+        return quotes
 
-        A curve calibrated on TOM-dated quotes is re-dated by the backend with
-        ``key_rate.rebase_key_rate_curve``; core does not move a curve in time here. KRS
-        quotes (:class:`KeyRateCurveRequest`, re-dated by its ``business_date``) are the
-        risk source with ``quote_curve_risk``; otherwise their mid curve is (forward risk).
-        """
-        entry = self.snapshot.curve(curve_id)
-        spec = get_curve_spec(entry.spec_id)
-        source = entry.curve
-        if spec.kind is not CurveKind.KEY_RATE_SWAP:
-            raise InvalidTerms(f"curve {curve_id} ({spec.spec_id}) cannot project a key-rate swap")
-        if isinstance(source, KeyRateCurveRequest):
-            if source.business_date != self.business_date:
-                raise InvalidTerms(
-                    f"KRS quotes {curve_id} are dated {source.business_date.isoformat()}, not "
-                    "the snapshot business date"
-                )
-            self.used_curves[curve_id] = (spec.spec_id, KEY_RATE_CURVE_MODEL_VERSION)
-            return source if self.quote_curve_risk else source.curve()
-        if not (
-            isinstance(source, KeyRateForwardCurve)
-            and source.model_version == KEY_RATE_CURVE_MODEL_VERSION
-        ):
-            raise InvalidTerms(f"curve {curve_id} does not match spec {spec.spec_id}")
-        if source.curve_date != self.business_date:
-            raise InvalidTerms(
-                f"key-rate curve {curve_id} is dated {source.curve_date.isoformat()}, not the "
-                "snapshot business date; re-date a TOM calibration with rebase_key_rate_curve"
+    def key_rate_projection(
+        self,
+        curve_id: str,
+        discount_curve_id: str,
+        calendar: BusinessCalendar,
+        rate_day_count: DayCount,
+        observation_days: ObservationDays,
+    ) -> KeyRateProjection:
+        quotes = self.key_rate_curve(curve_id, discount_curve_id)
+        observation_calendar = calendar if observation_days == "business" else None
+        key = (curve_id, observation_calendar, rate_day_count, observation_days)
+        if key not in self.key_rate_projections:
+            self.key_rate_projections[key] = KeyRateProjection(
+                quotes, calendar, rate_day_count, observation_days
             )
-        self.used_curves[curve_id] = (spec.spec_id, source.model_version)
-        return source
+        return self.key_rate_projections[key]
 
     def fx_spot(self, currency: str) -> tuple[FxSpot, BusinessCalendar]:
         spot = self.snapshot.fx_spot(currency)
@@ -1017,12 +1014,10 @@ def _swap_engine(
     discount_id = instrument.discount_curve_id
     discount = ctx.discount_curve(discount_id, "RUB")
     projection_id = instrument.projection_curve_id
-    projection: (
-        DiscountCurve | CurveBootstrapRequest | KeyRateForwardCurve | KeyRateCurveRequest | None
-    ) = None
+    projection: DiscountCurve | CurveBootstrapRequest | KeyRateCurveRequest | None = None
     if projection_id is not None:
         if swap.convention.index == "key_rate":
-            projection = ctx.key_rate_curve(projection_id)
+            projection = ctx.key_rate_curve(projection_id, discount_id)
         else:
             projection = ctx.projection(projection_id, "ruonia").curve
     fixings = (
@@ -1060,7 +1055,7 @@ def value_swap(position: Position, instrument: object, ctx: ProductContext) -> P
         instrument.instrument_id,
         position.book,
         position.accounting_category,
-        ctx.calculation_id(position, SWAP_MODEL_VERSION, engine.base_id),
+        ctx.calculation_id(position, engine.model_version, engine.base_id),
         q,
         _money(valuation.pv_rub * q, "swap PV"),
         factor_risk,
@@ -1103,7 +1098,7 @@ def value_swap(position: Position, instrument: object, ctx: ProductContext) -> P
     if fixings is not None:
         flags.append("known_fixings")
     model = _model(
-        position, instrument.instrument_id, instrument.product.value, SWAP_MODEL_VERSION, *flags
+        position, instrument.instrument_id, instrument.product.value, engine.model_version, *flags
     )
     return ProductOutcome(row, reprice, model)
 
@@ -1633,14 +1628,21 @@ def _xccy_engine(
     spot, settlement = ctx.fx_spot(currency)
     rub_d = ctx.discount_curve(instrument.rub_discount_curve_id, "RUB")
     rub_index = swap.rub_leg.index
-    rub_p = (
-        None
-        if instrument.rub_projection_curve_id is None
-        else ctx.projection(
-            instrument.rub_projection_curve_id,
-            "key_rate" if isinstance(rub_index, AveragedIndex) else "ruonia",
-        ).curve
-    )
+    projection_id = instrument.rub_projection_curve_id
+    rub_p: DiscountCurve | CurveBootstrapRequest | KeyRateProjection | None = None
+    if isinstance(rub_index, AveragedIndex) and projection_id is not None:
+        if instrument.rub_key_rate_curve_id not in (None, projection_id):
+            raise InvalidTerms("a key-rate CCS must use one KeyRateCurveRequest for its RUB leg")
+        quotes = ctx.key_rate_curve(projection_id, instrument.rub_discount_curve_id)
+        rub_p = ctx.key_rate_projection(
+            projection_id,
+            instrument.rub_discount_curve_id,
+            quotes.build.calendar,
+            rub_index.rate_day_count,
+            "calendar",
+        )
+    elif projection_id is not None:
+        rub_p = ctx.projection(projection_id, "ruonia").curve
     foreign_id, foreign_d, fallback_from = _xccy_foreign_discount(
         ctx, instrument.foreign_discount_curve_id, currency, spot
     )
@@ -1661,12 +1663,6 @@ def _xccy_engine(
         if instrument.foreign_fixing_id is None
         else ctx.snapshot.index_fixing(instrument.foreign_fixing_id)
     )
-    key_forward: KeyRateForwardCurve | None = None
-    if instrument.rub_key_rate_curve_id is not None:
-        key_source = ctx.key_rate_curve(instrument.rub_key_rate_curve_id)
-        key_forward = (
-            key_source if isinstance(key_source, KeyRateForwardCurve) else key_source.curve()
-        )
     basis = ctx.fx_basis(currency, foreign_id)
     request = XccyRiskRequest(
         swap,
@@ -1680,7 +1676,6 @@ def _xccy_engine(
         rub_fixings=rub_fixings,
         foreign_fixings=foreign_fixings,
         basis_day_count=basis.day_count,
-        rub_key_rate_curve=key_forward,
     )
     engine = XccyRiskEngine(request, ctx.curve_cache, ctx.xccy_cache)
     return engine, spot, settlement, foreign_id, fallback_from
@@ -1719,7 +1714,7 @@ def value_xccy(position: Position, instrument: object, ctx: ProductContext) -> P
         instrument.instrument_id,
         position.book,
         position.accounting_category,
-        ctx.calculation_id(position, XCCY_MODEL_VERSION, engine.base_id),
+        ctx.calculation_id(position, engine.model_version, engine.base_id),
         q,
         _money(engine.base_pv_rub * q, "XCCY PV"),
         factor_risk,
@@ -1737,6 +1732,10 @@ def value_xccy(position: Position, instrument: object, ctx: ProductContext) -> P
         _money(risk.foreign_leg_pv_rub * q, "foreign leg RUB PV"),
         par,
         fallback_from,
+        projection_curve_id=instrument.rub_projection_curve_id
+        if isinstance(rub_p, KeyRateProjection)
+        else None,
+        projection_curve_basis=rub_p.quote_basis if isinstance(rub_p, KeyRateProjection) else None,
     )
 
     def reprice(scenario: ScenarioView) -> float:
@@ -1753,7 +1752,7 @@ def value_xccy(position: Position, instrument: object, ctx: ProductContext) -> P
         return _money(engine.reprice(shock).total_pnl_rub * q, "XCCY scenario P&L")
 
     flags = ["covered_parity"]
-    if isinstance(foreign_d, _QUOTE_SOURCES):
+    if isinstance(foreign_d, _QUOTE_SOURCES) or isinstance(rub_p, KeyRateProjection):
         flags.append("quote_curve")
     if rub_p is not None or foreign_p is not None:
         flags.append("two_curve")
@@ -1762,7 +1761,7 @@ def value_xccy(position: Position, instrument: object, ctx: ProductContext) -> P
     if fallback_from is not None:
         flags.append("curve_fallback")
     model = _model(
-        position, instrument.instrument_id, instrument.product.value, XCCY_MODEL_VERSION, *flags
+        position, instrument.instrument_id, instrument.product.value, engine.model_version, *flags
     )
     return ProductOutcome(row, reprice, model)
 
@@ -1980,10 +1979,12 @@ def _rate_futures_engine(
         )
     quote = ctx.snapshot.futures_quote(contract.contract_id)
     if isinstance(contract, KeyRateFuturesContract):
+        quotes = ctx.key_rate_curve(instrument.projection_curve_id)
         request = RateFuturesRiskRequest(
             contract,
-            ctx.key_rate_curve(instrument.projection_curve_id),
+            quotes,
             futures_price=quote.price,
+            ruonia_curve=quotes.ruonia_source,
         )
     else:
         assert instrument.fixing_id is not None
@@ -2036,10 +2037,17 @@ def value_rate_future(
     engine = base.for_quantity(q)
     risk = engine.risk(bump_bp=ctx.bump_bp, difference="central")
     second = engine.second_order(bump_bp=ctx.bump_bp) if ctx.include_second_order else None
-    factor_risk = rate_futures_factor_risk(risk, instrument.projection_curve_id, second)
+    request = engine.request
+    quotes = request.projection_curve
+    ruonia_id = quotes.ruonia_curve_id if isinstance(quotes, KeyRateCurveRequest) else None
+    factor_risk = rate_futures_factor_risk(
+        risk,
+        instrument.projection_curve_id,
+        second,
+        ruonia_curve_id=ruonia_id,
+    )
     quote = ctx.snapshot.futures_quote(contract.contract_id)
     margin = rate_futures_variation_margin(contract, quote.margined_price, quote.price, q)
-    request = engine.request
     kind: Literal["ruonia_average", "ruonia_index", "key_rate"] = (
         "ruonia_average"
         if isinstance(contract, RuoniaAverageFuturesContract)
@@ -2052,7 +2060,7 @@ def value_rate_future(
         instrument.instrument_id,
         position.book,
         position.accounting_category,
-        ctx.calculation_id(position, RATE_FUTURES_RISK_MODEL_VERSION, engine.base_id),
+        ctx.calculation_id(position, engine.model_version, engine.base_id),
         q,
         margin,
         factor_risk,
@@ -2072,12 +2080,15 @@ def value_rate_future(
         None if request.fixings is None else request.fixings.snapshot_id,
         None if request.index_anchor is None else request.index_anchor.index_date,
         margin,
+        projection_curve_basis=risk.curve_basis if ruonia_id is not None else None,
+        ruonia_curve_id=ruonia_id,
     )
 
     def reprice(scenario: ScenarioView) -> float:
         shock = RateFuturesScenario(
             scenario.curve_shift(instrument.projection_curve_id, projection=True),
             scenario.basis_shift_bp(futures_basis_factor(contract.contract_id)),
+            _ZERO_SHOCK if ruonia_id is None else scenario.curve_shift(ruonia_id),
         )
         return engine.reprice(shock).total_pnl_rub
 
@@ -2093,7 +2104,7 @@ def value_rate_future(
         position,
         instrument.instrument_id,
         instrument.product.value,
-        RATE_FUTURES_RISK_MODEL_VERSION,
+        engine.model_version,
         *flags,
     )
     return ProductOutcome(row, reprice, model)
@@ -2242,12 +2253,22 @@ def _repo_engine(
     calendar = ctx.calendar(instrument.calendar_id)
     discount = ctx.discount_curve(instrument.discount_curve_id, "RUB")
     projection_id = instrument.projection_curve_id
-    projection = None
+    projection: DiscountCurve | CurveBootstrapRequest | KeyRateProjection | None = None
     fixings = None
     rate = trade.rate
     if isinstance(rate, FloatingRepoRate):
         index: FixingIndex = "key_rate" if rate.benchmark == "KEY_RATE" else "ruonia"
-        if projection_id is not None:
+        if index == "key_rate":
+            if projection_id is None:
+                raise InvalidTerms("a key-rate repo needs a KeyRateCurveRequest projection")
+            projection = ctx.key_rate_projection(
+                projection_id,
+                instrument.discount_curve_id,
+                calendar,
+                rate.projection_day_count,
+                "calendar",
+            )
+        elif projection_id is not None:
             projection = ctx.projection(projection_id, index).curve
         if instrument.fixing_id is None:
             raise MissingMarketData(f"floating repo {trade.trade_id} names no fixing history")
@@ -2296,7 +2317,7 @@ def value_repo(position: Position, instrument: object, ctx: ProductContext) -> P
         instrument.instrument_id,
         position.book,
         position.accounting_category,
-        ctx.calculation_id(position, REPO_MODEL_VERSION, engine.base_id),
+        ctx.calculation_id(position, engine.model_version, engine.base_id),
         q,
         _money(valuation.pv_rub * q, "repo PV"),
         factor_risk,
@@ -2316,6 +2337,11 @@ def value_repo(position: Position, instrument: object, ctx: ProductContext) -> P
         valuation.accrued_interest_rub,
         valuation.current_repurchase_amount_rub,
         valuation.collateral,
+        projection_curve_basis=(
+            valuation.projection_curve_basis
+            if isinstance(engine.request.projection_curve, KeyRateProjection)
+            else None
+        ),
     )
 
     def reprice(scenario: ScenarioView) -> float:
@@ -2330,6 +2356,8 @@ def value_repo(position: Position, instrument: object, ctx: ProductContext) -> P
         return _money(engine.reprice(shock).total_pnl_rub * q, "repo scenario P&L")
 
     flags = []
+    if isinstance(engine.request.projection_curve, KeyRateProjection):
+        flags.append("quote_curve")
     if isinstance(rate, FloatingRepoRate):
         flags.append("two_curve" if projection_id is not None else "single_curve")
         flags.append("known_fixings")
@@ -2338,7 +2366,7 @@ def value_repo(position: Position, instrument: object, ctx: ProductContext) -> P
     if trade.collateral is not None:
         flags.append("collateral_reference")
     model = _model(
-        position, instrument.instrument_id, instrument.product.value, REPO_MODEL_VERSION, *flags
+        position, instrument.instrument_id, instrument.product.value, engine.model_version, *flags
     )
     return ProductOutcome(row, reprice, model)
 

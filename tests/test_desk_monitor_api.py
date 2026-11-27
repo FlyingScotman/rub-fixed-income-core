@@ -49,6 +49,7 @@ from rub_fixed_income import (
     canonical_sha256,
     explain_horizon_pnl,
     g_spread_bp,
+    key_rate_projection_curve,
     price_cashflows,
     value_portfolio,
 )
@@ -301,11 +302,17 @@ def test_discount_margin_of_a_key_rate_floater_is_the_spread_over_its_projection
     assert row.discount_margin_bp is not None and row.discount_margin_bp != row.spread_bp
     snapshot = floater_snapshot()
     instrument = floater("FRN-KEY", "KEY_PROJ", index="key_rate", fixing_id="KEY_RATE")
-    projection = snapshot.projection_curve("KEY_PROJ", "key_rate")
+    key_quotes = snapshot._key_rate_quotes("KEY_PROJ", "RUB_OIS")
+    projection = key_rate_projection_curve(
+        key_quotes.curve(ruonia=bootstrap_discount_curve(OIS)),
+        FRN_CALENDAR,
+        rate_day_count=DayCount.ACT_365_FIXED,
+        observation_days="business",
+    )
     flows = instrument.cashflows(after=row.settlement_date, market=snapshot)
     price = price_cashflows(
         tuple((f.payment_date, f.amount) for f in flows),
-        projection,  # type: ignore[arg-type]
+        projection,
         spread=row.discount_margin_bp / 10_000.0,
         settlement_date=row.settlement_date,
     )

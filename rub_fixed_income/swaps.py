@@ -98,7 +98,10 @@ __all__ = [
 
 SWAP_MODEL_VERSION = "rub-irs-ois-krs-v1"
 SWAP_SECOND_ORDER_MODEL_VERSION = "rub-irs-ois-krs-second-order-v1"
+KRS_QUOTE_MODEL_VERSION = "rub-irs-ois-krs-v2"
+KRS_QUOTE_SECOND_ORDER_MODEL_VERSION = "rub-irs-ois-krs-second-order-v2"
 SWAP_HORIZON_MODEL_VERSION = "rub-irs-horizon-carry-v2"
+KRS_QUOTE_HORIZON_MODEL_VERSION = "rub-irs-krs-quote-horizon-carry-v3"
 
 SwapSide = Literal["payer", "receiver"]
 SwapIndex = Literal["ruonia", "key_rate"]
@@ -585,6 +588,10 @@ class SwapRiskRequest:
         object.__setattr__(self, "discount_curve", _snapshot_curve(self.discount_curve))
         if isinstance(projection, (DiscountCurve, CurveBootstrapRequest)):
             object.__setattr__(self, "projection_curve", _snapshot_curve(projection))
+        elif isinstance(projection, KeyRateCurveRequest):
+            object.__setattr__(
+                self, "projection_curve", projection.bind_ruonia(self.discount_curve)
+            )
         elif isinstance(projection, KeyRateForwardCurve) and type(projection.segments) is not tuple:
             object.__setattr__(
                 self, "projection_curve", replace(projection, segments=tuple(projection.segments))
@@ -927,6 +934,9 @@ class SwapRiskEngine:
     _dates: tuple[date, ...] = field(init=False, repr=False)
     _key_rate_amounts: _Vector = field(init=False, repr=False)
     _key_rate_slope: np.ndarray | None = field(init=False, repr=False)
+    _key_rate_states: dict[_Vector, tuple[np.ndarray, np.ndarray, _Vector]] = field(
+        init=False, repr=False, compare=False, default_factory=dict
+    )
     _memo: dict[tuple[str, _Vector], _Vector] = field(
         init=False, repr=False, compare=False, default_factory=dict
     )
@@ -946,7 +956,7 @@ class SwapRiskEngine:
         if isinstance(projection, (DiscountCurve, CurveBootstrapRequest)):
             object.__setattr__(self, "_projection", _base_curve(projection, self.curve_cache))
         elif quotes is not None:
-            object.__setattr__(self, "_projection", quotes.curve())
+            object.__setattr__(self, "_projection", quotes.curve(ruonia=self._discount))
         else:
             object.__setattr__(self, "_projection", projection)
         schedule = swap_schedule(swap, req.calendar)
@@ -981,7 +991,7 @@ class SwapRiskEngine:
             "base_id",
             canonical_sha256(
                 {
-                    "model": SWAP_MODEL_VERSION,
+                    "model": self.model_version,
                     # Canonical form of the terms (the bytes of ``asdict`` before
                     # ``SwapConvention.float_compounding``, left out at its default).
                     "swap": swap,
@@ -1005,6 +1015,14 @@ class SwapRiskEngine:
         if isinstance(projection, KeyRateCurveRequest):
             return projection.identity
         return _curve_identity(projection)
+
+    @property
+    def model_version(self) -> str:
+        return KRS_QUOTE_MODEL_VERSION if self._linked_quotes else SWAP_MODEL_VERSION
+
+    @property
+    def _linked_quotes(self) -> bool:
+        return self._quotes is not None
 
     @property
     def discount_curve_basis(self) -> str:
@@ -1107,7 +1125,7 @@ class SwapRiskEngine:
             weights = (
                 _key_rate_shift_weights(curve, start, period.accrual_end)
                 if self._quotes is None
-                else self._quotes.shift_weights(start, period.accrual_end)
+                else self._quotes.shift_weights(start, period.accrual_end, ruonia=self._discount)
             )
         return _FloatFlow(
             period, 1.0, known_sum, known_days, start, spread_amount, accrued, average, weights
@@ -1126,7 +1144,12 @@ class SwapRiskEngine:
         base = cast(DiscountCurve, self._projection)
         return _shock_curve(cast(RiskCurve, source), base, shifts, self.curve_cache)
 
-    def _float_unit(self, flow: _FloatFlow, view: DiscountFactorCurve | None) -> float:
+    def _float_unit(
+        self,
+        flow: _FloatFlow,
+        view: DiscountFactorCurve | None,
+        forward: KeyRateForwardCurve | None = None,
+    ) -> float:
         """Unsigned float amount per unit notional (key rate: on the base curve)."""
         end = flow.period.accrual_end
         if self.request.swap.convention.index == "ruonia":
@@ -1135,12 +1158,15 @@ class SwapRiskEngine:
                 assert view is not None
                 growth *= view.discount_factor(flow.projection_start) / view.discount_factor(end)
             return (growth - 1.0) * flow.growth_scale + flow.spread_amount
-        if flow.base_average is None:
+        projected = flow.base_average
+        if forward is not None and projected is not None:
+            projected = forward.arithmetic_average(flow.projection_start, end)
+        if projected is None:
             average = flow.known_sum / flow.total_days
         elif flow.known_days == 0:
-            average = flow.base_average
+            average = projected
         else:
-            average = (flow.known_sum + flow.base_average * flow.projected_days) / flow.total_days
+            average = (flow.known_sum + projected * flow.projected_days) / flow.total_days
         return average * flow.period.accrual_factor + flow.spread_amount
 
     def _linear_key_rate_projection(self) -> None:
@@ -1164,23 +1190,56 @@ class SwapRiskEngine:
                 *(-sign * self._float_unit(f, None) for f in self._float),
             ),
         )
+        object.__setattr__(self, "_key_rate_slope", self._key_rate_slopes())
+
+    def _key_rate_slopes(self, rub: DiscountFactorCurve | None = None) -> np.ndarray:
         slope = np.zeros((len(self._dates), len(RISK_BUCKETS)))
+        sign = self.request.swap.fixed_sign
         offset = len(self._fixed)
         for row, flow in enumerate(self._float, start=offset):
             if flow.shift_weights is None:
                 continue
             days = flow.projected_days if flow.known_days == 0 else flow.total_days
             scale = -sign * 1e-4 * flow.period.accrual_factor / days
-            slope[row] = scale * np.asarray(flow.shift_weights)
-        object.__setattr__(self, "_key_rate_slope", slope)
+            weights = flow.shift_weights
+            if rub is not None:
+                assert self._quotes is not None
+                weights = self._quotes.shift_weights(
+                    flow.projection_start, flow.period.accrual_end, ruonia=rub
+                )
+            slope[row] = scale * np.asarray(weights)
+        return slope
+
+    def _key_rate_state(self, shifts: _Vector) -> tuple[np.ndarray, np.ndarray, _Vector]:
+        """Amounts, their quote slopes, and payment discounts at one RUONIA state."""
+        cached = self._key_rate_states.get(shifts)
+        if cached is not None:
+            return cached
+        assert self._quotes is not None and self._key_rate_slope is not None
+        rub = self._discount_view(shifts)
+        dfs = tuple(rub.discount_factor(d) for d in self._dates)
+        if not any(shifts):
+            amounts, slope = np.asarray(self._key_rate_amounts), self._key_rate_slope
+        else:
+            forward = self._quotes.curve(ruonia=rub)
+            sign = self.request.swap.fixed_sign
+            amounts = np.asarray(
+                (
+                    *(sign * unit for _, unit, _ in self._fixed),
+                    *(-sign * self._float_unit(f, None, forward) for f in self._float),
+                )
+            )
+            slope = self._key_rate_slopes(rub)
+        state = amounts, slope, dfs
+        if len(self._key_rate_states) < _MEMO_SIZE:
+            self._key_rate_states[shifts] = state
+        return state
 
     def _amounts(self, view: DiscountFactorCurve | None, shifts: _Vector) -> _Vector:
         """Signed unit amounts: fixed periods, then float periods."""
         if self._key_rate_slope is not None:
             if not any(shifts):
                 return self._key_rate_amounts
-            if self._quotes is not None:
-                self._quotes.shocked(shifts)  # the recalibration's domain and fit checks
             moved = np.asarray(self._key_rate_amounts) + self._key_rate_slope @ np.asarray(shifts)
             return tuple(float(value) for value in moved)
         sign = self.request.swap.fixed_sign
@@ -1205,6 +1264,14 @@ class SwapRiskEngine:
         self, discount_shifts: _Vector, projection_shifts: _Vector
     ) -> tuple[_Vector, _Vector]:
         """Signed unit amounts and discount factors; memoized per shift vector."""
+
+        if self._linked_quotes:
+            key_amounts, slope, dfs = self._key_rate_state(discount_shifts)
+            if any(projection_shifts):
+                assert self._quotes is not None
+                self._quotes.shocked(projection_shifts, ruonia=self._discount_view(discount_shifts))
+                key_amounts = key_amounts + slope @ np.asarray(projection_shifts)
+            return tuple(float(value) for value in key_amounts), dfs
 
         def discounts() -> _Vector:
             view = self._discount_view(discount_shifts)
@@ -1315,6 +1382,7 @@ class SwapRiskEngine:
             par if annuity > 0.0 else 0.0,
             annuity,
             tuple(rows),
+            model_version=self.model_version,
         )
 
     def _roles(self) -> tuple[CurveRole, ...]:
@@ -1370,6 +1438,7 @@ class SwapRiskEngine:
             self.base_pv,
             tuple(curves),
             finite_money(math.fsum(c.dv01_rub for c in curves), "DV01"),
+            model_version=self.model_version,
         )
 
     def reprice(self, scenario: SwapScenario) -> SwapScenarioResult:
@@ -1392,6 +1461,7 @@ class SwapRiskEngine:
             finite_money(projection_pnl, "projection P&L"),
             finite_money(total - discount_pnl - projection_pnl, "interaction P&L"),
             finite_money(total, "total P&L"),
+            model_version=self.model_version,
         )
 
     def second_order(self, *, bump_bp: float = 1.0) -> SwapSecondOrderRisk:
@@ -1422,6 +1492,11 @@ class SwapRiskEngine:
             bump,
             gradient,
             hessian,
+            model_version=(
+                KRS_QUOTE_SECOND_ORDER_MODEL_VERSION
+                if self._linked_quotes
+                else SWAP_SECOND_ORDER_MODEL_VERSION
+            ),
         )
 
     def _separable_derivatives(
@@ -1429,12 +1504,16 @@ class SwapRiskEngine:
     ) -> tuple[tuple[float, ...], tuple[tuple[float, ...], ...]]:
         """Central gradient and Hessian of a two-curve swap from leg vectors.
 
-        ``PV = N * a(p) . d(q)`` is bilinear in the amounts (projection shifts p) and
+        For independent curves, ``PV = N * a(p) . d(q)`` is bilinear in the amounts (projection shifts p) and
         discount factors (discount shifts q), so the four-point mixed difference of a
         discount and a projection bucket is exactly
         ``N * (d(+q_j) - d(-q_j)) . (a(+p_k) - a(-p_k)) / (4 h^2)``. Same-curve terms use
         the same differences as the generic central scheme, except that key-rate
         amounts are linear in their shifts: that block is exactly zero.
+
+        With linked KRS quotes, each RUONIA state q has its own amounts
+        ``a(q, p) = a0(q) + S(q) @ p`` and discounts d(q). The cross block
+        differences ``N * S(q).T @ d(q)`` over the 22 single-bucket RUONIA states.
         """
         size = len(RISK_BUCKETS)
         notional = self.request.swap.notional
@@ -1447,23 +1526,13 @@ class SwapRiskEngine:
                 values[j] = sj * bump
             return tuple(values)
 
-        def block(
-            projection: bool, linear: bool = False
-        ) -> tuple[list[float], np.ndarray, np.ndarray, np.ndarray]:
+        def block(projection: bool, linear: bool = False) -> tuple[list[float], np.ndarray]:
             """Gradient and same-curve Hessian, as the generic central scheme computes them."""
 
             def pv(shifts: _Vector) -> float:
                 return (
                     self._pv(_ZERO_SHOCK, shifts) if projection else self._pv(shifts, _ZERO_SHOCK)
                 )
-
-            def vector(shifts: _Vector) -> np.ndarray:
-                pair = (
-                    self._vectors(_ZERO_SHOCK, shifts)
-                    if projection
-                    else self._vectors(shifts, _ZERO_SHOCK)
-                )
-                return np.asarray(pair[0] if projection else pair[1])
 
             gradient = []
             hessian = np.zeros((size, size))
@@ -1479,13 +1548,37 @@ class SwapRiskEngine:
                     ]
                     mixed = ((corners[0] - corners[1]) - (corners[2] - corners[3])) / (4 * square)
                     hessian[i, j] = hessian[j, i] = mixed
-            ups = np.stack([vector(moved(i, 1.0)) for i in range(size)])
-            downs = np.stack([vector(moved(i, -1.0)) for i in range(size)])
-            return gradient, hessian, ups, downs
+            return gradient, hessian
 
-        g_d, h_d, up_d, down_d = block(False)
-        g_p, h_p, up_p, down_p = block(True, linear=self._key_rate_slope is not None)
-        cross = notional * ((up_d - down_d) @ (up_p - down_p).T) / (4 * square)
+        g_d, h_d = block(False)
+        g_p, h_p = block(True, linear=self._key_rate_slope is not None)
+        if self._linked_quotes:
+            rows = []
+            for i in range(size):
+                _, up_slope, up_df = self._key_rate_state(moved(i, 1.0))
+                _, down_slope, down_df = self._key_rate_state(moved(i, -1.0))
+                rows.append(up_slope.T @ up_df - down_slope.T @ down_df)
+            cross = notional * np.stack(rows) / (2 * bump)
+        else:
+            discount_diffs = np.stack(
+                [
+                    np.subtract(
+                        self._vectors(moved(i, 1.0), _ZERO_SHOCK)[1],
+                        self._vectors(moved(i, -1.0), _ZERO_SHOCK)[1],
+                    )
+                    for i in range(size)
+                ]
+            )
+            projection_diffs = np.stack(
+                [
+                    np.subtract(
+                        self._vectors(_ZERO_SHOCK, moved(i, 1.0))[0],
+                        self._vectors(_ZERO_SHOCK, moved(i, -1.0))[0],
+                    )
+                    for i in range(size)
+                ]
+            )
+            cross = notional * (discount_diffs @ projection_diffs.T) / (4 * square)
         hessian = np.block([[h_d, cross], [cross.T, h_p]])
         if not (np.all(np.isfinite(hessian)) and all(map(math.isfinite, g_d + g_p))):
             raise ValueError("second-order risk must be finite")
@@ -1574,6 +1667,11 @@ class SwapRiskEngine:
             finite_money(pv_forward + received - self.base_pv, "carry"),
             finite_money(pv_rolled - pv_forward, "rolldown"),
             finite_money(pv_rolled + received - self.base_pv, "horizon P&L"),
+            model_version=(
+                KRS_QUOTE_HORIZON_MODEL_VERSION
+                if self._linked_quotes
+                else SWAP_HORIZON_MODEL_VERSION
+            ),
         )
 
 

@@ -31,15 +31,17 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from itertools import pairwise
-from typing import Literal, Protocol
+from typing import Literal, Protocol, cast
 
 from ._money import finite_money, non_negative_money, positive_money
+from ._quote_curves import _QUOTE_CURVES, QuoteCurve
+from ._state import _fields_only_state
 from .canonical import OMIT_IF_DEFAULT, _canonical_value, canonical_sha256
 from .conventions import DayCount, calendar_fingerprint
 from .dates import BusinessCalendar, add_months
 from .discount import DiscountCurve, DiscountFactorCurve
 from .errors import InvalidTerms, MissingFixing, MissingMarketData, UnsupportedProduct
-from .key_rate import KeyRateForwardCurve
+from .key_rate import KeyRateCurveRequest, KeyRateForwardCurve
 
 FixingIndex = Literal["ruonia", "key_rate", "kbd"]
 IndexAveraging = Literal["compounded", "arithmetic", "single_fixing"]
@@ -1290,3 +1292,69 @@ def key_rate_projection_curve(
     if not nodes:
         raise ValueError("the key-rate forward curve has no horizon")
     return DiscountCurve(forward.curve_date, tuple(nodes), KEY_RATE_PROJECTION_MODEL_VERSION)
+
+
+@dataclass(frozen=True)
+class KeyRateProjection(QuoteCurve):
+    """KRS quotes projected on the observation grid of a key-rate leg."""
+
+    quotes: KeyRateCurveRequest
+    calendar: BusinessCalendar
+    rate_day_count: DayCount
+    observation_days: ObservationDays
+    quote_basis = "key_rate_quote"
+    needs_rub = True
+    __getstate__ = _fields_only_state
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.quotes, KeyRateCurveRequest):
+            raise TypeError("quotes must be a KeyRateCurveRequest")
+        if not isinstance(self.calendar, BusinessCalendar):
+            raise TypeError("calendar must be a BusinessCalendar")
+        if not isinstance(self.rate_day_count, DayCount):
+            raise TypeError("rate_day_count must be a DayCount")
+        if self.observation_days not in ("business", "calendar"):
+            raise InvalidTerms("observation_days must be business or calendar")
+
+    @property
+    def curve_date(self) -> date:
+        return self.quotes.curve_date
+
+    def _with_discount(self, source: object) -> KeyRateProjection:
+        bound = self.quotes.bind_ruonia(source)
+        return self if bound is self.quotes else replace(self, quotes=bound)
+
+    def _quote_build(
+        self, shifts: tuple[float, ...], rub: DiscountFactorCurve | None
+    ) -> DiscountCurve:
+        return self._from_forward(self.quotes.shocked(shifts, ruonia=rub))
+
+    def _from_forward(self, forward: KeyRateForwardCurve) -> DiscountCurve:
+        paths = cast(
+            dict[KeyRateForwardCurve, DiscountCurve], self.__dict__.setdefault("_paths", {})
+        )
+        curve = paths.get(forward)
+        if curve is None:
+            curve = key_rate_projection_curve(
+                forward,
+                self.calendar,
+                rate_day_count=self.rate_day_count,
+                observation_days=self.observation_days,
+            )
+            if len(paths) < _QUOTE_CURVES:
+                paths[forward] = curve
+        return curve
+
+    def _quote_identity(self) -> object:
+        calendar = (
+            (self.calendar.version, calendar_fingerprint(self.calendar))
+            if self.observation_days == "business"
+            else (None, None)
+        )
+        return (
+            KEY_RATE_PROJECTION_MODEL_VERSION,
+            self.quotes.identity,
+            *calendar,
+            self.rate_day_count,
+            self.observation_days,
+        )

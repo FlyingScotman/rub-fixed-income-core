@@ -9,7 +9,7 @@ OIS quote set) and a key-rate projection curve:
 
 - ``ois``: single-curve, RUONIA OIS projects and discounts (12 factors);
 - ``kbd+ois``: KBD discounts, RUONIA OIS projects (23 factors);
-- ``kbd+key``: KBD discounts, the key-rate projection curve projects (23 factors);
+- ``ois+key``: RUONIA OIS discounts, KRS quotes project (23 factors);
 
 each in the modes ``first`` (PV, spread, first-order factors) and ``hessian``.
 
@@ -35,6 +35,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from portfolio_bench import AS_OF, BUSINESS_DATE, held_in_copies, kbd_parameters, ois_request
+from portfolio_v3_book import key_rate_quotes
 
 from rub_fixed_income import (
     AccountingCategory,
@@ -50,8 +51,6 @@ from rub_fixed_income import (
     FloatingCouponPeriod,
     FloatingCouponRule,
     Instrument,
-    KeyRateForwardCurve,
-    KeyRateForwardSegment,
     MarketSnapshot,
     ObservationShift,
     Position,
@@ -61,7 +60,6 @@ from rub_fixed_income import (
     ShockedCurveCache,
     ValuationPolicy,
     __version__,
-    key_rate_projection_curve,
     value_portfolio,
 )
 from rub_fixed_income.dates import add_months
@@ -94,19 +92,7 @@ def histories() -> tuple[FixingHistory, FixingHistory]:
 
 
 def key_projection() -> CurveEntry:
-    forward = KeyRateForwardCurve(
-        BUSINESS_DATE,
-        0.165,
-        date(2026, 10, 26),
-        (
-            KeyRateForwardSegment(date(2026, 10, 26), date(2027, 6, 1), 0.15, "1Y"),
-            KeyRateForwardSegment(date(2027, 6, 1), date(2034, 1, 1), 0.13, "7Y"),
-        ),
-    )
-    curve = key_rate_projection_curve(
-        forward, CALENDAR, rate_day_count=ACT365, observation_days="business"
-    )
-    return CurveEntry("RUB_KEY", "rub_key_rate_projection_v1", curve)
+    return CurveEntry("RUB_KEY", "rub_key_rate_swap_v1", key_rate_quotes("RUB_OIS", CALENDAR))
 
 
 def book(
@@ -114,8 +100,8 @@ def book(
 ) -> tuple[list[Instrument], list[Position], list[BondPriceObservation]]:
     """``size`` positions in ``ceil(size / copies)`` distinct floaters."""
     instruments, positions, quotes = [], [], []
-    projection = {"ois": "RUB_OIS", "kbd+ois": "RUB_OIS", "kbd+key": "RUB_KEY"}[case]
-    index = "key_rate" if case == "kbd+key" else "ruonia"
+    projection = "RUB_KEY" if case == "ois+key" else "RUB_OIS"
+    index = "key_rate" if case == "ois+key" else "ruonia"
     for i in range(-(-size // copies)):
         years = 1 + i % 7
         first = add_months(date(2026, 8, 20), -(i % 3)) + timedelta(days=i % 17)
@@ -202,7 +188,7 @@ def run_case(case: str, mode: str, size: int, copies: int = 1) -> Timing:
         quotes=tuple(quotes),
     )
     policy = ValuationPolicy(
-        "RUB_OIS" if case == "ois" else "RUB_OFZ_KBD",
+        "RUB_OFZ_KBD" if case == "kbd+ois" else "RUB_OIS",
         include_second_order=mode == "hessian",
         cap_floor_guard_bp=50.0,
     )
@@ -233,7 +219,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--copies must be at least 1")
     timings = [
         run_case(case, mode, size, args.copies)
-        for case in ("ois", "kbd+ois", "kbd+key")
+        for case in ("ois", "kbd+ois", "ois+key")
         for mode in ("first", "hessian")
     ]
     print(
