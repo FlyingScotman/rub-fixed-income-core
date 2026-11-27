@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.47.0] - 2026-11-27
+
 ### Breaking
 
 - For key-rate products, `value_portfolio` requires a `KeyRateCurveRequest` under
