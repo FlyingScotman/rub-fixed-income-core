@@ -56,7 +56,7 @@ from ._risk_common import (
     _snapshot_curve,
 )
 from ._solver import bisect
-from .canonical import canonical_sha256
+from .canonical import OMIT_IF_DEFAULT, canonical_sha256
 from .conventions import DayCount, calendar_fingerprint
 from .dates import BusinessCalendar
 from .discount import CurveBootstrapRequest, DiscountCurve, DiscountFactorCurve
@@ -95,7 +95,10 @@ __all__ = [
 
 RATE_FUTURES_RISK_MODEL_VERSION = "rub-rate-futures-v1"
 RATE_FUTURES_SECOND_ORDER_MODEL_VERSION = "rub-rate-futures-second-order-v1"
+KEY_RATE_FUTURES_MODEL_VERSION = "rub-rate-futures-krs-quote-v2"
+KEY_RATE_FUTURES_SECOND_ORDER_MODEL_VERSION = "rub-rate-futures-krs-quote-second-order-v2"
 RATE_FUTURES_HORIZON_MODEL_VERSION = "rub-rate-futures-horizon-v2"
+KEY_RATE_FUTURES_HORIZON_MODEL_VERSION = "rub-rate-futures-krs-quote-horizon-v3"
 
 
 def _round_half_up(value: float | Decimal, decimals: int) -> float:
@@ -513,15 +516,17 @@ def key_rate_index_value(
 ProjectionCurve = DiscountCurve | CurveBootstrapRequest | KeyRateForwardCurve | KeyRateCurveRequest
 
 
-def _key_rate_curve(curve: ProjectionCurve) -> KeyRateForwardCurve | None:
+def _key_rate_curve(
+    curve: ProjectionCurve, ruonia: DiscountCurve | None = None
+) -> KeyRateForwardCurve | None:
     """The key-rate curve priced on (KRS quotes: their mid curve), or None."""
     if isinstance(curve, KeyRateCurveRequest):
-        return curve.curve()
+        return curve.curve(ruonia=ruonia)
     return curve if isinstance(curve, KeyRateForwardCurve) else None
 
 
-_Moves = tuple[tuple[float, ...], float]
-_NO_MOVE: _Moves = (_ZERO_SHOCK, 0.0)
+_Moves = tuple[tuple[float, ...], float, tuple[float, ...]]
+_NO_MOVE: _Moves = (_ZERO_SHOCK, 0.0, _ZERO_SHOCK)
 
 
 @dataclass(frozen=True)
@@ -532,7 +537,8 @@ class RateFuturesRiskRequest:
     ``CurveBootstrapRequest``) and ``fixings`` dated the curve date; the index contract
     also needs ``index_anchor``, a published index value on or before the curve date.
     The key-rate contract needs a :class:`KeyRateForwardCurve` or its KRS quotes
-    (:class:`KeyRateCurveRequest`, risk in the quotes). Supply exactly one of
+    (:class:`KeyRateCurveRequest`) with ``ruonia_curve`` for scenario calibration.
+    Supply exactly one of
     ``futures_price`` (a market settlement price, calibrates the basis) and ``basis_bp``.
     """
 
@@ -543,6 +549,7 @@ class RateFuturesRiskRequest:
     futures_price: float | None = None
     basis_bp: float | None = None
     quantity: float = 1.0
+    ruonia_curve: CurveBootstrapRequest | None = field(default=None, metadata=OMIT_IF_DEFAULT)
 
     def __post_init__(self) -> None:
         contract, curve = self.contract, self.projection_curve
@@ -554,15 +561,26 @@ class RateFuturesRiskRequest:
         if isinstance(contract, KeyRateFuturesContract):
             if not isinstance(curve, (KeyRateForwardCurve, KeyRateCurveRequest)):
                 raise InvalidTerms("key-rate futures project on a KeyRateForwardCurve")
-            if isinstance(curve, KeyRateCurveRequest):
-                curve = curve.curve()
+            if self.ruonia_curve is not None:
+                if not isinstance(curve, KeyRateCurveRequest):
+                    raise InvalidTerms("RUONIA calibration risk requires KRS quotes")
+                curve = curve.bind_ruonia(self.ruonia_curve)
+                object.__setattr__(self, "projection_curve", curve)
+                object.__setattr__(self, "ruonia_curve", curve.ruonia_source)
+            elif isinstance(curve, KeyRateCurveRequest):
+                raise InvalidTerms("KEYRATE futures on KRS quotes need ruonia_curve")
             if self.fixings is not None or self.index_anchor is not None:
                 raise InvalidTerms("key-rate futures take no RUONIA fixings")
             if contract.effective_date < curve.curve_date:
                 raise InvalidTerms("the key-rate futures have expired")
-            if contract.effective_date >= curve.horizon_date:
+            if (
+                isinstance(curve, KeyRateForwardCurve)
+                and contract.effective_date >= curve.horizon_date
+            ):
                 raise MissingMarketData("key-rate curve does not reach the effective date")
         else:
+            if self.ruonia_curve is not None:
+                raise InvalidTerms("only KEYRATE futures take a KRS calibration discount")
             if not isinstance(curve, (DiscountCurve, CurveBootstrapRequest)):
                 raise InvalidTerms("RUONIA futures project on a discount curve or OIS request")
             if not isinstance(self.fixings, RuoniaFixings):
@@ -596,20 +614,26 @@ class RateFuturesRiskRequest:
 
 @dataclass(frozen=True)
 class RateFuturesScenario:
-    """Absolute bp shifts of the 11 projection-curve buckets and of the basis."""
+    """Absolute bp shifts of the projection, linked RUONIA curve (KEYRATE) and basis."""
 
     curve_shifts_bp: tuple[float, ...] = _ZERO_SHOCK
     basis_shift_bp: float = 0.0
+    ruonia_shifts_bp: tuple[float, ...] = field(default=_ZERO_SHOCK, metadata=OMIT_IF_DEFAULT)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "curve_shifts_bp", _shifts(tuple(self.curve_shifts_bp)))
+        object.__setattr__(self, "ruonia_shifts_bp", _shifts(tuple(self.ruonia_shifts_bp)))
         object.__setattr__(
             self, "basis_shift_bp", finite_money(self.basis_shift_bp, "basis shift bp")
         )
 
     @classmethod
-    def parallel(cls, shift_bp: float = 0.0, basis_shift_bp: float = 0.0) -> RateFuturesScenario:
-        return cls((shift_bp,) * len(RISK_BUCKETS), basis_shift_bp)
+    def parallel(
+        cls, shift_bp: float = 0.0, basis_shift_bp: float = 0.0, *, ruonia_bp: float = 0.0
+    ) -> RateFuturesScenario:
+        return cls(
+            (shift_bp,) * len(RISK_BUCKETS), basis_shift_bp, (ruonia_bp,) * len(RISK_BUCKETS)
+        )
 
 
 @dataclass(frozen=True)
@@ -639,6 +663,8 @@ class RateFuturesRiskResult:
     parallel_dv01_rub: float
     basis01_rub: float
     model_version: str = RATE_FUTURES_RISK_MODEL_VERSION
+    ruonia_buckets: tuple[BucketRisk, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
+    ruonia_curve_basis: str | None = field(default=None, metadata=OMIT_IF_DEFAULT)
 
 
 @dataclass(frozen=True)
@@ -656,7 +682,7 @@ class RateFuturesScenarioResult:
 
 @dataclass(frozen=True)
 class RateFuturesSecondOrderRisk:
-    """Central gradient (RUB/bp) and full symmetric Hessian (RUB/bp^2): 11 buckets + basis."""
+    """Central gradient and Hessian: projection, linked RUONIA (KEYRATE), then basis."""
 
     base_id: str
     factors: tuple[str, ...]
@@ -740,6 +766,7 @@ class RateFuturesRiskEngine:
     base_id: str = field(init=False)
     _plan: _Plan | None = field(init=False, repr=False)
     _curve: DiscountCurve | None = field(init=False, repr=False)
+    _ruonia: DiscountCurve | None = field(init=False, repr=False)
     _memo: dict[_Moves, float] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -748,6 +775,11 @@ class RateFuturesRiskEngine:
             raise TypeError("curve_cache must be a ShockedCurveCache")
         object.__setattr__(self, "_memo", {})
         curve = req.projection_curve
+        object.__setattr__(
+            self,
+            "_ruonia",
+            None if req.ruonia_curve is None else _base_curve(req.ruonia_curve, self.curve_cache),
+        )
         object.__setattr__(
             self,
             "_curve",
@@ -853,7 +885,7 @@ class RateFuturesRiskEngine:
         )
         return canonical_sha256(
             {
-                "model": RATE_FUTURES_RISK_MODEL_VERSION,
+                "model": self.model_version,
                 "contract": contract,
                 "curve_basis": self.curve_basis,
                 "curve": curve_id,
@@ -867,6 +899,12 @@ class RateFuturesRiskEngine:
         )
 
     # -- pricing
+
+    @property
+    def model_version(self) -> str:
+        if self.request.ruonia_curve is not None:
+            return KEY_RATE_FUTURES_MODEL_VERSION
+        return RATE_FUTURES_RISK_MODEL_VERSION
 
     @property
     def curve_basis(self) -> str:
@@ -891,6 +929,7 @@ class RateFuturesRiskEngine:
             "base_price",
             "_plan",
             "_curve",
+            "_ruonia",
             "_memo",
         ):
             object.__setattr__(twin, name, getattr(self, name))
@@ -911,7 +950,7 @@ class RateFuturesRiskEngine:
         return value
 
     def _raw_price(self, moves: _Moves) -> float:
-        shifts, basis_shift = moves
+        shifts, basis_shift, ruonia_shifts = moves
         basis = finite_money(self.basis_bp + basis_shift, "shocked basis") * 1e-4
         req = self.request
         contract = req.contract
@@ -919,7 +958,16 @@ class RateFuturesRiskEngine:
             curve = req.projection_curve
             effective = contract.effective_date
             if isinstance(curve, KeyRateCurveRequest):
-                rate = curve.shocked(shifts).rate_at(effective) + basis
+                rub = None
+                if req.ruonia_curve is not None:
+                    assert self._ruonia is not None
+                    rub = _shock_curve(
+                        req.ruonia_curve, self._ruonia, ruonia_shifts, self.curve_cache
+                    )
+                forward = curve.shocked(shifts, ruonia=rub)
+                if effective >= forward.horizon_date:
+                    raise MissingMarketData("key-rate curve does not reach the effective date")
+                rate = forward.rate_at(effective) + basis
                 return finite_money(rate * 100.0, "key-rate futures price")
             assert isinstance(curve, KeyRateForwardCurve)
             rate = curve.rate_at(effective) + basis
@@ -978,23 +1026,32 @@ class RateFuturesRiskEngine:
         def unit(moves: _Moves) -> float:
             up = self._price(moves)
             if difference == "central":
-                shifts, basis = moves
-                down = self._price((tuple(-s for s in shifts), -basis))
+                shifts, basis, rub = moves
+                down = self._price((tuple(-s for s in shifts), -basis, tuple(-s for s in rub)))
                 return finite_money((up - down) / (2.0 * bump), "unit sensitivity")
             return finite_money((up - self.base_price) / bump, "unit sensitivity")
 
-        rows = []
         size = len(RISK_BUCKETS)
-        for i, bucket in enumerate(RISK_BUCKETS):
-            shifts = tuple(bump if i == j else 0.0 for j in range(size))
-            sensitivity = unit((shifts, 0.0))
-            rows.append(
-                BucketRisk(
-                    bucket,
-                    finite_money(sensitivity * self._scale, "bucket DV01"),
-                    finite_money(-sensitivity / self.base_price * 10_000.0, "price duration"),
+        ruonia = self.request.ruonia_curve
+
+        def buckets(ruonia_only: bool) -> tuple[BucketRisk, ...]:
+            rows = []
+            for i, bucket in enumerate(RISK_BUCKETS):
+                shifts = tuple(bump if i == j else 0.0 for j in range(size))
+                moves = (_ZERO_SHOCK, 0.0, shifts) if ruonia_only else (shifts, 0.0, _ZERO_SHOCK)
+                sensitivity = unit(moves)
+                rows.append(
+                    BucketRisk(
+                        bucket,
+                        finite_money(sensitivity * self._scale, "bucket DV01"),
+                        finite_money(-sensitivity / self.base_price * 10_000.0, "price duration"),
+                    )
                 )
-            )
+            return tuple(rows)
+
+        rows = buckets(False)
+        rub_rows = () if ruonia is None else buckets(True)
+        parallel = (bump,) * size
         fixed, projected = self._days()
         return RateFuturesRiskResult(
             base_id=self.base_id,
@@ -1009,24 +1066,33 @@ class RateFuturesRiskEngine:
             fixed_days=fixed,
             projected_days=projected,
             margin_per_point_rub=self.request.contract.margin_per_point_rub,
-            buckets=tuple(rows),
-            dv01_rub=finite_money(math.fsum(b.dv01_rub for b in rows), "DV01"),
+            buckets=rows,
+            dv01_rub=finite_money(math.fsum(b.dv01_rub for b in (*rows, *rub_rows)), "DV01"),
             parallel_dv01_rub=finite_money(
-                unit(((bump,) * size, 0.0)) * self._scale, "parallel DV01"
+                unit((parallel, 0.0, _ZERO_SHOCK if ruonia is None else parallel)) * self._scale,
+                "parallel DV01",
             ),
-            basis01_rub=finite_money(unit((_ZERO_SHOCK, bump)) * self._scale, "basis01"),
+            basis01_rub=finite_money(
+                unit((_ZERO_SHOCK, bump, _ZERO_SHOCK)) * self._scale, "basis01"
+            ),
+            model_version=self.model_version,
+            ruonia_buckets=rub_rows,
+            ruonia_curve_basis=None if ruonia is None else _curve_basis(ruonia),
         )
 
     def reprice(self, scenario: RateFuturesScenario) -> RateFuturesScenarioResult:
         """Exact variation margin of the scenario, rates and basis isolated."""
         _check_scenario_shifts(self.request.projection_curve, scenario.curve_shifts_bp)
-        shocked = self._price((scenario.curve_shifts_bp, scenario.basis_shift_bp))
+        rub = scenario.ruonia_shifts_bp
+        if self.request.ruonia_curve is None and any(rub):
+            raise InvalidTerms("this futures position has no separate RUONIA curve")
+        shocked = self._price((scenario.curve_shifts_bp, scenario.basis_shift_bp, rub))
 
         def pnl(moves: _Moves, label: str) -> float:
             return finite_money((self._price(moves) - self.base_price) * self._scale, label)
 
-        rates = pnl((scenario.curve_shifts_bp, 0.0), "rates PnL")
-        basis = pnl((_ZERO_SHOCK, scenario.basis_shift_bp), "basis PnL")
+        rates = pnl((scenario.curve_shifts_bp, 0.0, rub), "rates PnL")
+        basis = pnl((_ZERO_SHOCK, scenario.basis_shift_bp, _ZERO_SHOCK), "basis PnL")
         total = finite_money((shocked - self.base_price) * self._scale, "total PnL")
         return RateFuturesScenarioResult(
             base_id=self.base_id,
@@ -1037,25 +1103,34 @@ class RateFuturesRiskEngine:
             basis_pnl_rub=basis,
             interaction_pnl_rub=finite_money(total - rates - basis, "interaction PnL"),
             total_pnl_rub=total,
+            model_version=self.model_version,
         )
 
     def second_order(self, *, bump_bp: float = 1.0) -> RateFuturesSecondOrderRisk:
         """Central gradient and full Hessian over the 11 curve buckets and the basis."""
         bump = positive_money(bump_bp, "second-order bump bp")
         size = len(RISK_BUCKETS)
+        linked = self.request.ruonia_curve is not None
+        rates = 2 * size if linked else size
 
         def price(moves: list[float]) -> float:
-            return self._price((tuple(moves[:size]), moves[size]))
+            rub = tuple(moves[size:rates]) if linked else _ZERO_SHOCK
+            return self._price((tuple(moves[:size]), moves[rates], rub))
 
         gradient, hessian = _central_derivatives(
-            price, size + 1, bump, self.base_price, self._scale
+            price, rates + 1, bump, self.base_price, self._scale
         )
         return RateFuturesSecondOrderRisk(
             base_id=self.base_id,
-            factors=(*RISK_BUCKETS, "basis"),
+            factors=(*RISK_BUCKETS, *(f"RUONIA {b}" for b in RISK_BUCKETS if linked), "basis"),
             bump_bp=bump,
             gradient_rub_per_bp=gradient,
             hessian_rub_per_bp2=hessian,
+            model_version=(
+                KEY_RATE_FUTURES_SECOND_ORDER_MODEL_VERSION
+                if linked
+                else RATE_FUTURES_SECOND_ORDER_MODEL_VERSION
+            ),
         )
 
     # -- horizon
@@ -1073,7 +1148,7 @@ class RateFuturesRiskEngine:
         contract = req.contract
         settled = contract.last_trading_day <= horizon
         if isinstance(contract, KeyRateFuturesContract):
-            today = _key_rate_curve(req.projection_curve)
+            today = _key_rate_curve(req.projection_curve, self._ruonia)
             assert isinstance(today, KeyRateForwardCurve)
             assert isinstance(view, KeyRateForwardCurve)
             effective = contract.effective_date
@@ -1114,7 +1189,7 @@ class RateFuturesRiskEngine:
         valuation = req.valuation_date
         if not isinstance(horizon_date, date) or horizon_date <= valuation:
             raise InvalidTerms("horizon date must be after the valuation date")
-        curve = _key_rate_curve(req.projection_curve)
+        curve = _key_rate_curve(req.projection_curve, self._ruonia)
         forward: DiscountFactorCurve | KeyRateForwardCurve
         rolled: DiscountFactorCurve | KeyRateForwardCurve
         if curve is not None:
@@ -1143,6 +1218,11 @@ class RateFuturesRiskEngine:
             carry_rub=finite_money(scale * (price_forward - start), "carry"),
             rolldown_rub=finite_money(scale * (price_rolled - price_forward), "rolldown"),
             horizon_pnl_rub=finite_money(scale * (price_rolled - start), "horizon P&L"),
+            model_version=(
+                KEY_RATE_FUTURES_HORIZON_MODEL_VERSION
+                if req.ruonia_curve is not None
+                else RATE_FUTURES_HORIZON_MODEL_VERSION
+            ),
         )
 
 
@@ -1180,10 +1260,20 @@ def rate_futures_factor_risk(
     risk: RateFuturesRiskResult,
     curve_id: str,
     second_order: RateFuturesSecondOrderRisk | None = None,
+    *,
+    ruonia_curve_id: str | None = None,
 ) -> FactorRisk:
-    """``IR|<curve_id>|<bucket>`` and ``FUTBASIS|<contract>``, central (DEC08)."""
+    """Central projection buckets, linked RUONIA buckets and ``FUTBASIS|<contract>``."""
+    if bool(risk.ruonia_buckets) != (ruonia_curve_id is not None) or ruonia_curve_id == curve_id:
+        raise InvalidTerms("a linked KEYRATE future needs a distinct RUONIA curve ID")
+    ruonia = (
+        ()
+        if ruonia_curve_id is None
+        else tuple(ir_factor(ruonia_curve_id, b) for b in RISK_BUCKETS)
+    )
     factors = (
         *(ir_factor(curve_id, b) for b in RISK_BUCKETS),
+        *ruonia,
         futures_basis_factor(risk.contract_id),
     )
     if second_order is not None:
@@ -1199,5 +1289,5 @@ def rate_futures_factor_risk(
         )
     if risk.difference != "central":
         raise InvalidTerms("desk factors need central-difference risk (DEC08)")
-    first = (*(b.dv01_rub for b in risk.buckets), risk.basis01_rub)
+    first = (*(b.dv01_rub for b in (*risk.buckets, *risk.ruonia_buckets)), risk.basis01_rub)
     return FactorRisk(factors, first, (), "central", risk.bump_bp, False)

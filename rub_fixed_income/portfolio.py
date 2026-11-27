@@ -33,7 +33,7 @@ from typing import Literal, cast
 
 from ._analytic_risk import supports_analytic
 from ._money import finite_money, positive_money
-from ._risk_common import _curve_basis, _shifts
+from ._risk_common import _ZERO_SHOCK, _base_curve, _curve_basis, _shifts
 from ._version import __version__
 from .bond import YieldRequest, solve_effective_annual_yield
 from .callables import ExerciseAssumption, ExercisedBond, exercised_instrument, resolve_exercise
@@ -74,7 +74,7 @@ from .factors import (
     linker_factor_risk,
     ofz_basis_factor_risk,
 )
-from .floating import FixingIndex
+from .floating import FixingIndex, KeyRateProjection
 from .fx_forwards import FxImpliedCurveRequest
 from .horizon import HORIZON_MODEL_VERSION, FxHorizon, HorizonValuation, horizon_valuation
 from .horizon import fx_horizon as fx_horizon_rule
@@ -299,12 +299,8 @@ class ValuationPolicy:
     from ``second_order_method`` so that policies of 0.37.0 keep their results.
 
     ``quote_curve_risk=True`` (0.38.0, omitted at its default ``False``) takes the risk of a
-    curve the snapshot holds as par quotes in those quotes, as for RUONIA OIS quotes: a
-    key-rate projection curve given as KRS quotes (``KeyRateCurveRequest`` under
-    ``rub_key_rate_swap_v1``) is recalibrated to quotes shifted by each bucket's hat at
-    their maturity, so ``IR|<curve>|<bucket>`` of key-rate swaps and KEYRATE futures is risk
-    to the KRS quotes. Without it such quotes are built once and their mid curve takes
-    forward-rate bucket shifts, as a caller-built curve. With it FX forwards, FX swaps,
+    curve the snapshot holds as par quotes in those quotes. RUONIA OIS and KRS quote
+    requests always give quote risk. With the flag FX forwards, FX swaps,
     crosses and FX futures may also name XCCY par quotes (``XccyCurveBootstrapRequest``,
     otherwise ``INVALID_TERMS``) as their foreign curve: rebuilt on their shocked RUB curve
     under every shock, as cross-currency swaps rebuild it. A USD / EUR proxy held as par
@@ -732,6 +728,8 @@ class PositionValuation:
     discount_margin_bp: float | None = field(default=None, metadata=OMIT_IF_DEFAULT)
     spread_buckets_rub: tuple[float, ...] = field(default=(), metadata=OMIT_IF_DEFAULT)
     curve_fallback_from: str | None = field(default=None, metadata=OMIT_IF_DEFAULT)
+    projection_curve_id: str | None = field(default=None, metadata=OMIT_IF_DEFAULT)
+    projection_curve_basis: str | None = field(default=None, metadata=OMIT_IF_DEFAULT)
 
 
 @dataclass(frozen=True)
@@ -982,6 +980,11 @@ def _build_curve(entry: CurveEntry, business_date: date, quote_risk: bool = Fals
     risk source, rebuilt from shifted quotes under every shock (#77)."""
     spec = get_curve_spec(entry.spec_id)
     source = entry.curve
+    if spec.kind is CurveKind.KEY_RATE_PROJECTION:
+        raise InvalidTerms(
+            f"curve {entry.curve_id}: migrate key-rate projection to KeyRateCurveRequest "
+            "under rub_key_rate_swap_v1"
+        )
     if spec.kind is CurveKind.KBD_PARAMETRIC:
         if isinstance(source, ZcycParameters):
             if source.trade_date != business_date:
@@ -1166,7 +1169,7 @@ def value_portfolio(
     context = _product_context(
         snapshot, policy, job_id, cache, built, projections, used_calendars, used_fx, bonds_by_id
     )
-    curve, projection = context.bond_curve, context.projection
+    curve = context.bond_curve
     ofz_job = None if policy.ofz_basis is None else _OfzBasisJob(policy.ofz_basis, curve)
 
     for position in _finished(positions, engines):
@@ -1209,7 +1212,7 @@ def value_portfolio(
                 run_id,
                 used_calendars,
                 used_fx,
-                projection,
+                context,
                 used_cpi,
                 None if exercised is None else exercised.perpetual_tail,
                 ofz_job,
@@ -1538,6 +1541,7 @@ def _accrued(
     quote: BondPriceObservation,
     settlement: date,
     snapshot: MarketSnapshot | None = None,
+    projection: DiscountCurve | None = None,
 ) -> float:
     """The quote's accrued interest, else the instrument's own at ``settlement``.
 
@@ -1549,6 +1553,10 @@ def _accrued(
     if isinstance(instrument.coupon_leg, FloatingCouponLeg):
         if snapshot is None:
             raise MissingMarketData("a floater's accrued interest must come with its quote")
+        if projection is not None:
+            return instrument.floating_leg(snapshot).accrued_interest(
+                settlement, projection, rate_basis=instrument.coupon_leg.accrual_basis
+            )
         return instrument.accrued(settlement, snapshot)
     return instrument.accrued(settlement)
 
@@ -1615,7 +1623,7 @@ def _value_position(
     run_id: str,
     used_calendars: dict[str, CalendarUse],
     used_fx: dict[str, FxRate],
-    projection: Callable[[str, FixingIndex], _BuiltCurve],
+    context: ProductContext,
     used_cpi: dict[str, CpiUse] | None = None,
     perpetual_tail: PerpetualTail | None = None,
     ofz_job: _OfzBasisJob | None = None,
@@ -1699,7 +1707,18 @@ def _value_position(
         raise InvalidTerms("no cashflows remain after settlement")
     spread_kind = policy.spread_kind_for(instrument.instrument_id)
     quote = snapshot.quote(instrument.instrument_id)
-    accrued = _accrued(instrument, quote, settlement, snapshot)
+    leg = instrument.coupon_leg
+    key_projection = (
+        _bond_key_rate_projection(context, leg, curve_id)
+        if isinstance(leg, FloatingCouponLeg) and leg.rule.index == "key_rate"
+        else None
+    )
+    accrued_projection = (
+        key_projection._quote_build(_ZERO_SHOCK, _base_curve(built.source, cache))
+        if key_projection is not None and quote.accrued_per_bond is None
+        else None
+    )
+    accrued = _accrued(instrument, quote, settlement, snapshot, accrued_projection)
     nominal = instrument.outstanding_face(settlement)
     build_engine = None if engines is None else partial(engines.engine, instrument.instrument_id)
     # RUB amounts: unchanged for a RUB bond, converted at the snapshot rate otherwise.
@@ -1718,7 +1737,7 @@ def _value_position(
             policy,
             built,
             curve_id,
-            projection,
+            context.projection,
             cache,
             (settlement, horizon_date, offer),
             flows,
@@ -1727,6 +1746,7 @@ def _value_position(
             run_id,
             tail,
             build_engine,
+            key_projection,
         )
         # A floating perpetual's tail at its base projection (BACKLOG #127).
         tail = engine.tail_for(engine.projected_coupons)
@@ -1860,6 +1880,10 @@ def _value_position(
         discount_margin_bp=margin,
         spread_buckets_rub=spread_buckets,
         curve_fallback_from=fallback_from,
+        projection_curve_id=projection_id if key_projection is not None else None,
+        projection_curve_basis=engine.projection_curve_basis
+        if key_projection is not None
+        else None,
     )
     return valuation, engine
 
@@ -1997,6 +2021,20 @@ def _check_known_coupons(instrument: Instrument, settlement: date, horizon: date
         raise MissingMarketData(f"{label} (the last known coupon ends {last.accrual_end})")
 
 
+def _bond_key_rate_projection(
+    context: ProductContext, leg: FloatingCouponLeg, discount_id: str
+) -> KeyRateProjection:
+    assert leg.projection_curve_id is not None
+    history = context.snapshot.point_in_time_fixing(leg.fixing_id)
+    return context.key_rate_projection(
+        leg.projection_curve_id,
+        discount_id,
+        history.calendar,
+        leg.rule.rate_day_count,
+        leg.rule.observation_days,
+    )
+
+
 def _floating_engine(
     instrument: Instrument,
     snapshot: MarketSnapshot,
@@ -2012,6 +2050,7 @@ def _floating_engine(
     run_id: str,
     tail: PerpetualTail | None = None,
     build_engine: Callable[[BondRiskRequest, ShockedCurveCache], BondRiskEngine] | None = None,
+    key_projection: KeyRateProjection | None = None,
 ) -> tuple[BondRiskEngine, str, str | None]:
     """The risk engine of a RUB floater, its adapter ID and its separate projection curve.
 
@@ -2027,7 +2066,11 @@ def _floating_engine(
     model = instrument.floating_leg(
         snapshot, horizon=horizon_date, strike_guard_bp=policy.cap_floor_guard_bp
     )
-    projected = projection(projection_id, leg.rule.index)
+    projected = (
+        projection(projection_id, leg.rule.index).curve
+        if key_projection is None
+        else key_projection
+    )
     two_curve = projection_id != curve_id
     request = BondRiskRequest(
         cashflows=tuple(BondCashflow(f.payment_date, f.amount) for f in flows),
@@ -2038,7 +2081,7 @@ def _floating_engine(
         dirty_price_rub=clean_price_pct_to_dirty_rub(quote.clean_price_pct, nominal, accrued),
         quantity=quantity,
         floating_leg=model,
-        projection_curve=projected.curve if two_curve else None,
+        projection_curve=projected if two_curve else None,
         perpetual_tail=tail,
     )
     engine = (
@@ -2620,6 +2663,7 @@ def horizon_portfolio(
                     cache,
                     used_calendars,
                     exercised_memo,
+                    context,
                 )
             )
         except CoreRejection as exc:
@@ -2664,7 +2708,8 @@ def _horizon_position(
     built: dict[str, _BuiltCurve | CoreRejection],
     cache: ShockedCurveCache,
     used_calendars: dict[str, CalendarUse],
-    exercised_memo: dict[str, ExercisedBond | CoreRejection] | None = None,
+    exercised_memo: dict[str, ExercisedBond | CoreRejection],
+    context: ProductContext,
 ) -> PositionHorizon:
     terms = instruments.get(position.instrument_id)
     tail: PerpetualTail | None = None
@@ -2693,15 +2738,22 @@ def _horizon_position(
         raise InvalidTerms(f"curve {curve_id} is not dated the snapshot business date")
     settlement = calendar.add_business_days(snapshot.business_date, instrument.settlement_lag_days)
     quote = snapshot.quote(instrument.instrument_id)
-    accrued = _accrued(instrument, quote, settlement, snapshot)
     nominal = instrument.outstanding_face(settlement)
     fixings = projection_curve = None
+    accrued_projection = None
     leg = instrument.coupon_leg
     if isinstance(leg, FloatingCouponLeg):
         fixings = snapshot.point_in_time_fixing(leg.fixing_id)
         projection_id = cast(str, leg.projection_curve_id)
-        source = snapshot.projection_curve(projection_id, leg.rule.index)
+        source: DiscountCurve | CurveBootstrapRequest
+        if leg.rule.index == "key_rate":
+            key_projection = _bond_key_rate_projection(context, leg, curve_id)
+            source = key_projection._quote_build(_ZERO_SHOCK, _base_curve(outcome.curve, cache))
+            accrued_projection = source
+        else:
+            source = snapshot.projection_curve(projection_id, leg.rule.index)
         projection_curve = None if projection_id == curve_id else source
+    accrued = _accrued(instrument, quote, settlement, snapshot, accrued_projection)
     per_bond = horizon_valuation(
         instrument,
         outcome.curve,

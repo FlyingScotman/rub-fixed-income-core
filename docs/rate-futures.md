@@ -69,7 +69,9 @@ RateFuturesRiskRequest(contract, projection_curve, fixings=None, index_anchor=No
   raises `MissingFixing` (a `MissingMarketData`). Nothing is filled silently.
 - Index contract: also `index_anchor = RuoniaIndexValue(index_date, value)`, a published
   index on a RUONIA calculation day on or before the valuation date.
-- Key-rate contract: a `KeyRateForwardCurve` or its KRS quotes (`KeyRateCurveRequest`); the price is `100 * rate_at(effective_date)`.
+- Key-rate contract: a `KeyRateForwardCurve` or KRS quotes (`KeyRateCurveRequest`)
+  plus `ruonia_curve` (the linked OIS quote request). The price is
+  `100 * rate_at(effective_date)`.
 - Exactly one of `futures_price` (a settlement price; calibrates the basis) and `basis_bp`.
   A fully fixed contract (all its days observed) does not depend on a basis: pass
   `basis_bp=0`.
@@ -92,8 +94,9 @@ shares every repricing.
 
 Key-rate curve shocks follow `swaps`: the bucket hats at the effective date's ACT/ACT
 ISDA time from the curve date; a rate already decided (before `current_rate_end`) does
-not move. On KRS quotes (`KeyRateCurveRequest`) the quotes are shifted and the curve
-recalibrated: the price is `100 * shocked(s).rate_at(effective_date)` (basis held).
+not move. With KRS quotes, the engine recalibrates on the scenario RUONIA discount
+and reports separate KRS and RUONIA factor blocks. The futures basis is held
+through both sets of rate shocks.
 
 ## OFZ basket futures: `OfzFuturesRiskEngine`
 

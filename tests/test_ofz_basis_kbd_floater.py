@@ -16,9 +16,10 @@ from datetime import date, timedelta
 import numpy as np
 import pytest
 from ofz_basis_data import DATE, KBD, OIS, OIS_CALENDAR, PARAMS, SETTLEMENT, ois_request
+from portfolio_v3_book import key_rate_quotes
 from test_floating_kbd import history, periods, rule
 from test_ofz_basis import AS_OF, IDS, _bond, _portfolio_taylor
-from test_portfolio_floaters import KEY_PROJECTION, KNOWN, floater, key_rate, ruonia
+from test_portfolio_floaters import KNOWN, floater, key_rate, ruonia
 
 from rub_fixed_income import (
     RISK_BUCKETS,
@@ -391,7 +392,7 @@ def _snapshot() -> MarketSnapshot:
             CurveEntry("RUB_OFZ_KBD", "rub_ofz_kbd_v3", PARAMS),
             CurveEntry("RUB_KBD_ALT", "rub_ofz_kbd_v3", PARAMS),
             CurveEntry("RUB_OIS", "rub_ruonia_ois_moex_v2", OIS),
-            CurveEntry("KEY_PROJ", "rub_key_rate_projection_v1", KEY_PROJECTION),
+            CurveEntry("KEY_PROJ", "rub_key_rate_swap_v1", key_rate_quotes("RUB_OIS")),
         ),
         calendars=(CalendarEntry("MOEX_STOCK", OIS_CALENDAR),),
         fixings=(

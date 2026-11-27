@@ -19,6 +19,7 @@ from itertools import pairwise
 from typing import Literal, cast
 
 from ._money import finite_money, positive_money
+from ._risk_common import _ZERO_SHOCK
 from ._state import _fields_only_state
 from .canonical import OMIT_IF_DEFAULT
 from .cashflows import Cashflow, CashflowKind, accrued_interest
@@ -35,6 +36,7 @@ from .floating import (
     FloatingCouponProjection,
     FloatingCouponRule,
     FloatingLeg,
+    KeyRateProjection,
 )
 from .fx_forwards import FxImpliedCurveRequest
 from .inflation import CpiSeries, IndexedCouponLeg, IndexedPrincipalLeg
@@ -622,12 +624,7 @@ class Instrument:
                 f"floating leg of {self.instrument_id} names no projection curve"
             )
         model = self.floating_leg(market, horizon=horizon, strike_guard_bp=strike_guard_bp)
-        source = market.projection_curve(leg.projection_curve_id, leg.rule.index)
-        curve = (
-            bootstrap_discount_curve(source)
-            if isinstance(source, CurveBootstrapRequest)
-            else source
-        )
+        curve = self._floating_projection(market, leg, model)
         return model.project(curve, settlement_date=date.min if after is None else after)
 
     def accrued(self, settlement: date, market: MarketSnapshot | None = None) -> float:
@@ -663,13 +660,28 @@ class Instrument:
         except MissingMarketData:
             if leg.projection_curve_id is None:
                 raise
+        curve = self._floating_projection(market, leg, model)
+        return model.accrued_interest(settlement, curve, rate_basis=basis)
+
+    def _floating_projection(
+        self, market: MarketSnapshot, leg: FloatingCouponLeg, model: FloatingLeg
+    ) -> DiscountCurve:
+        assert leg.projection_curve_id is not None
+        entry = market.curve(leg.projection_curve_id)
+        if leg.rule.index == "key_rate" and isinstance(entry.curve, KeyRateCurveRequest):
+            quotes = market._key_rate_quotes(leg.projection_curve_id)
+            ruonia = quotes.ruonia_source
+            assert ruonia is not None
+            discount = bootstrap_discount_curve(ruonia)
+            return KeyRateProjection(
+                quotes, model.history.calendar, leg.rule.rate_day_count, leg.rule.observation_days
+            )._quote_build(_ZERO_SHOCK, discount)
         source = market.projection_curve(leg.projection_curve_id, leg.rule.index)
-        curve = (
+        return (
             bootstrap_discount_curve(source)
             if isinstance(source, CurveBootstrapRequest)
             else source
         )
-        return model.accrued_interest(settlement, curve, rate_basis=basis)
 
     def _rate_accrued(self, leg: RateAccrualCouponLeg, settlement: date) -> float:
         periods = [p for p in leg.periods if p.amount > 0.0]
@@ -710,15 +722,14 @@ class CurveEntry:
 
     ``curve`` is a built curve, OIS quotes to bootstrap, or KBD parameters; the
     valuation builds and shares it once per call. Derivative positions (result contract
-    v3) also read a :class:`~rub_fixed_income.key_rate.KeyRateForwardCurve` under
-    ``rub_key_rate_swap_v1`` (key-rate swap projection, dated the business date) or its
-    KRS quotes (:class:`~rub_fixed_income.key_rate.KeyRateCurveRequest`, built once per
-    call; risk in the quotes with ``ValuationPolicy.quote_curve_risk``) and an
+    v3) also read KRS quotes (:class:`~rub_fixed_income.key_rate.KeyRateCurveRequest`
+    under ``rub_key_rate_swap_v1``) for key-rate products. The request links the RUONIA OIS
+    curve by ID and always gives KRS quote risk. Derivatives also read an
     :class:`~rub_fixed_income.xccy.XccyCurveBootstrapRequest` under
     ``cny_ruonia_xccy_v1`` (the CNY curve from XCCY par quotes), and (0.36.0) an
     :class:`~rub_fixed_income.fx_forwards.FxImpliedCurveRequest` under a
-    ``<ccy>_fx_implied_v1`` spec (FX swap points, built on the snapshot FX spot). Bonds
-    reject all three. A par-yield proxy spec also takes its quotes, a
+    ``<ccy>_fx_implied_v1`` spec (FX swap points, built on the snapshot FX spot).
+    A par-yield proxy spec also takes its quotes, a
     :class:`~rub_fixed_income.proxy_curves.ParYieldCurveRequest`: built once per call, or
     the risk source of every engine on it with ``ValuationPolicy.quote_curve_risk``.
     """
@@ -1113,6 +1124,30 @@ class MarketSnapshot:
         if known is not None and known > self.known_at:
             raise InvalidTerms(f"{label} were known after the snapshot cut {self.known_at}")
         return history.published_by(self.known_at) if history.published_at else history
+
+    def _key_rate_quotes(
+        self, curve_id: str, discount_curve_id: str | None = None
+    ) -> KeyRateCurveRequest:
+        entry = self.curve(curve_id)
+        quotes = entry.curve
+        if entry.spec_id != "rub_key_rate_swap_v1" or not isinstance(quotes, KeyRateCurveRequest):
+            raise InvalidTerms(
+                f"curve {curve_id}: migrate key-rate projection to KeyRateCurveRequest "
+                "under rub_key_rate_swap_v1"
+            )
+        ruonia_id = quotes.ruonia_curve_id
+        if ruonia_id is None:
+            raise InvalidTerms(
+                f"KRS curve {curve_id} must name its RUONIA curve in ruonia_curve_id"
+            )
+        if discount_curve_id is not None and discount_curve_id != ruonia_id:
+            raise InvalidTerms(
+                f"KRS curve {curve_id} links to RUONIA {ruonia_id}; "
+                f"product discount {discount_curve_id} must match"
+            )
+        if quotes.business_date != self.business_date:
+            raise InvalidTerms(f"KRS curve {curve_id} is not dated the snapshot business date")
+        return quotes.bind_ruonia(self.projection_curve(ruonia_id, "ruonia"))
 
     def projection_curve(
         self, curve_id: str, index: FixingIndex

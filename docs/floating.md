@@ -253,14 +253,16 @@ spread is a margin over `curve`. Each curve is shocked in its own basis with its
 - `model_version = "rub-floating-two-curve-risk-v1"`
   (`rub-floating-two-curve-second-order-v1`); `base_id` adds the projection curve.
 
-A reset-date floater has large and opposite discount and projection DV01 that nearly
-cancel when both curves move together; CS01 stays about the annuity.
+A reset-date floater has large and opposite discount and projection DV01; CS01 stays
+about the annuity. Cancellation under a parallel quote move depends on both markets'
+conventions. See [the KRS and RUONIA risk bases](risk.md#key-rate-calibration-under-ruonia-shocks).
 
 **Key-rate projection.** `key_rate_projection_curve(forward, calendar, rate_day_count=, observation_days=)`
 turns a `KeyRateForwardCurve` into a `DiscountCurve` with one node per business (or
 calendar) day, `DF(next) = DF(day) / (1 + rate_at(day) * tau)`, so a leg observed the
-same way reproduces the key-rate path exactly. Register it under
-`rub_key_rate_projection_v1`; risk shifts its continuous zero rates.
+same way reproduces the key-rate path exactly. `KeyRateProjection` builds this view
+from the KRS quotes on each scenario's RUONIA curve. An explicit `DiscountCurve`
+remains available for standalone revaluation.
 
 **Performance.** Coupons that read only discount factors unchanged by a shock are
 reused, and overnight forwards are memoised on each shared shocked curve, without
@@ -270,7 +272,8 @@ changing a bit of the result. `benchmarks/floater_bench.py` times 2k floaters.
 
 - `FloatingCouponLeg(rule, periods, fixing_id, projection_curve_id=None)` in
   `Instrument`: `projection_curve_id` names the snapshot curve that projects (a
-  RUONIA OIS spec for RUONIA, `rub_key_rate_projection_v1` for the key rate).
+  RUONIA OIS spec for RUONIA, `KeyRateCurveRequest` under `rub_key_rate_swap_v1` for
+  the key rate).
 - `MarketSnapshot.point_in_time_fixing(fixing_id)`: the history must be dated the
   business date and say when it was known: `known_at_utc` after the snapshot's
   `known_at` is rejected (`INVALID_TERMS`), rows with `published_at` after it are

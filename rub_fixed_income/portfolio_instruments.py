@@ -207,9 +207,9 @@ class XccyInstrument:
     floating RUB leg projects on ``rub_projection_curve_id`` (``None``: the discount
     curve) with RUONIA fixings ``rub_fixing_id``; a RUB leg on another compounded index
     takes snapshot index fixings under ``rub_fixing_id``, a RUB leg on the averaged key rate
-    needs ``rub_projection_curve_id`` (``rub_key_rate_projection_v1``) and key-rate
-    fixings, and for its horizon ``rub_key_rate_curve_id`` (the ``rub_key_rate_swap_v1`` entry
-    with the forward curve the projection was built from); a floating foreign leg needs
+    needs key-rate fixings and a ``rub_projection_curve_id`` with KRS quotes under
+    ``rub_key_rate_swap_v1``. If present, ``rub_key_rate_curve_id`` names the same entry.
+    A floating foreign leg needs
     ``foreign_projection_curve_id`` and, once started, ``foreign_fixing_id`` (snapshot
     index fixings).
     """
@@ -253,7 +253,7 @@ class XccyInstrument:
         ):
             raise InvalidTerms(
                 "an averaged key-rate RUB leg needs rub_projection_curve_id "
-                "(a rub_key_rate_projection_v1 curve)"
+                "(a KeyRateCurveRequest under rub_key_rate_swap_v1)"
             )
         foreign_floating = self.swap.foreign_leg.index is not None
         if foreign_floating and self.foreign_projection_curve_id is None:
@@ -455,8 +455,8 @@ class RepoInstrument:
 
     ``calendar_id`` names the settlement calendar; ``discount_curve_id`` a RUB nominal
     curve; a floating repo projects on ``projection_curve_id`` (``None``: the discount
-    curve; a RUONIA OIS curve for RUSFAR and RUONIA, a ``rub_key_rate_projection_v1``
-    curve for the key rate) with the snapshot fixing history ``fixing_id``.
+    curve for RUSFAR and RUONIA) with the snapshot fixing history ``fixing_id``.
+    A key-rate repo requires KRS quotes under ``rub_key_rate_swap_v1``.
     ``assumed_end_date`` is the end assumed for an open repo: required for one (else the
     position is rejected ``MISSING_ASSUMPTION``), rejected for a term repo. The
     collateral is a reference only and never enters PV or risk: the cash borrower books

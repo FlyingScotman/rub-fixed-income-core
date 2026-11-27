@@ -55,7 +55,7 @@ its JTD; otherwise the credit curve's stated recovery is used (never a default).
 | `index_fixings` | `IndexFixingEntry(fixing_id, IndexFixings)` | foreign overnight index fixings of a floating XCCY foreign leg, dated the business date |
 | `ruonia_fixings` | `RuoniaFixingsEntry(fixing_id, RuoniaFixings)` | RUONIA with the declared unpublished days (rate futures); an undeclared gap rejects |
 | `ruonia_index` | `RuoniaIndexValue(index_date, value)` | published RUONIA index values; the index future grows the latest one |
-| `curves` | `CurveEntry` with a `KeyRateForwardCurve` or its KRS quotes (`KeyRateCurveRequest`, issue #77) under `rub_key_rate_swap_v1`, an `XccyCurveBootstrapRequest` under `cny_ruonia_xccy_v1`, or (0.36.0) an `FxImpliedCurveRequest(currency, curve_date, rub_curve_id, quotes, convention=None)` under `<ccy>_fx_implied_v1` | key-rate projection of swaps and KEYRATE futures; the CNY curve from XCCY par quotes (quote-basis risk); a foreign curve implied from FX swap points / outrights (RUB per one unit), built once per job on the snapshot `FxSpot` and the named RUB curve |
+| `curves` | `CurveEntry` with KRS quotes (`KeyRateCurveRequest`) under `rub_key_rate_swap_v1`, an `XccyCurveBootstrapRequest` under `cny_ruonia_xccy_v1`, or (0.36.0) an `FxImpliedCurveRequest(currency, curve_date, rub_curve_id, quotes, convention=None)` under `<ccy>_fx_implied_v1` | key-rate projection on the linked RUONIA curve; the CNY curve from XCCY par quotes (quote-basis risk); a foreign curve implied from FX swap points / outrights (RUB per one unit), built once per job on the snapshot `FxSpot` and the named RUB curve |
 
 Fixing IDs are unique across `fixings`, `index_fixings` and `ruonia_fixings`. Existing
 snapshots keep their bytes and hashes; `to_dict` / `from_dict` round-trip the new
@@ -104,28 +104,16 @@ and `settlement_fixing_rate = R_quote`, then a known RUB amount (one fixing miss
 for a fixed RUB-settled cross the known RUB amount, with `settlement_fixing_rate`).
 See [fx-forwards.md](fx-forwards.md#ndfs-settled-in-a-foreign-currency-and-cross-ndfs-backlog-135).
 
-**Dating of key-rate curves (BACKLOG #55).** `build_key_rate_forward_curve` dates its
-curve at the KRS start (TOM) and needs a TOM-dated discount curve; the portfolio values
-everything on the business date. Decision: every curve in the snapshot, including the
-key-rate projection curve, is dated the business date. The backend re-dates a TOM
-calibration with `key_rate.rebase_key_rate_curve(curve, business_date,
-rate_in_force=...)`, which extends the current-rate interval back to the business date
-and requires the key rate in force on the business date to equal the curve's current
-rate (a decision effective on TOM itself cannot be represented that way and is
-rejected). Bucket shifts are then read at times from the business date. A key-rate curve
-not dated the business date is `INVALID_TERMS`; core never moves a curve in time
-silently. KRS quotes (`KeyRateCurveRequest(build, business_date, rate_in_force)`, the
-TOM calibration inputs) re-date their mid curve the same way and must name the snapshot
-business date.
+**Key-rate curves (#120).** Supply `KeyRateCurveRequest(build, business_date,
+rate_in_force, ruonia_curve_id=...)` under `rub_key_rate_swap_v1`. The linked ID must
+be the OIS quote curve that discounts the product. KEYRATE futures use it as their
+calibration discount. The core builds that discount on the scenario's RUONIA rates,
+reads it forward from TOM, and re-dates the KRS result to the snapshot business date.
+See [the KRS and RUONIA risk bases](risk.md#key-rate-calibration-under-ruonia-shocks).
 
 **Curve risk in par quotes (0.38.0, issue #77).** `ValuationPolicy.quote_curve_risk=True`
-(omitted at its default) risks a curve the snapshot holds as quotes in those quotes, as
-RUONIA OIS quotes always are: `IR|<key-rate curve>|<bucket>` of key-rate swaps and
-KEYRATE futures is then the risk to the KRS mid quotes, each moved by the bucket hats at
-its maturity, the curve recalibrated (model flag `quote_curve`); scenarios on the curve
-move the quotes too. Without the flag KRS quotes are built once and their mid curve takes
-forward-rate shifts, exactly as the built curve would. Carry is on the mid curve either
-way. FX forwards, FX swaps, crosses and FX futures on XCCY par quotes
+(omitted at its default) enables further quote inputs. RUONIA OIS and KRS quote
+requests always give quote risk. FX forwards, FX swaps, crosses and FX futures on XCCY par quotes
 (`XccyCurveBootstrapRequest`) rebuild the CNY curve under every shock on their shocked
 RUB curve, as cross-currency swaps do: `IR|<cny curve>|<bucket>` is risk to the XCCY
 quotes and the RUB buckets hold them. Carry is on the curve built from the quotes. A USD / EUR par-yield

@@ -67,7 +67,7 @@ from .dates import BusinessCalendar
 from .discount import CurveBootstrapRequest, DiscountCurve, DiscountFactorCurve
 from .errors import InvalidTerms, MissingMarketData, UnsupportedProduct
 from .factors import FactorRisk, HessianEntry, fx_factor, ir_factor
-from .floating import FixingHistory, key_rate_projection_curve
+from .floating import FixingHistory, KeyRateProjection, key_rate_projection_curve
 from .fx_futures import FxFuturesScenario
 from .key_rate import KeyRateForwardCurve
 from .tenors import parse_tenor, resolve_tenor
@@ -114,7 +114,10 @@ __all__ = [
 
 XCCY_MODEL_VERSION = "rub-xccy-v1"
 XCCY_SECOND_ORDER_MODEL_VERSION = "rub-xccy-second-order-v1"
+KEY_RATE_XCCY_MODEL_VERSION = "rub-xccy-krs-quote-v2"
+KEY_RATE_XCCY_SECOND_ORDER_MODEL_VERSION = "rub-xccy-krs-quote-second-order-v2"
 XCCY_HORIZON_MODEL_VERSION = "rub-xccy-horizon-v1"
+KEY_RATE_XCCY_HORIZON_MODEL_VERSION = "rub-xccy-krs-quote-horizon-v2"
 XCCY_CURVE_MODEL_VERSION = "xccy-cny-logdf-v1"
 XCCY_QUOTE_SPEC_ID = "cny_ruonia_xccy_v1"
 """Core spec ID of the MOEX ``XCS CNYRUB`` standard swap (:func:`xcs_cnyrub_convention`)."""
@@ -1267,8 +1270,9 @@ class XccyRiskRequest:
     - ``spot_rate`` is RUB per one foreign unit for value date ``spot_value_date``.
     - ``rub_discount_curve`` discounts RUB flows; ``rub_projection_curve`` projects
       the RUB leg's index (``None``: the discount curve, one set of factors; required
-      for an averaged key-rate leg, on ``rub_key_rate_projection_v1``). Each is a
-      ``DiscountCurve`` (``continuous_zero`` risk) or OIS quotes (``ois_quote``).
+      for an averaged key-rate leg). The key-rate leg accepts ``KeyRateProjection``
+      with linked OIS discount quotes, or an explicit ``DiscountCurve``. The other
+      legs take a ``DiscountCurve`` or OIS quotes (``ois_quote``).
     - ``foreign_discount_curve`` is the foreign curve under RUB collateral: a
       ``DiscountCurve`` (zero-rate overlay) or an :class:`XccyCurveBootstrapRequest`
       (``xccy_quote``: rebuilt from the shocked RUB curves and shifted quotes; quotes,
@@ -1293,7 +1297,7 @@ class XccyRiskRequest:
     rub_discount_curve: RubCurve
     foreign_discount_curve: ForeignCurve
     basis_bp: float
-    rub_projection_curve: RubCurve | None = None
+    rub_projection_curve: RubCurve | KeyRateProjection | None = None
     foreign_projection_curve: RubCurve | None = None
     rub_fixings: Fixings | None = None
     foreign_fixings: IndexFixings | None = None
@@ -1307,11 +1311,28 @@ class XccyRiskRequest:
         _date(self.spot_value_date, "spot_value_date")
         for name in ("rub_discount_curve", "rub_projection_curve", "foreign_projection_curve"):
             value = getattr(self, name)
+            if name == "rub_projection_curve" and isinstance(value, KeyRateProjection):
+                index = swap.rub_leg.index
+                if not isinstance(index, AveragedIndex):
+                    raise InvalidTerms("KeyRateProjection requires an averaged key-rate RUB leg")
+                if (
+                    value.observation_days != "calendar"
+                    or value.rate_day_count != index.rate_day_count
+                ):
+                    raise InvalidTerms("KeyRateProjection must use the RUB leg's calendar-day rule")
+                if self.rub_key_rate_curve is not None:
+                    raise InvalidTerms(
+                        "KeyRateProjection already supplies the key-rate forward curve"
+                    )
+                object.__setattr__(self, name, value._with_discount(self.rub_discount_curve))
+                continue
             if value is not None and not isinstance(value, (DiscountCurve, CurveBootstrapRequest)):
                 raise TypeError(f"{name} must be DiscountCurve or CurveBootstrapRequest")
         if self.rub_discount_curve is None:
             raise TypeError("rub_discount_curve is required")
         foreign = self.foreign_discount_curve
+        if isinstance(foreign, KeyRateProjection):
+            raise InvalidTerms("KeyRateProjection belongs to the key-rate RUB projection role")
         if not isinstance(foreign, (DiscountCurve, QuoteCurve)):
             raise TypeError(
                 "foreign_discount_curve must be DiscountCurve or XccyCurveBootstrapRequest"
@@ -1349,7 +1370,7 @@ class XccyRiskRequest:
                 raise InvalidTerms("rub_key_rate_curve must be dated the valuation date")
         if isinstance(rub_index, AveragedIndex) and self.rub_projection_curve is None:
             raise MissingMarketData(
-                "an averaged key-rate leg needs rub_projection_curve (rub_key_rate_projection_v1)"
+                "an averaged key-rate leg needs rub_projection_curve"
             )
         if self.rub_fixings is not None:
             if isinstance(rub_index, AveragedIndex):
@@ -1643,7 +1664,7 @@ def _foreign_identity(curve: ForeignCurve) -> _Canonical:
     return cast(_Canonical, cached)
 
 
-def _role_basis(curve: RubCurve | ForeignCurve) -> str:
+def _role_basis(curve: RubCurve | ForeignCurve | KeyRateProjection) -> str:
     if isinstance(curve, XccyCurveBootstrapRequest):
         return "xccy_quote"
     return _curve_basis(curve)
@@ -1690,8 +1711,11 @@ class XccyRiskEngine:
         bases: dict[str, DiscountCurve] = {
             "rub_discount": _base_curve(req.rub_discount_curve, self.curve_cache)
         }
-        if req.rub_projection_curve is not None:
-            bases["rub_projection"] = _base_curve(req.rub_projection_curve, self.curve_cache)
+        source = req.rub_projection_curve
+        if isinstance(source, KeyRateProjection):
+            bases["rub_projection"] = source._quote_build(_ZERO_SHOCK, bases["rub_discount"])
+        elif source is not None:
+            bases["rub_projection"] = _base_curve(source, self.curve_cache)
         if req.foreign_projection_curve is not None:
             bases["foreign_projection"] = _base_curve(
                 req.foreign_projection_curve, self.curve_cache
@@ -1730,7 +1754,7 @@ class XccyRiskEngine:
             "base_id",
             canonical_sha256(
                 {
-                    "model": XCCY_MODEL_VERSION,
+                    "model": self.model_version,
                     "swap": swap,
                     "spot_rate": req.spot_rate,
                     "spot_value_date": req.spot_value_date,
@@ -1770,7 +1794,15 @@ class XccyRiskEngine:
 
     # --- curves ------------------------------------------------------------------
 
-    def _role_source(self, role: XccyCurveRole) -> RubCurve | ForeignCurve | None:
+    @property
+    def model_version(self) -> str:
+        if isinstance(self.request.rub_projection_curve, KeyRateProjection):
+            return KEY_RATE_XCCY_MODEL_VERSION
+        return XCCY_MODEL_VERSION
+
+    def _role_source(
+        self, role: XccyCurveRole
+    ) -> RubCurve | ForeignCurve | KeyRateProjection | None:
         req = self.request
         return {
             "rub_discount": req.rub_discount_curve,
@@ -1790,18 +1822,22 @@ class XccyRiskEngine:
 
     def _rub_curves(self, shifts: _Shifts) -> tuple[DiscountFactorCurve, DiscountFactorCurve]:
         req = self.request
+        rub_shifts = self._shift(shifts, "rub_discount")
         discount = _shock_curve(
             req.rub_discount_curve,
             self._bases["rub_discount"],
-            self._shift(shifts, "rub_discount"),
+            rub_shifts,
             self.curve_cache,
         )
         if req.rub_projection_curve is None:
             return discount, discount
+        projection_shifts = self._shift(shifts, "rub_projection")
+        if isinstance(req.rub_projection_curve, KeyRateProjection):
+            return discount, req.rub_projection_curve._quote_build(projection_shifts, discount)
         projection = _shock_curve(
             req.rub_projection_curve,
             self._bases["rub_projection"],
-            self._shift(shifts, "rub_projection"),
+            projection_shifts,
             self.curve_cache,
         )
         return discount, projection
@@ -1829,11 +1865,17 @@ class XccyRiskEngine:
         )
 
         def build() -> DiscountCurve:
-            discount, projection = self._rub_curves(shifts)
+            if own_projection:
+                discount, projection = self._rub_curves(shifts)
+            else:
+                discount = _shock_curve(
+                    req.rub_discount_curve, self._bases["rub_discount"], rub_d, self.curve_cache
+                )
+                projection = discount
             return _bootstrap(
                 source,
                 discount,
-                projection if own_projection else discount,
+                projection,
                 _shocked_rates(source, own),
             )
 
@@ -2007,6 +2049,7 @@ class XccyRiskEngine:
             curves=tuple(curves),
             dv01_rub=finite_money(math.fsum(c.dv01_rub for c in curves), "DV01"),
             basis01_rub=sensitivity(_Moves(zero, bump)),
+            model_version=self.model_version,
         )
 
     def reprice(self, scenario: XccyScenario) -> XccyScenarioResult:
@@ -2061,6 +2104,7 @@ class XccyRiskEngine:
             spot,
             finite_money(total - math.fsum((rub, foreign, basis, spot)), "interaction P&L"),
             total,
+            model_version=self.model_version,
         )
 
     def second_order(self, *, bump_bp: float = 1.0) -> XccySecondOrderRisk:
@@ -2126,6 +2170,11 @@ class XccyRiskEngine:
             bump_bp=bump,
             gradient_rub=(*gradient, finite_money(base[0] / 100.0, "FX delta")),
             hessian_rub=tuple(tuple(row) for row in hessian),
+            model_version=(
+                KEY_RATE_XCCY_SECOND_ORDER_MODEL_VERSION
+                if isinstance(self.request.rub_projection_curve, KeyRateProjection)
+                else XCCY_SECOND_ORDER_MODEL_VERSION
+            ),
         )
 
     # --- horizon -----------------------------------------------------------------
@@ -2213,7 +2262,13 @@ class XccyRiskEngine:
         )
         rolled_rub_d = roll_curve(rub_d, horizon_date)
         rub_index = req.swap.rub_leg.index
-        if isinstance(rub_index, AveragedIndex) and rub_p.nodes:
+        source = req.rub_projection_curve
+        if isinstance(source, KeyRateProjection):
+            forward = source.quotes.curve(ruonia=rub_d)
+            if forward.horizon_date <= horizon_date:
+                raise MissingMarketData("key-rate projection curve ends before the horizon")
+            rolled_rub_p = source._from_forward(roll_key_rate_curve(forward, horizon_date))
+        elif isinstance(rub_index, AveragedIndex) and rub_p.nodes:
             if req.rub_key_rate_curve is None:
                 raise MissingMarketData(
                     "horizon of a key-rate leg needs the key-rate forward curve "
@@ -2253,6 +2308,11 @@ class XccyRiskEngine:
             finite_money(pv_forward + received - pv_start, "carry"),
             finite_money(pv_rolled - pv_forward, "rolldown"),
             finite_money(pv_rolled + received - pv_start, "horizon P&L"),
+            model_version=(
+                KEY_RATE_XCCY_HORIZON_MODEL_VERSION
+                if isinstance(source, KeyRateProjection)
+                else XCCY_HORIZON_MODEL_VERSION
+            ),
         )
 
 

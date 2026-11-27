@@ -14,12 +14,13 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+from portfolio_v3_book import key_rate_quotes
 from test_portfolio import (
     AS_OF,
     BUSINESS_DATE,
     PARAMS,
 )
-from test_portfolio_floaters import CALENDAR, KEY_PROJECTION, KNOWN, OIS, key_rate, ruonia
+from test_portfolio_floaters import CALENDAR, KNOWN, OIS, key_rate, ruonia
 
 from rub_fixed_income import (
     BondPriceObservation,
@@ -170,7 +171,7 @@ def snapshot() -> MarketSnapshot:
         AS_OF,
         curves=(
             CurveEntry("RUB_OIS", "rub_ruonia_ois_legacy_v1", OIS),
-            CurveEntry("KEY_PROJ", "rub_key_rate_projection_v1", KEY_PROJECTION),
+            CurveEntry("KEY_PROJ", "rub_key_rate_swap_v1", key_rate_quotes("RUB_OIS", CALENDAR)),
             CurveEntry("RUB_KBD", "rub_ofz_kbd_v2", PARAMS),
         ),
         calendars=(CalendarEntry("MOEX_STOCK", CALENDAR),),

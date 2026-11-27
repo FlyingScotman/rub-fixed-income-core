@@ -1,5 +1,34 @@
 # Changelog
 
+## [Unreleased]
+
+### Breaking
+
+- For key-rate products, `value_portfolio` requires a `KeyRateCurveRequest` under
+  `rub_key_rate_swap_v1`.
+  Positions using `rub_key_rate_projection_v1` or a `KeyRateForwardCurve` receive
+  `InvalidTerms`. Every key-rate position uses `key_rate_quote` regardless of
+  `ValuationPolicy.quote_curve_risk`.
+- Set `KeyRateCurveRequest.ruonia_curve_id` to the snapshot's RUONIA OIS quote curve.
+  A key-rate product with a different RUB discount curve receives `InvalidTerms`.
+  In linked mode the core replaces the supplied TOM discount (`build.discount_curve`)
+  with the linked RUONIA curve read forward from TOM.
+- KEYRATE futures add 11 `IR|<RUONIA>|<bucket>` factors for the linked RUONIA curve.
+  When supplied, the CCS `rub_key_rate_curve_id` must match `rub_projection_curve_id`.
+
+### Changed
+
+- Carry on linked KRS quotes uses new model versions for swaps
+  (`rub-irs-krs-quote-horizon-carry-v3`), CCS (`rub-xccy-krs-quote-horizon-v2`)
+  and KEYRATE futures (`rub-rate-futures-krs-quote-horizon-v3`).
+
+### Fixed
+
+- Key-rate floaters, KRS, key-rate repos, CCS and KEYRATE futures use the same KRS
+  mid-quote factors. The key-rate path is recalibrated on shocked RUONIA OIS
+  quotes in bucket risk, parallel DV01, scenarios and second order. Own-spread
+  buckets hold projected coupons fixed. Refs #120.
+
 ## 0.46.0 — ACT/ACT-ISDA premium accrual for CDS
 
 - CDS premium accrual supports `DayCount.ACT_ACT_ISDA` for scheduled coupons, accrued

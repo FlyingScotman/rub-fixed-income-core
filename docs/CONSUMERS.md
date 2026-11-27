@@ -125,19 +125,10 @@ Closed form and hedge view (#76):
   names those whose other curve (RUONIA discount, funding) is held: show that risk beside
   the benchmark hedges.
 
-Curve risk in par quotes (#77, decision of 2026-10-23; the monitor side is
-FlyingScotman/trading-desk-monitor#171). Nothing changes until the monitor opts in. To take the key-rate curve's risk in KRS quotes:
+Curve risk in par quotes (#77; FlyingScotman/trading-desk-monitor#171).
 
-- put the KRS calibration inputs in the snapshot instead of the built curve:
-  `CurveEntry(key_rate_curve_id, "rub_key_rate_swap_v1", KeyRateCurveRequest(
-  KeyRateCurveBuildRequest(trade_date, current_rate, next_policy_effective_date, quotes,
-  tom_discount_curve, calendar), business_date, rate_in_force))` — the same inputs the
-  backend passes to `build_key_rate_forward_curve` and `rebase_key_rate_curve` today;
-- `ValuationPolicy(quote_curve_risk=True)`. `IR|<key-rate curve>|<bucket>` is then risk
-  to the KRS mid quotes (rows flagged `quote_curve`); PV and carry are unchanged. Without
-  the flag the same snapshot values exactly as the built curve. The job ID changes with
-  the flag: mark the change of factor unit in the run history;
-- with the flag, FX forwards, FX swaps, crosses and FX futures may name the CNY XCCY
+- with `ValuationPolicy(quote_curve_risk=True)`, FX forwards, FX swaps, crosses and FX
+  futures may name the CNY XCCY
   quotes (`XccyCurveBootstrapRequest` under `cny_ruonia_xccy_v1`, the entry XCCY swaps
   already read) as their foreign curve instead of the built CNY curve: their CNY buckets
   are then risk to the XCCY quotes, in the same unit as the XCCY swaps';
@@ -279,8 +270,8 @@ other consumers.
 (FlyingScotman/rub-fixed-income-core#64). Nothing changes for RUONIA swaps (same bytes, same
 job IDs). New: `XccyLeg.index` may be another `CompoundedIndex` (RUB fixings are then
 `IndexFixings`, in a snapshot `index_fixings` under `rub_fixing_id`) or `RUB_KEY_RATE_AVERAGE`
-(`FixingHistory("key_rate")`, `rub_projection_curve_id` of a `rub_key_rate_projection_v1` curve
-is required). Only the pin changes for other consumers.
+(`FixingHistory("key_rate")`; see the key-rate migration below for the current
+projection input). Only the pin changes for other consumers.
 
 **From 0.42.0: RUONIA OIS past its last quote** (FlyingScotman/rub-fixed-income-core#84).
 Nothing changes until the monitor opts in. For risk of RUONIA positions past 10Y that does not
@@ -304,7 +295,26 @@ swing between the 7Y and 10Y buckets:
   KBD floaters discounted on RUONIA then continue the discount by the same rule as the
   projection (FlyingScotman/trading-desk-monitor#467).
 
- and what consumers should move to
+### From 0.47.0 / #120
+
+- Replace `rub_key_rate_projection_v1` and built `KeyRateForwardCurve` records in
+  `value_portfolio` with a `KeyRateCurveRequest` under `rub_key_rate_swap_v1`.
+  Positions that use either old input receive `InvalidTerms`. Point all key-rate
+  products on the same KRS market to the same projection ID.
+- Set `KeyRateCurveRequest.ruonia_curve_id` to the snapshot ID of the RUONIA OIS
+  quote request. The RUB discount ID of a key-rate floater, KRS, repo or CCS must
+  match it. A mismatch receives `InvalidTerms`.
+- Pass the existing build inputs to
+  `KeyRateCurveRequest(build, business_date, rate_in_force, ruonia_curve_id=...)`.
+  With that link, core uses the scenario RUONIA discount read forward from TOM in
+  place of `tom_discount_curve` (`build.discount_curve`). The standalone calibration
+  builder still takes the same inputs.
+- For a key-rate CCS, set `rub_projection_curve_id` to the KRS entry. If the
+  optional `rub_key_rate_curve_id` is present, set it to that same ID.
+- KEYRATE has 11 additional `IR|<RUONIA>|<bucket>` factors. Carry them alongside
+  the existing KRS buckets and futures basis in results, scenarios and the Hessian.
+- All key-rate products use `key_rate_quote` independently of `quote_curve_risk`.
+  Use the position's projection ID and basis when reading the factor grid.
 
 ## Deprecations in 0.12.0 and what consumers should move to
 

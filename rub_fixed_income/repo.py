@@ -64,7 +64,13 @@ from .dates import BusinessCalendar
 from .discount import CurveBootstrapRequest, DiscountCurve, DiscountFactorCurve
 from .errors import InvalidTerms, MissingMarketData, UnsupportedProduct
 from .factors import FactorRisk, _upper, ir_factor
-from .floating import _FORWARD_MEMO_SIZE, FixingHistory, _forward_key, _forward_memo
+from .floating import (
+    _FORWARD_MEMO_SIZE,
+    FixingHistory,
+    KeyRateProjection,
+    _forward_key,
+    _forward_memo,
+)
 from .risk import BucketRisk
 
 __all__ = [
@@ -96,6 +102,8 @@ __all__ = [
 
 REPO_MODEL_VERSION = "rub-repo-leg-v1"
 REPO_SECOND_ORDER_MODEL_VERSION = "rub-repo-leg-second-order-v1"
+KEY_RATE_REPO_MODEL_VERSION = "rub-repo-leg-krs-quote-v2"
+KEY_RATE_REPO_SECOND_ORDER_MODEL_VERSION = "rub-repo-leg-krs-quote-second-order-v2"
 
 RepoSide = Literal["repo", "reverse_repo"]
 RepoBenchmark = Literal["RUSFAR", "RUONIA", "KEY_RATE"]
@@ -386,7 +394,7 @@ class RepoRiskRequest:
     trade: RepoTrade
     calendar: BusinessCalendar
     discount_curve: DiscountCurve | CurveBootstrapRequest
-    projection_curve: DiscountCurve | CurveBootstrapRequest | None = None
+    projection_curve: DiscountCurve | CurveBootstrapRequest | KeyRateProjection | None = None
     fixings: FixingHistory | None = None
     assumed_end_date: date | None = None
     collateral_dirty_price_rub_per_bond: float | None = None
@@ -405,8 +413,22 @@ class RepoRiskRequest:
         if projection is not None:
             if not floating:
                 raise InvalidTerms("a fixed-rate repo takes no projection curve")
-            if not isinstance(projection, (DiscountCurve, CurveBootstrapRequest)):
-                raise TypeError("projection_curve must be DiscountCurve or CurveBootstrapRequest")
+            if isinstance(projection, KeyRateProjection):
+                if (
+                    not isinstance(trade.rate, FloatingRepoRate)
+                    or trade.rate.benchmark != "KEY_RATE"
+                ):
+                    raise InvalidTerms("KeyRateProjection requires a KEY_RATE repo")
+                if (
+                    projection.observation_days != "calendar"
+                    or projection.rate_day_count != trade.rate.projection_day_count
+                ):
+                    raise InvalidTerms("KeyRateProjection must use the repo's calendar-day rule")
+                projection = projection._with_discount(self.discount_curve)
+            elif not isinstance(projection, (DiscountCurve, CurveBootstrapRequest)):
+                raise TypeError(
+                    "projection_curve must be a discount curve, OIS quotes or KeyRateProjection"
+                )
             if projection.curve_date != valuation:
                 raise InvalidTerms("discount and projection curves must share one date")
         if floating:
@@ -796,10 +818,17 @@ class RepoRiskEngine:
             raise InvalidTerms("the repo has settled: its end is on or before the valuation date")
         object.__setattr__(self, "_discount", _base_curve(req.discount_curve, self.curve_cache))
         projection = req.projection_curve
+        projection_base: DiscountCurve | None
+        if isinstance(projection, KeyRateProjection):
+            projection_base = projection._quote_build(_ZERO_SHOCK, self._discount)
+        else:
+            projection_base = (
+                None if projection is None else _base_curve(projection, self.curve_cache)
+            )
         object.__setattr__(
             self,
             "_projection",
-            None if projection is None else _base_curve(projection, self.curve_cache),
+            projection_base,
         )
         observations, periods = self._plan(end)
         object.__setattr__(self, "_observations", observations)
@@ -822,7 +851,7 @@ class RepoRiskEngine:
             "base_id",
             canonical_sha256(
                 {
-                    "model": REPO_MODEL_VERSION,
+                    "model": self.model_version,
                     "trade": trade,
                     "calendar": (req.calendar.version, calendar_fingerprint(req.calendar)),
                     "assumed_end_date": req.assumed_end_date,
@@ -995,6 +1024,12 @@ class RepoRiskEngine:
         return _curve_basis(self.request.discount_curve)
 
     @property
+    def model_version(self) -> str:
+        if isinstance(self.request.projection_curve, KeyRateProjection):
+            return KEY_RATE_REPO_MODEL_VERSION
+        return REPO_MODEL_VERSION
+
+    @property
     def projection_curve_basis(self) -> str:
         if isinstance(self.request.trade.rate, FixedRepoRate):
             return "fixed_rate"
@@ -1014,6 +1049,8 @@ class RepoRiskEngine:
         source = self.request.projection_curve
         if source is None:
             return self._discount_view(discount_shifts)
+        if isinstance(source, KeyRateProjection):
+            return source._quote_build(projection_shifts, self._discount_view(discount_shifts))
         base = cast(DiscountCurve, self._projection)
         return _shock_curve(source, base, projection_shifts, self.curve_cache)
 
@@ -1127,6 +1164,8 @@ class RepoRiskEngine:
             if any(projection_shifts):
                 raise InvalidTerms("this repo has no separate projection curve to shift")
             key: tuple[str, _Vector] = ("single", () if fixed_rate else discount_shifts)
+        elif isinstance(self.request.projection_curve, KeyRateProjection):
+            key = ("projection", discount_shifts + projection_shifts)
         else:
             key = ("projection", projection_shifts)
 
@@ -1265,6 +1304,7 @@ class RepoRiskEngine:
             leg("adjustment"),
             tuple(rows),
             reference,
+            model_version=self.model_version,
         )
 
     def _roles(self) -> tuple[RepoCurveRole, ...]:
@@ -1323,6 +1363,7 @@ class RepoRiskEngine:
             self.base_pv,
             tuple(curves),
             finite_money(math.fsum(c.dv01_rub for c in curves), "DV01"),
+            model_version=self.model_version,
         )
 
     def reprice(self, scenario: RepoScenario) -> RepoScenarioResult:
@@ -1345,13 +1386,14 @@ class RepoRiskEngine:
             finite_money(projection_pnl, "projection P&L"),
             finite_money(total - discount_pnl - projection_pnl, "interaction P&L"),
             finite_money(total, "total P&L"),
+            model_version=self.model_version,
         )
 
     def second_order(self, *, bump_bp: float = 1.0) -> RepoSecondOrderRisk:
         """Full central gradient and Hessian over the curve buckets (11 or 22 factors).
 
-        Mixed discount/projection points combine memoized single-curve vectors, so
-        the 22-factor scheme costs no more curve reads than two 11-factor ones.
+        Independent discount and projection combine memoized single-curve vectors.
+        A linked key-rate projection is recalibrated at the joint points.
         """
         bump = positive_money(bump_bp, "second-order bump bp")
         size = len(RISK_BUCKETS)
@@ -1376,6 +1418,11 @@ class RepoRiskEngine:
             bump,
             gradient,
             hessian,
+            model_version=(
+                KEY_RATE_REPO_SECOND_ORDER_MODEL_VERSION
+                if isinstance(self.request.projection_curve, KeyRateProjection)
+                else REPO_SECOND_ORDER_MODEL_VERSION
+            ),
         )
 
     def carry(self, horizon_date: date) -> RepoCarry:
@@ -1420,6 +1467,7 @@ class RepoRiskEngine:
             pv_rolled_rub=finite_money(pv_rolled, "rolled PV"),
             rolldown_rub=finite_money(pv_rolled - pv_forward, "rolldown"),
             horizon_pnl_rub=finite_money(pv_rolled + received - self.base_pv, "horizon P&L"),
+            model_version=self.model_version,
         )
 
     def _rolled_end(self, horizon_date: date, rolled_discount: DiscountCurve) -> float:

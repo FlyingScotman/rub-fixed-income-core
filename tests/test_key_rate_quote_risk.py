@@ -12,7 +12,16 @@ from dataclasses import replace
 from datetime import date
 
 import pytest
-from portfolio_v3_book import AS_OF, BUSINESS_DATE, CAL, POLICY, TOM, instruments, positions
+from portfolio_v3_book import (
+    AS_OF,
+    BUSINESS_DATE,
+    CAL,
+    POLICY,
+    TOM,
+    instruments,
+    ois_request,
+    positions,
+)
 from portfolio_v3_book import snapshot as book_snapshot
 
 from rub_fixed_income import (
@@ -30,6 +39,7 @@ from rub_fixed_income import (
     SwapRiskRequest,
     SwapScenario,
     ValuationPolicy,
+    bootstrap_discount_curve,
     build_key_rate_forward_curve,
     canonical_sha256,
     from_dict,
@@ -73,8 +83,19 @@ def build(shift: tuple[float, ...] | None = None) -> KeyRateCurveBuildRequest:
     return replace(request, quotes=tuple(moved))
 
 
-def rebuilt(shift: tuple[float, ...] | None = None) -> KeyRateForwardCurve:
-    curve = build_key_rate_forward_curve(build(shift)).mid.curve
+def rebuilt(
+    shift: tuple[float, ...] | None = None, discount: DiscountCurve | None = None
+) -> KeyRateForwardCurve:
+    request = build(shift)
+    if discount is not None:
+        anchor = discount.discount_factor(TOM)
+        tom = replace(
+            discount,
+            curve_date=TOM,
+            nodes=tuple((d, df / anchor) for d, df in discount.nodes if d > TOM),
+        )
+        request = replace(request, discount_curve=tom)
+    curve = build_key_rate_forward_curve(request).mid.curve
     return rebase_key_rate_curve(curve, BUSINESS_DATE, rate_in_force=0.165)
 
 
@@ -100,13 +121,12 @@ def krs(tenor: str = "2Y", fixed_rate: float = 0.145) -> InterestRateSwap:
 
 
 def swap_pv(swap: InterestRateSwap, projection: KeyRateForwardCurve) -> float:
-    discount = DiscountCurve.flat(BUSINESS_DATE, RATE)
+    discount = bootstrap_discount_curve(ois_request())
     return SwapRiskEngine(SwapRiskRequest(swap, CAL, discount, projection)).base_pv
 
 
 def quote_engine(swap: InterestRateSwap) -> SwapRiskEngine:
-    discount = DiscountCurve.flat(BUSINESS_DATE, RATE)
-    return SwapRiskEngine(SwapRiskRequest(swap, CAL, discount, quotes()))
+    return SwapRiskEngine(SwapRiskRequest(swap, CAL, ois_request(), quotes()))
 
 
 def test_request_curve_is_the_rebased_mid_calibration_and_shocks_are_rebuilds() -> None:
@@ -124,14 +144,15 @@ def test_request_curve_is_the_rebased_mid_calibration_and_shocks_are_rebuilds() 
 def test_swap_quote_risk_equals_bump_and_rebuild_per_bucket() -> None:
     swap = krs()
     engine = quote_engine(swap)
-    assert engine.base_pv == pytest.approx(swap_pv(swap, rebuilt()), rel=1e-14, abs=1e-6)
+    discount = bootstrap_discount_curve(ois_request())
+    assert engine.base_pv == pytest.approx(swap_pv(swap, rebuilt(discount=discount)), abs=1e-6)
     assert engine.projection_curve_basis == "key_rate_quote"
     risk = engine.risk(bump_bp=1.0)
     projection = next(c for c in risk.curves if c.curve_role == "projection")
     assert projection.curve_basis == "key_rate_quote"
     for k, row in enumerate(projection.buckets):
-        up = swap_pv(swap, rebuilt(bucket(k, 1.0)))
-        down = swap_pv(swap, rebuilt(bucket(k, -1.0)))
+        up = swap_pv(swap, rebuilt(bucket(k, 1.0), discount))
+        down = swap_pv(swap, rebuilt(bucket(k, -1.0), discount))
         assert row.dv01_rub == pytest.approx((up - down) / 2.0, rel=1e-9, abs=1e-4)
     # The 2Y swap sits between the 1Y and 2Y quotes and 3Y is beyond it: buckets past
     # 3Y move no quote, so they carry no risk; the 2Y bucket dominates.
@@ -142,8 +163,7 @@ def test_swap_quote_risk_equals_bump_and_rebuild_per_bucket() -> None:
 
 def test_parallel_quote_shift_moves_a_par_swap_by_its_annuity() -> None:
     """Every quote moves by exactly 1 bp, so a par KRS of a quoted tenor reprices at its
-    quote plus 1 bp: its PV moves by notional * annuity * 1 bp (TOM and business-date
-    flat curves give the same par rates)."""
+    quote plus 1 bp: its PV moves by notional * annuity * 1 bp."""
     swap = krs("2Y", 0.143)
     engine = quote_engine(swap)
     valuation = engine.valuation()
@@ -177,22 +197,26 @@ def test_quote_shocks_outside_the_calibration_domain_are_rejected() -> None:
 
 def test_keyrate_futures_quote_risk_equals_bump_and_rebuild() -> None:
     contract = KeyRateFuturesContract("KK-12.26", date(2026, 12, 18), date(2026, 12, 21))
+    discount = bootstrap_discount_curve(ois_request())
 
     def price(curve: KeyRateForwardCurve | KeyRateCurveRequest) -> RateFuturesRiskEngine:
-        return RateFuturesRiskEngine(RateFuturesRiskRequest(contract, curve, basis_bp=3.0))
+        rub = ois_request() if isinstance(curve, KeyRateCurveRequest) else None
+        return RateFuturesRiskEngine(
+            RateFuturesRiskRequest(contract, curve, basis_bp=3.0, ruonia_curve=rub)
+        )
 
     engine = price(quotes())
     assert engine.curve_basis == "key_rate_quote"
-    assert engine.base_price == price(rebuilt()).base_price
+    assert engine.base_price == price(rebuilt(discount=discount)).base_price
     risk = engine.risk(bump_bp=1.0, difference="central")
     for k, row in enumerate(risk.buckets):
-        up = price(rebuilt(bucket(k, 1.0))).base_price
-        down = price(rebuilt(bucket(k, -1.0))).base_price
+        up = price(rebuilt(bucket(k, 1.0), discount)).base_price
+        down = price(rebuilt(bucket(k, -1.0), discount)).base_price
         expected = (up - down) / 2.0 * contract.margin_per_point_rub
         assert row.dv01_rub == pytest.approx(expected, rel=1e-9, abs=1e-9)
     assert sum(abs(b.dv01_rub) for b in risk.buckets) > 0.0
     assert engine.horizon(date(2026, 11, 16)).horizon_pnl_rub == pytest.approx(
-        price(rebuilt()).horizon(date(2026, 11, 16)).horizon_pnl_rub, abs=1e-9
+        price(rebuilt(discount=discount)).horizon(date(2026, 11, 16)).horizon_pnl_rub, abs=1e-9
     )
 
 
@@ -218,7 +242,11 @@ def test_snapshot_with_krs_quotes_round_trips() -> None:
 def quote_snapshot() -> MarketSnapshot:
     snap = book_snapshot()
     curves = tuple(
-        CurveEntry("KEY_RATE", "rub_key_rate_swap_v1", quotes()) if c.curve_id == "KEY_RATE" else c
+        CurveEntry(
+            "KEY_RATE", "rub_key_rate_swap_v1", replace(quotes(), ruonia_curve_id="RUB_PROJ")
+        )
+        if c.curve_id == "KEY_RATE"
+        else c
         for c in snap.curves
     )
     return replace(snap, curves=curves)
@@ -256,28 +284,32 @@ def key_rate_factors(result: PortfolioRiskResultV3) -> dict[str, float]:
     }
 
 
-def test_portfolio_without_the_flag_takes_forward_risk_of_the_built_mid_curve() -> None:
-    from_quotes = run(quote_snapshot(), POLICY)
-    from_curve = run(built_snapshot(), POLICY)
-    assert key_rate_factors(from_quotes) == key_rate_factors(from_curve)
-    assert from_quotes.total_pv_rub == from_curve.total_pv_rub
-    assert all("quote_curve" not in m.flags for m in from_quotes.position_models)
+def test_portfolio_rejects_a_built_key_rate_forward_curve() -> None:
+    result = value_portfolio(
+        run_id="krs-built",
+        as_of=AS_OF,
+        snapshot=built_snapshot(),
+        instruments=instruments(),
+        positions=tuple(p for p in positions() if p.position_id in ("p-krs", "p-kk")),
+        policy=POLICY,
+    )
+    assert result.coverage.status == "failed"
+    assert {r.code for r in result.coverage.rejections} == {"INVALID_TERMS"}
+    assert all("KeyRateCurveRequest" in r.message for r in result.coverage.rejections)
 
 
-def test_portfolio_with_the_flag_takes_krs_quote_risk() -> None:
+def test_portfolio_takes_krs_quote_risk_regardless_of_flag() -> None:
     policy = replace(POLICY, quote_curve_risk=True)
     result = run(quote_snapshot(), policy)
-    forward = run(quote_snapshot(), POLICY)
-    assert result.total_pv_rub == forward.total_pv_rub
-    assert result.job_id != forward.job_id
+    default = run(quote_snapshot(), POLICY)
+    assert result.total_pv_rub == default.total_pv_rub
+    assert result.job_id != default.job_id
     rows = {r.position_id: r for r in result.derivative_rows()}
     krs_row = rows["p-krs"]
     q = krs_row.quantity
     swap = next(i for i in instruments() if i.instrument_id == "KRS-2Y")
     assert isinstance(swap, SwapInstrument)
-    discount = book_snapshot().curve("RUB_OIS").curve
-    assert isinstance(discount, DiscountCurve)
-    engine = SwapRiskEngine(SwapRiskRequest(swap.swap, CAL, discount, quotes()))
+    engine = quote_engine(swap.swap)
     projection = next(c for c in engine.risk().curves if c.curve_role == "projection")
     factors = krs_row.factor_risk.first_order_by_factor()
     second = engine.second_order()
@@ -288,7 +320,7 @@ def test_portfolio_with_the_flag_takes_krs_quote_risk() -> None:
         assert q * projection.buckets[k].dv01_rub == pytest.approx(
             factors[f"IR|KEY_RATE|{b}"], rel=1e-9, abs=1e-6
         )
-    assert key_rate_factors(result) != key_rate_factors(forward)
+    assert key_rate_factors(result) == key_rate_factors(default)
     models = {m.position_id: m for m in result.position_models}
     assert "quote_curve" in models["p-krs"].flags
     assert "quote_curve" in models["p-kk"].flags
@@ -306,6 +338,7 @@ def test_portfolio_rejects_krs_quotes_of_another_business_date() -> None:
         ),
         date(2026, 10, 14),
         0.165,
+        "RUB_PROJ",
     )
     curves = tuple(
         CurveEntry("KEY_RATE", "rub_key_rate_swap_v1", other) if c.curve_id == "KEY_RATE" else c
@@ -339,5 +372,5 @@ def test_horizon_portfolio_carries_on_the_mid_curve_of_krs_quotes() -> None:
         assert len(rows) == 2
         return [r.horizon_pnl_rub for r in rows]
 
-    expected = carry(built_snapshot(), POLICY)
+    expected = carry(quote_snapshot(), POLICY)
     assert carry(quote_snapshot(), replace(POLICY, quote_curve_risk=True)) == expected

@@ -6,7 +6,6 @@ import hashlib
 import sys
 from dataclasses import asdict, replace
 from datetime import date
-from pathlib import Path
 
 import pytest
 from test_local_worker import run, snapshot
@@ -169,18 +168,34 @@ def test_bond_only_portfolio_results_keep_their_0_26_v2_hashes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Bond-only books (fixed, amortizing, put, floaters, non-RUB, linkers) give the
-    bytes, job IDs and result hashes of release 0.26.0 after the v3 work."""
+    bytes, job IDs and result hashes of release 0.26.0, except the linked KRS book."""
     import test_inflation
     import test_non_rub_bonds
     import test_portfolio
     import test_portfolio_floaters
 
     _pin_version(monkeypatch, "0.26.0")
+    floater_snapshot = test_portfolio_floaters.snapshot()
     books = {
         "portfolio": test_portfolio.run(),
         "portfolio_all": test_portfolio.run(positions=test_portfolio.positions()),
         "non_rub": test_non_rub_bonds.run(),
         "floaters": test_portfolio_floaters.run(),
+        "floaters_ruonia_only": test_portfolio_floaters.run(
+            snapshot=replace(
+                floater_snapshot,
+                curves=tuple(c for c in floater_snapshot.curves if c.curve_id != "KEY_PROJ"),
+            ),
+            positions=tuple(
+                p for p in test_portfolio_floaters.positions() if p.instrument_id != "FRN-KEY"
+            ),
+            instruments=tuple(
+                i for i in test_portfolio_floaters.instruments() if i.instrument_id != "FRN-KEY"
+            ),
+            policy=replace(
+                test_portfolio_floaters.POLICY, curve_overrides=(("FRN-1C", "RUB_OIS"),)
+            ),
+        ),
         "linker": test_inflation._value([test_inflation.bond(), test_inflation.fixed_bond()]),
     }
     # Python 3.12 made float sum() compensated, so some 0.26.0 numbers differ in the last
@@ -199,21 +214,39 @@ def test_bond_only_portfolio_results_keep_their_0_26_v2_hashes(
 
 
 def test_portfolio_v3_result_is_pinned(monkeypatch: pytest.MonkeyPatch) -> None:
-    from portfolio_v3_book import pinned_v3_result
+    import portfolio_v3_book as mixed
 
     _pin_version(monkeypatch, "0.27.0")
-    result = pinned_v3_result()
+    result = mixed.pinned_v3_result()
     assert result.schema_version == "rub-portfolio-risk-result.v3"
     assert verify_portfolio_result_v3(result)
     data = portfolio_result_to_json(result)
     assert portfolio_result_to_json(portfolio_result_from_json(data)) == data
     if not _PINNED_PLATFORM:
         return
-    assert (result.job_id, result.result_sha256) == (
+    assert (result.job_id, result.result_sha256, hashlib.sha256(data).hexdigest()) == (
         PINNED["portfolio_v3_job_id"],
         PINNED["portfolio_v3_result"],
+        PINNED["portfolio_v3_json"],
     )
-    assert portfolio_result_to_json(result) == V3_FIXTURE.read_bytes()
+    snapshot = mixed.snapshot()
+    without_key_rate = portfolio.value_portfolio(
+        run_id="pinned-v3-no-key-rate",
+        as_of=mixed.AS_OF,
+        snapshot=replace(
+            snapshot, curves=tuple(c for c in snapshot.curves if c.curve_id != "KEY_RATE")
+        ),
+        positions=tuple(p for p in mixed.positions(pinned=True) if p.position_id != "p-kk"),
+        instruments=tuple(
+            i for i in mixed.instruments(pinned=True) if i.instrument_id != "KK-10.26"
+        ),
+        policy=mixed.POLICY,
+        scenarios=(mixed.PINNED_SCENARIO,),
+    )
+    assert (without_key_rate.job_id, without_key_rate.result_sha256) == (
+        "4ed049c6dafcf0f88ddcdb04f02d79ff1db5f471d2c2b519e4d31d4cd5eb0216",
+        "0c867b15af94db523e1452ca7c958751355a541050f8bae8a6fc7d3db52abba2",
+    )
 
 
 def test_canonical_sha256_of_plain_values_is_pinned() -> None:
@@ -230,11 +263,10 @@ PINNED: dict[str, str] = {
     "job_id": "0d9d9d88c815393c478fe3b6cbeb7d3468aa12f61b248062bfcfb28bcfa0935c",
     "local_result_body": "2d37374572ae89eb4dd69ffe13d7b21963c2f7b1395ae3dbbef381604b2b82ca",
     "plain": "b96b0e8e367c6ed6ee81cbccd316d0f95e0a02375e8fe7117c7a220e190c6afb",
-    "portfolio_v3_job_id": "f2ed552f4ff6c90de05e7be0a377759db76804394d42b5b028274689390bcb5a",
-    "portfolio_v3_result": "ff72b04d27e0d9166e9034247f3198d1e4ce31e3b1ad1c6245b56fd293ed6635",
+    "portfolio_v3_job_id": "6dffde3239b176c2c70d4586822296042ca24c206aed8349dfdd2e856934369c",
+    "portfolio_v3_result": "648d720ee1a712b6cae88be3fae1d8c1df7b5fa598ba25e0127443421d1210e9",
+    "portfolio_v3_json": "fbcb6618f20d4f50eb44f85cd0926580269bf883b92e62ebdaab66378679548b",
 }
-
-V3_FIXTURE = Path(__file__).parent / "fixtures" / "portfolio_result_v3.json"
 
 # (job_id, result_sha256, SHA-256 of the JSON bytes) of bond-only books under 0.26.0.
 V2_PINNED: dict[str, tuple[str, str, str]] = {
@@ -254,9 +286,14 @@ V2_PINNED: dict[str, tuple[str, str, str]] = {
         "59388261960d8a79ccfedbd32b1c4298f8b008957a903fd12a78d7f3b85f3574",
     ),
     "floaters": (
-        "7bcb2cbabebf2ce400560a3b26e88932b2e380a0fbe19c35cc71ff3f054284bf",
-        "3b9fad26221a40d8788b966fc6855727c4e3bf7cfac9fdcd279cc1d5d6f6d809",
-        "ca7fbf288301b99a526d2b66768423340de92d975b434f100376c76b67e2f882",
+        "b9a3d6eb3842eaa9b494928704ed162f6e374db3ec389c39da0862cfaed0a3d7",
+        "d686d7387eeaf2fc39070757d1297ae6ad2b2795504db28d4d891835d217c2df",
+        "993425fd17b9338fa2fa2087cf92c86e8ecffffeccf4961236f5a58962f96b69",
+    ),
+    "floaters_ruonia_only": (
+        "cec8a955bea0e167b5d2027f61f2ac76ccab0324e2a552785086cf84100d6c63",
+        "2e75c2749f647d9190f0bcb4084fbbf19713dbe336a756d77a29fb02972e291a",
+        "f1c514505d80058555e557bbc6773c8022a71cb60e0bff65704ba6d84566d098",
     ),
     "linker": (
         "7617c6f9ea550d84a24d2d436fdf23f4dbb3b64eef5bf01007dadf135a876b8d",
@@ -276,10 +313,5 @@ V2_PINNED_PY311: dict[str, tuple[str, str, str]] = {
         "70828ba8a7fba69227394bd9d1a22f469b7aa7f5ff2f782ca62497e2ca72eef9",
         "c07a75d0fe52bd369b106442aa1c8ad1a1e5b43b835307a4e6a651a88784a798",
         "50a43c746f0ea3cd2f8269a3c3114d0741f7201c1552b790d3ee43eb781675d1",
-    ),
-    "floaters": (
-        "7bcb2cbabebf2ce400560a3b26e88932b2e380a0fbe19c35cc71ff3f054284bf",
-        "8b454b01725edb318deb2fcd360a03918084695034d6c2a20e6c36be6f99d8f5",
-        "98bcd1e70c81668c7a4c6715bd2b9c55d1b21e558690090c163d5fd40f110303",
     ),
 }
